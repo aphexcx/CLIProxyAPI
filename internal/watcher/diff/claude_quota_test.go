@@ -12,7 +12,7 @@ func TestClaudeQuotaReloadDiff(t *testing.T) {
 	before.NormalizeClaudeConfig()
 	for name, edit := range map[string]func(*config.ClaudeQuotaConfig){
 		"enabled":     func(q *config.ClaudeQuotaConfig) { q.Enabled = true },
-		"interval":    func(q *config.ClaudeQuotaConfig) { q.PollInterval = "1m" },
+		"interval":    func(q *config.ClaudeQuotaConfig) { q.PollInterval = "2m" },
 		"cap":         func(q *config.ClaudeQuotaConfig) { *q.CapPercent = 99 },
 		"window caps": func(q *config.ClaudeQuotaConfig) { q.WindowCaps["Fable"] = 99 },
 		"models":      func(q *config.ClaudeQuotaConfig) { q.ModelWindows["Fable"] = []string{"another-model"} },

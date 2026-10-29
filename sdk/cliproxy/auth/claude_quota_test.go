@@ -145,7 +145,7 @@ func TestClaudeQuotaPartialPollAndReloadDoNotRestoreClearedHold(t *testing.T) {
 				}
 				poll := func() *Auth {
 					base, _ := m.GetByID(a)
-					m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, windows, now)
+					m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, windows, time.Now())
 					auth, _ := m.GetByID(a)
 					return auth
 				}
@@ -450,7 +450,7 @@ func TestClaudeQuotaPersistRestoreAndDisable(t *testing.T) {
 			}
 		})
 	}
-	applyTestClaudeQuota(m, a, 0, now.Add(time.Hour), now)
+	applyTestClaudeQuota(m, a, 0, now.Add(time.Hour), now.Add(time.Second))
 	if len(store.savedRecords()) != 0 {
 		t.Fatal("released cooldown remained persisted")
 	}
@@ -466,7 +466,7 @@ func TestClaudeQuotaOverlappingWindowsUseLatestReset(t *testing.T) {
 	windows := map[string]QuotaWindow{"Fable": {Utilization: 99, ResetsAt: now.Add(time.Hour)}, "Additional": {Utilization: 100, ResetsAt: now.Add(2 * time.Hour)}}
 	apply := func() {
 		base, _ := m.GetByID(a)
-		m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, windows, now)
+		m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, windows, time.Now())
 	}
 	apply()
 	auth, _ := m.GetByID(a)
@@ -494,13 +494,13 @@ func TestClaudeQuotaRankRebucketsAndPreservesFilePriority(t *testing.T) {
 		}
 	}
 	pick(b)
-	applyTestClaudeQuota(m, b, 100, now.Add(time.Hour), now)
+	applyTestClaudeQuota(m, b, 100, now.Add(time.Hour), now.Add(time.Second))
 	pick(a)
 	auth, _ := m.GetByID(a)
 	if auth.Attributes["quota_rank"] != "1" || authPriority(auth) != 1 {
 		t.Fatal("rank not folded into priority")
 	}
-	applyTestClaudeQuota(m, b, 0, now.Add(time.Hour), now)
+	applyTestClaudeQuota(m, b, 0, now.Add(time.Hour), now.Add(2*time.Second))
 	pick(b)
 	auth, _ = m.GetByID(a)
 	auth.Attributes["priority"] = "10"
@@ -816,6 +816,7 @@ func TestClaudeQuotaDelayedRestoreDoesNotRearmClearedHold(t *testing.T) {
 						t.Fatal("partial poll re-armed a cleared hold")
 					}
 					// A fresh observation can install a new hold at its own reset.
+					<-time.After(time.Second)
 					m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), auth, map[string]QuotaWindow{
 						"Additional": {Utilization: 100, ResetsAt: short},
 					}, time.Now())
@@ -1237,7 +1238,7 @@ func TestClaudeQuotaExpiryPublishesWhilePollsFail(t *testing.T) {
 		reg.UnregisterClient(b)
 		reg.RegisterClient(a, "claude", []*registry.ModelInfo{{ID: quotaFable}})
 		cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
-		cfg.Claude.Quota.PollInterval = "10s"
+		cfg.Claude.Quota.PollInterval = "15s"
 		m.SetConfig(cfg)
 		store := &recordingCooldownStateStore{}
 		m.SetCooldownStateStore(store)
@@ -1257,7 +1258,7 @@ func TestClaudeQuotaExpiryPublishesWhilePollsFail(t *testing.T) {
 		synctest.Wait()
 		<-time.After(45 * time.Second)
 		synctest.Wait()
-		if polls < 5 {
+		if polls < 4 {
 			t.Fatal("test did not exercise repeated failed usage reads")
 		}
 		auth, _ := m.GetByID(a)
@@ -1733,6 +1734,9 @@ func TestClaudeQuotaStalledReadReleasesSlotOnCredentialChange(t *testing.T) {
 func TestClaudeQuotaPollCadenceDoesNotOverlapStalledSeat(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m, a, b := newClaudeQuotaManager(t)
+		cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+		cfg.Claude.Quota.PollInterval = "5m"
+		m.SetConfig(cfg)
 		reset := time.Now().Add(time.Minute)
 		applyTestClaudeQuota(m, a, 100, reset, time.Now())
 		applyTestClaudeQuota(m, b, 20, reset, time.Now())

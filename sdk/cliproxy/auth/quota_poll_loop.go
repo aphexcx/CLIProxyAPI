@@ -135,6 +135,8 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 			return
 		case <-expiryC:
 			m.expireClaudeQuotaState(ctx)
+		case <-m.quotaPollWake:
+			// A response installed an earlier local expiry while a poll was pending.
 		case finished := <-completed:
 			if running[finished.auth.ID] == finished {
 				delete(running, finished.auth.ID)
@@ -174,7 +176,15 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 	results := make(chan result, 1)
 	go func() {
 		windows, errPoll := poller.PollQuota(ctx, base)
-		results <- result{windows, errPoll}
+		observedAt := time.Now()
+		snapshot := make(map[string]QuotaWindow, len(windows))
+		for name, window := range windows {
+			if window.ObservedAt.IsZero() {
+				window.ObservedAt = observedAt
+			}
+			snapshot[name] = window
+		}
+		results <- result{snapshot, errPoll}
 	}()
 	for {
 		select {
@@ -312,24 +322,8 @@ func (m *Manager) applyClaudeQuotaUsage(ctx context.Context, cfg *internalconfig
 		release()
 		return
 	}
-	// Retain each last valid observation until its own reset. An omitted or
-	// malformed window must not shorten another window's outstanding hold.
-	if auth.Quota.Windows == nil {
-		auth.Quota.Windows = make(map[string]QuotaWindow, len(windows))
-	}
-	for name, window := range auth.Quota.Windows {
-		if !window.ResetsAt.After(now) {
-			delete(auth.Quota.Windows, name)
-		}
-	}
-	for name, window := range windows {
-		if window.ResetsAt.IsZero() {
-			continue
-		}
-		window.ObservedAt = now
-		auth.Quota.Windows[name] = window
-	}
-	changed := m.reconcileClaudeQuotaHoldsLocked(auth, cfg, windows, now)
+	fresh := mergeClaudeQuotaWindows(auth, windows, now)
+	changed := m.reconcileClaudeQuotaHoldsLocked(auth, cfg, fresh, nil, now)
 	auth.Generation++
 	auth.UpdatedAt = now
 	snapshots := m.recomputeClaudeQuotaRanksLocked(cfg, now)
@@ -344,7 +338,7 @@ func (m *Manager) applyClaudeQuotaUsage(ctx context.Context, cfg *internalconfig
 
 // Reconcile only cooldowns owned by this guard. Missing/invalid windows never
 // release an existing hold early; other upstream failures always retain ownership.
-func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfig.Config, observations map[string]QuotaWindow, now time.Time) bool {
+func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfig.Config, observations map[string]QuotaWindow, beforeResult map[string]time.Time, now time.Time) bool {
 	quota := cfg.Claude.Quota.WithDefaults()
 	enabled := quota.Enabled && claudeQuotaEligible(auth) && !quotaCooldownDisabledForAuthWithConfig(auth, cfg)
 	type hold struct {
@@ -367,13 +361,25 @@ func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfi
 					continue
 				}
 				var reset time.Time
-				if exists {
+				state := auth.ModelStates[model]
+				owned, normalized := claudeQuotaHoldLayer(auth, state, now)
+				changed = changed || normalized
+				updatedAt := time.Time{}
+				if state != nil {
+					updatedAt = state.UpdatedAt
+				}
+				// A response's own success may have just cleared the model. Judge
+				// freshness against the state BEFORE that result, while still
+				// rejecting headers received before a manual or earlier success reset.
+				if at, ok := beforeResult[model]; ok {
+					updatedAt = at
+				}
+				fresh := exists && (isClaudeQuotaHold(owned) && isModelStateActiveCooldown(owned, now) || usage.ObservedAt.After(updatedAt))
+				if fresh {
 					if usage.Utilization >= quota.CapFor(window) {
 						reset = usage.ResetsAt
 					}
 				} else {
-					owned, normalized := claudeQuotaHoldLayer(auth, auth.ModelStates[model], now)
-					changed = changed || normalized
 					if isClaudeQuotaHold(owned) {
 						reset = owned.Quota.guardWindows[window]
 						// Persisted cooldowns have no runtime provenance. Keep their
@@ -634,7 +640,7 @@ func (m *Manager) updateClaudeQuotaConfig(previous, cfg *internalconfig.Config) 
 	for _, auth := range m.auths {
 		// Reload is not a new usage observation. Reconcile only live or restored
 		// ownership so retained windows cannot revive an explicitly cleared hold.
-		if m.reconcileClaudeQuotaHoldsLocked(auth, cfg, nil, now) {
+		if m.reconcileClaudeQuotaHoldsLocked(auth, cfg, nil, nil, now) {
 			changed = true
 			auth.Generation++
 			auth.UpdatedAt = now

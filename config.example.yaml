@@ -446,8 +446,8 @@ upstream:
     quota:
       # Enable OAuth usage reads and per-model holds; default off.
       enabled: false
-      # Poll each enabled Claude OAuth seat without rotating its refresh token.
-      poll-interval: "5m"
+      # Poll each enabled Claude OAuth seat without rotating its refresh token; minimum 15s.
+      poll-interval: "1m"
       # Hold governed models at this utilization percentage (greater than 0, at most 100).
       cap-percent: 100
       # Override a named window's cap; five_hour and seven_day cannot be below 100.

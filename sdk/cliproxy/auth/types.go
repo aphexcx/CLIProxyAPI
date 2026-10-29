@@ -307,7 +307,7 @@ type RecentRequestBucket struct {
 	Failed  int64  `json:"failed"`
 }
 
-// QuotaWindow is a runtime-only usage observation, independent of header signals.
+// QuotaWindow is a runtime-only usage observation from a poll or response headers.
 type QuotaWindow struct {
 	Utilization float64   `json:"utilization"`
 	ResetsAt    time.Time `json:"resets_at"`

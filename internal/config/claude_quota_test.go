@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -15,7 +17,7 @@ func TestClaudeQuotaDefaultsAndV8RoundTrip(t *testing.T) {
 		t.Fatal(errParse)
 	}
 	q := defaults.Claude.Quota
-	if q.Enabled || q.PriorityAtReset || q.PollInterval != "5m" || q.CapFor("Fable") != 100 || !reflect.DeepEqual(q.ModelWindows, map[string][]string{"Fable": {"claude-fable-5-1"}}) {
+	if q.Enabled || q.PriorityAtReset || q.PollInterval != "1m" || q.CapFor("Fable") != 100 || !reflect.DeepEqual(q.ModelWindows, map[string][]string{"Fable": {"claude-fable-5-1"}}) {
 		t.Fatalf("defaults=%+v", q)
 	}
 	data := []byte(`upstream:
@@ -113,5 +115,32 @@ func TestClaudeQuotaValidation(t *testing.T) {
 	cfg, errParse := ParseConfigBytes([]byte("upstream: {claude: {quota: {cap-percent: 99, window-caps: {five_hour: 100}, model-windows: {}}}}"))
 	if errParse != nil || len(cfg.Claude.Quota.ModelWindows) != 0 {
 		t.Fatalf("explicit empty model mapping: cfg=%v err=%v", cfg, errParse)
+	}
+}
+
+func TestClaudeQuotaPollInterval(t *testing.T) {
+	cfg, errParse := ParseConfigBytes([]byte("server: {port: 8317}"))
+	if errParse != nil {
+		t.Fatal(errParse)
+	}
+	interval, errDuration := time.ParseDuration(cfg.Claude.Quota.PollInterval)
+	if errDuration != nil || interval != time.Minute {
+		t.Errorf("default interval=%v err=%v", interval, errDuration)
+	}
+	for _, interval := range []string{"10s", "14.999s", "15s", "1m"} {
+		t.Run(interval, func(t *testing.T) {
+			data := []byte("upstream: {claude: {quota: {poll-interval: " + interval + "}}}")
+			_, errParse := ParseConfigBytes(data)
+			errValidate := ValidateV8Config(data)
+			for _, err := range []error{errParse, errValidate} {
+				if interval == "10s" || interval == "14.999s" {
+					if err == nil || !strings.Contains(err.Error(), "at least 15s") {
+						t.Fatalf("interval %s must explain the minimum: %v", interval, err)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
 	}
 }

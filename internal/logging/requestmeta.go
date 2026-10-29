@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type endpointKey struct{}
@@ -30,8 +31,9 @@ type responseStatusHolder struct {
 }
 
 type responseHeadersHolder struct {
-	mu      sync.RWMutex
-	headers http.Header
+	mu         sync.RWMutex
+	headers    http.Header
+	observedAt time.Time
 }
 
 func WithEndpoint(ctx context.Context, endpoint string) context.Context {
@@ -123,6 +125,7 @@ func SetResponseHeaders(ctx context.Context, headers http.Header) {
 	holder.mu.Lock()
 	defer holder.mu.Unlock()
 	holder.headers = cloneHTTPHeader(headers)
+	holder.observedAt = time.Now()
 }
 
 // MergeResponseHeaders adds headers observed after the initial HTTP response,
@@ -161,16 +164,23 @@ func GetResponseStatus(ctx context.Context) int {
 }
 
 func GetResponseHeaders(ctx context.Context) http.Header {
+	headers, _ := GetResponseHeadersSnapshot(ctx)
+	return headers
+}
+
+// GetResponseHeadersSnapshot returns the headers and their receipt time together.
+// Later merges (for example, websocket events) do not re-date the HTTP response.
+func GetResponseHeadersSnapshot(ctx context.Context) (http.Header, time.Time) {
 	if ctx == nil {
-		return nil
+		return nil, time.Time{}
 	}
 	holder, ok := ctx.Value(responseHeadersKey{}).(*responseHeadersHolder)
 	if !ok || holder == nil {
-		return nil
+		return nil, time.Time{}
 	}
 	holder.mu.RLock()
 	defer holder.mu.RUnlock()
-	return cloneHTTPHeader(holder.headers)
+	return cloneHTTPHeader(holder.headers), holder.observedAt
 }
 
 func cloneHTTPHeader(src http.Header) http.Header {

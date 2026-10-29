@@ -90,7 +90,7 @@ upstream:
   claude:
     quota:
       enabled: false # Enable usage reads and per-model holds.
-      poll-interval: "5m" # Read each enabled OAuth seat at this cadence.
+      poll-interval: "1m" # Read each enabled OAuth seat at this cadence; minimum 15s.
       cap-percent: 100 # Default utilization threshold for governed model windows.
       window-caps: {} # Optional display-name caps, for example Fable: 99.
       model-windows: # Map usage display names to upstream model IDs.
@@ -103,6 +103,16 @@ upstream:
 never disables a credential. Upstream errors still use the existing retry and
 cooldown behavior. Keep `model-level-cooling: false` to preserve account-wide
 cooling for upstream 5h/7d rejections.
+
+Response headers also update the enabled guard. The paired
+`anthropic-ratelimit-unified-{5h,7d,7d_oi}-utilization` and `-reset` fields map
+to `five_hour`, `seven_day`, and `Fable`, respectively. Utilization is converted
+from a fraction to percent; the window's own reset supplies its deadline.
+Only `model-windows` mappings can hold models (by default, `Fable` holds
+`claude-fable-5-1`). Missing or invalid pairs, status flags, the generic unified
+reset, and `Retry-After` cannot invent a usage observation. Polls and headers
+share per-window timestamps: older or repeated observations cannot re-arm a
+cleared hold. Upstream error cooldowns retain their existing behavior.
 
 `GET /v8/management/credentials` adds `quota.windows`, keyed by `five_hour`,
 `seven_day`, and each model-window display name (such as `Fable`). Each value has

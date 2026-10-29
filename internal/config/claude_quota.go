@@ -11,7 +11,7 @@ import (
 // remain observational: only upstream failures may cool the whole credential.
 type ClaudeQuotaConfig struct {
 	Enabled         bool                `yaml:"enabled" json:"enabled"`
-	PollInterval    string              `yaml:"poll-interval" json:"poll-interval"`
+	PollInterval    string              `yaml:"poll-interval" json:"poll-interval"` // Default 1m; minimum 15s.
 	CapPercent      *float64            `yaml:"cap-percent" json:"cap-percent"`
 	WindowCaps      map[string]float64  `yaml:"window-caps" json:"window-caps"`
 	ModelWindows    map[string][]string `yaml:"model-windows" json:"model-windows"`
@@ -21,7 +21,7 @@ type ClaudeQuotaConfig struct {
 // WithDefaults preserves explicit empty model mappings and explicit cap values.
 func (q ClaudeQuotaConfig) WithDefaults() ClaudeQuotaConfig {
 	if strings.TrimSpace(q.PollInterval) == "" {
-		q.PollInterval = "5m"
+		q.PollInterval = "1m"
 	}
 	if q.CapPercent == nil {
 		capPercent := float64(100)
@@ -53,6 +53,9 @@ func (q ClaudeQuotaConfig) Validate() error {
 	interval, errParse := time.ParseDuration(q.PollInterval)
 	if errParse != nil || interval <= 0 {
 		return fmt.Errorf("upstream.claude.quota.poll-interval must be a positive duration")
+	}
+	if interval < 15*time.Second {
+		return fmt.Errorf("upstream.claude.quota.poll-interval must be at least 15s")
 	}
 	validCap := func(capPercent float64) bool {
 		return !math.IsNaN(capPercent) && !math.IsInf(capPercent, 0) && capPercent > 0 && capPercent <= 100

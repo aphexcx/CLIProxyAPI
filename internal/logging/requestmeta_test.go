@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"testing/synctest"
+	"time"
 )
 
 func TestWithFreshResponseHeadersHolderIsolatesAttempts(t *testing.T) {
@@ -31,4 +33,29 @@ func TestWithFreshResponseHeadersHolderIsolatesAttempts(t *testing.T) {
 	if got := GetResponseHeaders(secondAttemptCtx).Get("X-Upstream-Attempt"); got != "second" {
 		t.Fatalf("second attempt holder = %q, want second", got)
 	}
+}
+
+func TestResponseHeadersSnapshotKeepsReceiptTime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := WithFreshResponseHeadersHolder(context.Background())
+		if headers, at := GetResponseHeadersSnapshot(ctx); len(headers) != 0 || !at.IsZero() {
+			t.Fatal("empty holder has a timestamp")
+		}
+		at := time.Now()
+		SetResponseHeaders(ctx, http.Header{"X-Test": {"original"}})
+		<-time.After(time.Second)
+		MergeResponseHeaders(ctx, http.Header{"X-Other": {"merged"}})
+		headers, observedAt := GetResponseHeadersSnapshot(ctx)
+		if !observedAt.Equal(at) || headers.Get("X-Other") != "merged" {
+			t.Fatal("snapshot was re-dated by later processing")
+		}
+		headers.Set("X-Test", "mutated")
+		if GetResponseHeaders(ctx).Get("X-Test") != "original" {
+			t.Fatal("snapshot aliases the holder")
+		}
+		fresh := WithFreshResponseHeadersHolder(ctx)
+		if _, observedAt := GetResponseHeadersSnapshot(fresh); !observedAt.IsZero() {
+			t.Fatal("retry inherited the previous attempt's time")
+		}
+	})
 }

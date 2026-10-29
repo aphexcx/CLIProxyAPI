@@ -93,7 +93,7 @@ func TestClaudeQuotaConfigApplyDoesNotRearmClearedHold(t *testing.T) {
 					manager.MarkResult(ctx, coreauth.Result{AuthID: auth.ID, Provider: "claude", Model: model, Success: true})
 				}
 				poller.windows = map[string]coreauth.QuotaWindow{}
-				<-time.After(5 * time.Minute)
+				<-time.After(time.Minute)
 				synctest.Wait()
 				if poller.calls != 2 {
 					t.Fatal("partial poll did not complete")
@@ -162,6 +162,7 @@ func TestClaudeQuotaConfigApplyPreservesLiveWindowDeadlines(t *testing.T) {
 			t.Fatal("config apply did not restore the hold")
 		}
 		// The longer window releases; the omitted window must keep its own deadline.
+		<-time.After(time.Second)
 		poller.windows = map[string]coreauth.QuotaWindow{"Fable": {Utilization: 0, ResetsAt: long}}
 		manager.RegisterExecutor(poller)
 		manager.StartQuotaPolling(ctx)

@@ -365,7 +365,7 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 	// Upstream cooldowns remain independent of the guard configuration.
 	if cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config); cfg != nil {
 		for _, auth := range m.auths {
-			if m.reconcileClaudeQuotaHoldsLocked(auth, cfg, nil, now) {
+			if m.reconcileClaudeQuotaHoldsLocked(auth, cfg, nil, nil, now) {
 				auth.Generation++
 				auth.UpdatedAt = now
 				snapshotsByID[auth.ID] = auth.Clone()
@@ -968,6 +968,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	modelKey := canonicalModelKey(result.Model)
 
 	var authSnapshot *Auth
+	var quotaSnapshots []*Auth
+	quotaObserved := false
 	cooldownStateChanged := false
 	scheduleUnauthorizedRefresh := false
 	now := time.Now()
@@ -1001,8 +1003,22 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 		now = time.Now()
-		responseHeaders := internallogging.GetResponseHeaders(ctx)
+		responseHeaders, headersObservedAt := internallogging.GetResponseHeadersSnapshot(ctx)
 		modelState := existingModelState(auth, modelKey)
+		cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+		observeClaudeQuota := !result.SkipQuotaObservation && strings.EqualFold(result.Provider, "claude") && cfg != nil && cfg.Claude.Quota.Enabled && claudeQuotaEligible(auth)
+		var beforeResult map[string]time.Time
+		if observeClaudeQuota {
+			beforeResult = make(map[string]time.Time, len(auth.ModelStates)+1)
+			for model, state := range auth.ModelStates {
+				if state != nil {
+					beforeResult[model] = state.UpdatedAt
+				}
+			}
+			if modelState == nil && modelKey != "" {
+				beforeResult[modelKey] = time.Time{}
+			}
+		}
 		var cooldownRecordsBefore []CooldownStateRecord
 		trackCooldownState := m.cooldownStore != nil
 		if trackCooldownState {
@@ -1031,6 +1047,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 		retainAuthCooldown := modelKey == "" && !wasTerminalUnauthorized && result.ExecutionSeq > 0 &&
 			isAuthActiveCooldown(auth, now) && auth.cooldownRecordedSeq > 0 && result.ExecutionSeq <= auth.cooldownRecordedSeq
+		// Long responses can finish after a newer poll or response established a
+		// guard hold. Their older headers cannot prove that hold has recovered.
+		if observeClaudeQuota && !headersObservedAt.IsZero() && isClaudeQuotaHold(modelState) && isModelStateActiveCooldown(modelState, now) && !headersObservedAt.After(modelState.UpdatedAt) {
+			retainModelCooldown = true
+		}
 
 		if result.Success {
 			if wasTerminalUnauthorized {
@@ -1447,6 +1468,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
 			}
 		}
+		if observeClaudeQuota && claudeQuotaEligible(auth) && !headersObservedAt.IsZero() {
+			windows := claudeQuotaHeaderWindows(responseHeaders, headersObservedAt)
+			if len(windows) > 0 {
+				fresh := mergeClaudeQuotaWindows(auth, windows, now)
+				m.reconcileClaudeQuotaHoldsLocked(auth, cfg, fresh, beforeResult, now)
+				quotaSnapshots = m.recomputeClaudeQuotaRanksLocked(cfg, now)
+				quotaObserved = true
+			}
+		}
 
 		_ = m.persistLocked(ctx, auth)
 		authSnapshot = auth.Clone()
@@ -1458,7 +1488,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	m.mu.Unlock()
 	releaseMutation()
 	if m.scheduler != nil && authSnapshot != nil {
-		credentialScopedResult := result.CredentialScope || scheduleUnauthorizedRefresh
+		credentialScopedResult := result.CredentialScope || scheduleUnauthorizedRefresh || quotaObserved
 		var targetModels []string
 		if !credentialScopedResult && modelKey != "" {
 			targetModels = append(targetModels, modelKey)
@@ -1467,6 +1497,13 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 		m.scheduler.upsertAuthResult(authSnapshot, targetModels, credentialScopedResult)
+	}
+	m.publishClaudeQuotaSnapshots(quotaSnapshots)
+	if quotaObserved {
+		select {
+		case m.quotaPollWake <- struct{}{}:
+		default:
+		}
 	}
 	if authSnapshot != nil && cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
