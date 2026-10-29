@@ -1490,7 +1490,7 @@ func (r *ModelRegistry) GetAvailableModels(handlerType string) []map[string]any 
 // cooldown too; counting it as another failure hides all of them when no other
 // credential serves them.
 func isQuotaSuspension(reason string) bool {
-	return strings.EqualFold(reason, "quota") || strings.EqualFold(reason, "credential_quota")
+	return strings.EqualFold(reason, "quota") || strings.EqualFold(reason, "credential_quota") || strings.EqualFold(reason, "quota_cap")
 }
 
 func modelRegistrationAvailability(registration *ModelRegistration, now time.Time) (bool, time.Time) {

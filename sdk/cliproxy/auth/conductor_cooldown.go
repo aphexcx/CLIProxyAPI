@@ -173,6 +173,7 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 	}
 	m.runtimeConfig.Store(cfg)
 	clearedCooldowns := m.clearDisabledCooldownStates(cfg)
+	clearedCooldowns = m.updateClaudeQuotaConfig(previousCfg, cfg) || clearedCooldowns
 	if clearedCooldowns && oldCooldownStore != nil {
 		m.mu.Lock()
 		if m.cooldownStore == oldCooldownStore {
@@ -298,11 +299,7 @@ func (m *Manager) clearDisabledCooldownStates(cfg *internalconfig.Config) bool {
 	}
 	m.mu.Unlock()
 
-	if m.scheduler != nil {
-		for _, snapshot := range snapshots {
-			m.scheduler.upsertAuth(snapshot)
-		}
-	}
+	m.publishClaudeQuotaSnapshots(snapshots)
 	return len(snapshots) > 0
 }
 
@@ -330,15 +327,27 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 
 	now := time.Now()
 	authLevelRecords := make([]CooldownStateRecord, 0)
+	credentialDeadlines := make(map[string]time.Time)
 	snapshotsByID := make(map[string]*Auth)
+	for _, record := range records {
+		if strings.TrimSpace(record.Model) == "" {
+			authLevelRecords = append(authLevelRecords, record)
+			if record.Quota.Exceeded && record.Quota.Reason == "credential_quota" {
+				deadline := record.Quota.NextRecoverAt
+				if deadline.IsZero() {
+					deadline = record.NextRetryAfter
+				}
+				credentialDeadlines[strings.TrimSpace(record.AuthID)] = deadline
+			}
+		}
+	}
 
 	m.mu.Lock()
 	for _, record := range records {
 		if strings.TrimSpace(record.Model) == "" {
-			authLevelRecords = append(authLevelRecords, record)
 			continue
 		}
-		if m.restoreCooldownRecordLocked(record, now) {
+		if m.restoreCooldownRecordWithCredentialDeadlineLocked(record, now, credentialDeadlines[strings.TrimSpace(record.AuthID)]) {
 			if auth := m.auths[strings.TrimSpace(record.AuthID)]; auth != nil {
 				snapshotsByID[auth.ID] = auth.Clone()
 			}
@@ -347,6 +356,18 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 	for _, record := range authLevelRecords {
 		if m.restoreCooldownRecordLocked(record, now) {
 			if auth := m.auths[strings.TrimSpace(record.AuthID)]; auth != nil {
+				snapshotsByID[auth.ID] = auth.Clone()
+			}
+		}
+	}
+	// A saved guard hold is meaningful only while its opt-in rule still exists.
+	// Retained usage is not a fresh observation and cannot re-arm a cleared hold.
+	// Upstream cooldowns remain independent of the guard configuration.
+	if cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config); cfg != nil {
+		for _, auth := range m.auths {
+			if m.reconcileClaudeQuotaHoldsLocked(auth, cfg, nil, nil, now) {
+				auth.Generation++
+				auth.UpdatedAt = now
 				snapshotsByID[auth.ID] = auth.Clone()
 			}
 		}
@@ -363,6 +384,10 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 }
 
 func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now time.Time) bool {
+	return m.restoreCooldownRecordWithCredentialDeadlineLocked(record, now, time.Time{})
+}
+
+func (m *Manager) restoreCooldownRecordWithCredentialDeadlineLocked(record CooldownStateRecord, now, credentialDeadline time.Time) bool {
 	authID := strings.TrimSpace(record.AuthID)
 	if authID == "" || record.NextRetryAfter.IsZero() || !record.NextRetryAfter.After(now) {
 		return false
@@ -398,6 +423,43 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 	}
 
 	state := ensureModelState(auth, model)
+	restored := &ModelState{
+		Unavailable:    true,
+		Status:         StatusError,
+		StatusMessage:  reason,
+		NextRetryAfter: record.NextRetryAfter,
+		Quota:          quota,
+		LastError:      cloneError(record.LastError),
+		UpdatedAt:      updatedAt,
+	}
+	// As with live window ownership below, a live clear wins over an older
+	// or equally recent guard layer, including one saved beneath a credential
+	// wrap. An upstream cooldown is not guard ownership: it cannot let a
+	// cleared guard return. Check the live guard itself, including its shadow.
+	liveGuard := state
+	if !isClaudeQuotaHold(liveGuard) {
+		liveGuard = state.credentialQuotaShadow
+	}
+	if !isClaudeQuotaHold(liveGuard) || !isModelStateActiveCooldown(liveGuard, now) {
+		if isClaudeQuotaHold(restored) && !restored.UpdatedAt.After(state.UpdatedAt) {
+			return false
+		}
+		if isClaudeQuotaHold(record.IndependentState) && !record.IndependentState.UpdatedAt.After(state.UpdatedAt) {
+			record.IndependentState = nil
+			// The model's saved deadlines include the rejected guard layer.
+			// A live credential wrap keeps its own deadline; otherwise use
+			// the companion auth record. Neither uses the saved aggregate.
+			if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
+				credentialDeadline = auth.Quota.NextRecoverAt
+			}
+			// Without a surviving wrap, the aggregate cannot restore a block.
+			if !credentialDeadline.After(now) {
+				return false
+			}
+			restored.NextRetryAfter = credentialDeadline
+			restored.Quota.NextRecoverAt = credentialDeadline
+		}
+	}
 	// Candidate independent layers for a wrapped record: the live shadow, or
 	// — when the live state is still unwrapped — the live state itself (a
 	// delayed store load must never erase a newer independent cooldown that
@@ -412,15 +474,7 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 	}
 	wasLiveWrapped := state.credentialQuotaPropagated || state.Quota.Reason == "credential_quota" ||
 		(auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now))
-	mergeModelState(state, &ModelState{
-		Unavailable:    true,
-		Status:         StatusError,
-		StatusMessage:  reason,
-		NextRetryAfter: record.NextRetryAfter,
-		Quota:          quota,
-		LastError:      cloneError(record.LastError),
-		UpdatedAt:      updatedAt,
-	})
+	mergeModelState(state, restored)
 	// The persisted independent layer joins the merge newest-wins; a newer
 	// live independent layer (shadow or freshly captured unwrapped state,
 	// e.g. an own failure recorded during a delayed store load) is never
@@ -469,6 +523,21 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 		} else if liveShadow != nil {
 			state.credentialQuotaShadow = liveShadow
 		}
+	}
+	// The merge retains the newest state timestamp but the longest deadline.
+	// Preserve live window ownership when its state is at least as recent,
+	// even if a poll shortened the hold while the older record was loading.
+	guard := state
+	if !isClaudeQuotaHold(guard) {
+		guard = state.credentialQuotaShadow
+	}
+	if isClaudeQuotaHold(guard) && isClaudeQuotaHold(liveShadow) &&
+		!guard.UpdatedAt.After(liveShadow.UpdatedAt) {
+		guard.Quota.guardWindows = liveShadow.Quota.guardWindows
+		// Carry the effective live barrier even when a config release cleared
+		// receipt metadata. The saved layer's timestamp must not replace it.
+		guard.quotaFreshness = claudeQuotaModelFreshness(liveShadow)
+		guard.quotaFreshness.updatedAt = guard.UpdatedAt
 	}
 	auth.Generation++
 	auth.UpdatedAt = updatedAt
@@ -903,6 +972,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	modelKey := canonicalModelKey(result.Model)
 
 	var authSnapshot *Auth
+	var quotaSnapshots []*Auth
+	quotaObserved := false
 	cooldownStateChanged := false
 	scheduleUnauthorizedRefresh := false
 	now := time.Now()
@@ -936,8 +1007,23 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 		now = time.Now()
-		responseHeaders := internallogging.GetResponseHeaders(ctx)
+		responseHeaders, headersObservedAt := internallogging.GetResponseHeadersSnapshot(ctx)
 		modelState := existingModelState(auth, modelKey)
+		cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+		trackClaudeQuotaFreshness := strings.EqualFold(result.Provider, "claude") && cfg != nil && cfg.Claude.Quota.Enabled && claudeQuotaEligible(auth)
+		observeClaudeQuota := trackClaudeQuotaFreshness && !result.SkipQuotaObservation
+		var beforeResult map[string]claudeQuotaFreshness
+		if trackClaudeQuotaFreshness {
+			beforeResult = make(map[string]claudeQuotaFreshness, len(auth.ModelStates)+1)
+			for model, state := range auth.ModelStates {
+				if state != nil {
+					beforeResult[model] = claudeQuotaModelFreshness(state)
+				}
+			}
+			if modelState == nil && modelKey != "" {
+				beforeResult[modelKey] = claudeQuotaFreshness{}
+			}
+		}
 		var cooldownRecordsBefore []CooldownStateRecord
 		trackCooldownState := m.cooldownStore != nil
 		if trackCooldownState {
@@ -966,6 +1052,27 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 		retainAuthCooldown := modelKey == "" && !wasTerminalUnauthorized && result.ExecutionSeq > 0 &&
 			isAuthActiveCooldown(auth, now) && auth.cooldownRecordedSeq > 0 && result.ExecutionSeq <= auth.cooldownRecordedSeq
+		// Long responses can finish after a newer poll or response established a
+		// guard hold. Their older headers cannot prove that hold has recovered.
+		if trackClaudeQuotaFreshness && result.Success && !headersObservedAt.IsZero() {
+			// A credential cooldown may still wrap the guard after its own
+			// expiry. Promote that layer before success can discard the shadow.
+			guardState, _ := claudeQuotaHoldLayer(auth, modelState, now)
+			if isClaudeQuotaHold(guardState) && isModelStateActiveCooldown(guardState, now) {
+				guardObservedAt := claudeQuotaModelFreshness(guardState).at
+				// A newer cap observation can keep the same deadline without
+				// changing the model state. Its window watermark still supersedes
+				// an older response's success or below-cap snapshot.
+				for window := range guardState.Quota.guardWindows {
+					if observedAt := auth.Quota.Windows[window].ObservedAt; observedAt.After(guardObservedAt) {
+						guardObservedAt = observedAt
+					}
+				}
+				if !headersObservedAt.After(guardObservedAt) {
+					retainModelCooldown = true
+				}
+			}
+		}
 
 		if result.Success {
 			if wasTerminalUnauthorized {
@@ -1035,10 +1142,21 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							*state = *fresh
 						}
 					}
+					var previousGuard *ModelState
+					if !result.CredentialScope && isClaudeQuotaHold(state) {
+						previousGuard = state.cloneShallow()
+					}
 					state.Unavailable = true
 					state.Status = StatusError
 					state.UpdatedAt = now
 					prevModelRetryAfter := state.NextRetryAfter
+					// An own failure takes ownership of this cooldown. Keep the
+					// monotonic retry deadline, but never leave a guard label that
+					// a later usage poll could mistake for permission to clear it.
+					// Credential failures preserve the guard in the saved shadow.
+					if !result.CredentialScope && state.Quota.Reason == "quota_cap" {
+						applyCooldownFields(&state.Quota, QuotaState{})
+					}
 					if result.Error != nil {
 						state.LastError = cloneError(result.Error)
 						state.StatusMessage = result.Error.Message
@@ -1261,6 +1379,13 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						state.NextRetryAfter = now.Add(transientErrorCooldown)
 						state.Unavailable = true
 					}
+					// A failure that establishes no cooldown (for example, disabled
+					// transient cooling) cannot release an already exhausted window.
+					// Retain guard ownership so a later usage read can still release it.
+					if previousGuard != nil && !disableCooling && state.NextRetryAfter.IsZero() && previousGuard.NextRetryAfter.After(now) {
+						*state = *previousGuard
+						state.UpdatedAt = now
+					}
 					// A later failure only extends a still-live cooldown; it never
 					// shortens one. A deliberate zero write (disableCooling) still
 					// clears the deadline.
@@ -1364,6 +1489,20 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
 			}
 		}
+		// Token-count responses skip usage/signals, but a successful clear must
+		// still use receipt time rather than introducing a completion-time barrier.
+		if trackClaudeQuotaFreshness && result.Success && !headersObservedAt.IsZero() && modelState != nil && modelState.Status == StatusActive && modelState.UpdatedAt.Equal(now) {
+			setClaudeQuotaFreshness(modelState, beforeResult[modelKey], headersObservedAt)
+		}
+		if observeClaudeQuota && claudeQuotaEligible(auth) && !headersObservedAt.IsZero() {
+			windows := claudeQuotaHeaderWindows(responseHeaders, headersObservedAt)
+			if len(windows) > 0 {
+				fresh := mergeClaudeQuotaWindows(auth, windows)
+				m.reconcileClaudeQuotaHoldsLocked(auth, cfg, fresh, beforeResult, now)
+				quotaSnapshots = m.recomputeClaudeQuotaRanksLocked(cfg, now)
+				quotaObserved = true
+			}
+		}
 
 		_ = m.persistLocked(ctx, auth)
 		authSnapshot = auth.Clone()
@@ -1375,7 +1514,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	m.mu.Unlock()
 	releaseMutation()
 	if m.scheduler != nil && authSnapshot != nil {
-		credentialScopedResult := result.CredentialScope || scheduleUnauthorizedRefresh
+		credentialScopedResult := result.CredentialScope || scheduleUnauthorizedRefresh || quotaObserved
 		var targetModels []string
 		if !credentialScopedResult && modelKey != "" {
 			targetModels = append(targetModels, modelKey)
@@ -1384,6 +1523,13 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 		m.scheduler.upsertAuthResult(authSnapshot, targetModels, credentialScopedResult)
+	}
+	m.publishClaudeQuotaSnapshots(quotaSnapshots)
+	if quotaObserved {
+		select {
+		case m.quotaPollWake <- struct{}{}:
+		default:
+		}
 	}
 	if authSnapshot != nil && cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
@@ -1398,17 +1544,23 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 	}
 
-	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(result.AuthID)
-	reg := registry.GetGlobalRegistry()
-	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
-	for _, sm := range supportedModels {
-		if sm == nil || strings.TrimSpace(sm.ID) == "" {
-			continue
+	if quotaObserved {
+		// Include the observed credential even when rank recomputation returned
+		// no snapshots. Its old hold must never adopt a replacement's epoch.
+		m.publishClaudeQuotaSnapshots([]*Auth{authSnapshot})
+	} else {
+		supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(result.AuthID)
+		reg := registry.GetGlobalRegistry()
+		projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
+		for _, sm := range supportedModels {
+			if sm == nil || strings.TrimSpace(sm.ID) == "" {
+				continue
+			}
+			projections = append(projections, m.clientModelProjectionForAuth(authSnapshot, sm.ID, now))
 		}
-		projections = append(projections, m.clientModelProjectionForAuth(authSnapshot, sm.ID, now))
-	}
-	if authSnapshot != nil && len(projections) > 0 {
-		reg.ApplyClientModelProjections(result.AuthID, regEpoch, authSnapshot.Generation, projections)
+		if authSnapshot != nil && len(projections) > 0 {
+			reg.ApplyClientModelProjections(result.AuthID, regEpoch, authSnapshot.Generation, projections)
+		}
 	}
 
 	m.hook.OnResult(ctx, result)
@@ -1576,6 +1728,9 @@ func mergeModelState(target, source *ModelState) *ModelState {
 			BackoffLevel:  target.Quota.BackoffLevel,
 		},
 		UpdatedAt: target.UpdatedAt,
+		// The preferred state's timestamp wins below; keep its receipt metadata
+		// with it instead of turning a live observation into an explicit barrier.
+		quotaFreshness: preferred.quotaFreshness,
 	}
 	merged.Quota = mergeQuotaObservation(merged.Quota, fallback.Quota)
 	merged.Quota = mergeQuotaObservation(merged.Quota, preferred.Quota)
@@ -1647,6 +1802,7 @@ func resetModelState(state *ModelState, now time.Time) {
 	state.credentialQuotaShadow = nil
 	state.credentialQuotaPropagated = false
 	state.UpdatedAt = now
+	state.quotaFreshness = claudeQuotaFreshness{}
 }
 
 func isModelStateActiveCooldown(state *ModelState, now time.Time) bool {

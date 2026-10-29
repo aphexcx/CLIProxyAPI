@@ -307,8 +307,22 @@ type RecentRequestBucket struct {
 	Failed  int64  `json:"failed"`
 }
 
+// QuotaWindow is a runtime-only usage observation from a poll or response headers.
+type QuotaWindow struct {
+	Utilization float64   `json:"utilization"`
+	ResetsAt    time.Time `json:"resets_at"`
+	ObservedAt  time.Time `json:"observed_at"`
+}
+
 // QuotaState contains limiter tracking data for a credential.
 type QuotaState struct {
+	// Windows is never copied into auth metadata or persisted cooldown records.
+	Windows map[string]QuotaWindow `json:"windows,omitempty"`
+	// RankExpiresAt bounds the runtime priority boost independently of polling.
+	RankExpiresAt time.Time `json:"-"`
+	// guardWindows tracks which runtime windows own this model's quota_cap hold.
+	// Passive observations cannot recreate a hold after an explicit reset.
+	guardWindows map[string]time.Time
 	// Exceeded indicates the credential recently hit a quota error.
 	Exceeded bool `json:"exceeded"`
 	// Reason provides an optional provider specific human readable description.
@@ -331,6 +345,18 @@ type QuotaState struct {
 // Clone returns an independent copy of the quota state.
 func (q QuotaState) Clone() QuotaState {
 	copyQuota := q
+	if q.guardWindows != nil {
+		copyQuota.guardWindows = make(map[string]time.Time, len(q.guardWindows))
+		for key, value := range q.guardWindows {
+			copyQuota.guardWindows[key] = value
+		}
+	}
+	if q.Windows != nil {
+		copyQuota.Windows = make(map[string]QuotaWindow, len(q.Windows))
+		for key, value := range q.Windows {
+			copyQuota.Windows[key] = value
+		}
+	}
 	if len(q.Signals) > 0 {
 		copyQuota.Signals = make(map[string]string, len(q.Signals))
 		for key, value := range q.Signals {
@@ -356,6 +382,9 @@ type ModelState struct {
 	Quota QuotaState `json:"quota"`
 	// UpdatedAt tracks the last update timestamp for this model state.
 	UpdatedAt time.Time `json:"updated_at"`
+	// quotaFreshness separates observation receipt from mutation/persistence time.
+	// Explicit resets invalidate it; it is runtime-only and copied by value.
+	quotaFreshness claudeQuotaFreshness
 	// cooldownRecordedSeq is the execution sequence watermark captured when
 	// the current model cooldown was recorded. Successes from executions
 	// stamped at or below it were dispatched before the cooldown existed and

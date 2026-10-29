@@ -58,6 +58,17 @@ func TestDevinApplyPatchDiagnosticsUsesTranslatorReason(t *testing.T) {
 	}
 }
 
+func TestDevinApplyPatchDiagnosticJSONControlCharacterVersions(t *testing.T) {
+	for _, reason := range []string{
+		"decode apply_patch input value: invalid character '\\n' in string literal",
+		"decode apply_patch input value: invalid character '\\n' in string",
+	} {
+		if got := devinPatchReasonCode(reason); got != "invalid control character in apply_patch input" {
+			t.Fatalf("diagnostic = %q", got)
+		}
+	}
+}
+
 func TestDevinApplyPatchDiagnosticsBounded(t *testing.T) {
 	if got := (*DevinApplyPatchDiagnostics)(nil).Render(nil, ""); got != ApplyPatchUpstreamErrorMessage {
 		t.Fatalf("nil diagnostic = %q", got)

@@ -227,7 +227,8 @@ func devinPatchReasonCode(reason string) string {
 	}
 	if strings.HasPrefix(reason, "decode apply_patch input value: ") {
 		switch {
-		case strings.HasSuffix(reason, "in string literal"):
+		// Go 1.27 shortened encoding/json's diagnostic to "in string".
+		case strings.HasSuffix(reason, "in string literal"), strings.HasSuffix(reason, "in string"):
 			return "invalid control character in apply_patch input"
 		case strings.Contains(reason, "in \\u hexadecimal character escape"):
 			return "invalid Unicode escape in apply_patch input"

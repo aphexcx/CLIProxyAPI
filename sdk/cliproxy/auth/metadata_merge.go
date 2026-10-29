@@ -398,6 +398,9 @@ func mergeAuthContent(base, current, updated *Auth) *Auth {
 			baseAttrs = base.Attributes
 		}
 		for k, v := range updated.Attributes {
+			if k == "quota_rank" {
+				continue
+			}
 			baseVal, hadInBase := baseAttrs[k]
 			currentVal, hadInCurrent := current.Attributes[k]
 
@@ -410,6 +413,9 @@ func mergeAuthContent(base, current, updated *Auth) *Auth {
 		}
 		if baseAttrs != nil {
 			for k, baseVal := range baseAttrs {
+				if k == "quota_rank" {
+					continue
+				}
 				if _, inUpdated := updated.Attributes[k]; !inUpdated {
 					if currentVal, ok := current.Attributes[k]; ok {
 						if baseVal == currentVal {

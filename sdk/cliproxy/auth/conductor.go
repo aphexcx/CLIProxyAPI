@@ -228,6 +228,12 @@ type Manager struct {
 	// Auto refresh state
 	refreshCancel context.CancelFunc
 	refreshLoop   *authAutoRefreshLoop
+	// Quota polling has its own lifecycle; config reloads cancel in-flight reads.
+	quotaPollMu     sync.Mutex
+	quotaPollParent context.Context
+	quotaPollCancel context.CancelFunc
+	quotaPollDone   chan struct{}
+	quotaPollWake   chan struct{}
 	// refreshJobs retains queued and running jobs across loop restarts under m.mu.
 	refreshJobs map[string]*authRefreshJob
 
@@ -267,6 +273,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		homeSessionSelections: make(map[string]map[homeSessionSelectionKey]*HomeDispatchSelection),
 		providerOffsets:       make(map[string]int),
 		modelPoolOffsets:      make(map[string]int),
+		quotaPollWake:         make(chan struct{}, 1),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})

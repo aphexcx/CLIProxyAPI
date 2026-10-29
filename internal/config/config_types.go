@@ -113,6 +113,8 @@ func defaultPluginInstanceConfigNode() *yaml.Node {
 
 // ClaudeConfig configures provider-wide Claude request behavior.
 type ClaudeConfig struct {
+	// Quota enables proactive OAuth usage observation and per-model holds.
+	Quota ClaudeQuotaConfig `yaml:"quota" json:"quota"`
 	// ModelLevelCooling scopes Claude quota cooldowns to the requested model
 	// rather than cooling down the entire credential across all sibling models.
 	ModelLevelCooling bool `yaml:"model-level-cooling" json:"model-level-cooling"`

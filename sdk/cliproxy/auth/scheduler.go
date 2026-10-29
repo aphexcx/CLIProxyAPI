@@ -1204,6 +1204,7 @@ func (m *modelScheduler) upsertEntryLocked(meta *scheduledAuthMeta, now time.Tim
 	if m == nil || meta == nil || meta.auth == nil {
 		return
 	}
+	meta = meta.withCurrentPriority(now)
 	entry, ok := m.entries[meta.auth.ID]
 	if !ok || entry == nil {
 		entry = &scheduledAuth{}
@@ -1284,13 +1285,33 @@ func (m *modelScheduler) demoteExpiredTokensLocked(now time.Time) bool {
 	return changed
 }
 
-// promoteExpiredLocked reevaluates blocked auths whose retry time has elapsed
-// and demotes ready auths whose access token has expired.
+// withCurrentPriority leaves shared provider metadata immutable: each model
+// shard must rebuild its own priority buckets when a runtime quota rank expires.
+func (meta *scheduledAuthMeta) withCurrentPriority(now time.Time) *scheduledAuthMeta {
+	priority := authPriorityAt(meta.auth, now)
+	if priority == meta.priority {
+		return meta
+	}
+	updated := *meta
+	updated.priority = priority
+	return &updated
+}
+
+// promoteExpiredLocked reevaluates cooldowns, access tokens, and quota ranks.
 func (m *modelScheduler) promoteExpiredLocked(now time.Time) {
 	if m == nil {
 		return
 	}
 	changed := m.demoteExpiredTokensLocked(now)
+	for _, entry := range m.entries {
+		if entry != nil && entry.meta != nil {
+			meta := entry.meta.withCurrentPriority(now)
+			if meta != entry.meta {
+				entry.meta = meta
+				changed = true
+			}
+		}
+	}
 	for _, entry := range m.blocked {
 		if entry == nil || entry.auth == nil {
 			continue

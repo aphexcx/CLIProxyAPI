@@ -27,6 +27,7 @@ const (
 	TokenURL        = "https://platform.claude.com/v1/oauth/token"
 	RefreshTokenURL = "https://platform.claude.com/v1/oauth/token"
 	ProfileURL      = "https://api.anthropic.com/api/oauth/profile"
+	UsageURL        = "https://api.anthropic.com/api/oauth/usage"
 	// RolesURL is the claude_cli role endpoint the native client queries right
 	// after a successful token exchange, alongside the profile lookup.
 	RolesURL         = "https://api.anthropic.com/api/oauth/claude_cli/roles"
@@ -226,25 +227,29 @@ func applyClaudeOAuthAxiosHeaders(req *http.Request) {
 
 // fetchOAuthControlPlaneJSON issues an Axios-shaped OAuth control-plane GET and
 // returns the decoded response body. label names the endpoint in error text.
-func (o *ClaudeAuth) fetchOAuthControlPlaneJSON(ctx context.Context, endpoint, accessToken, label string) ([]byte, error) {
+func (o *ClaudeAuth) fetchOAuthControlPlaneJSON(ctx context.Context, endpoint, accessToken, label string) ([]byte, time.Time, error) {
 	if o == nil || o.httpClient == nil {
-		return nil, fmt.Errorf("fetch Claude OAuth %s: HTTP client is nil", label)
+		return nil, time.Time{}, fmt.Errorf("fetch Claude OAuth %s: HTTP client is nil", label)
 	}
 	accessToken = strings.TrimSpace(accessToken)
 	if accessToken == "" {
-		return nil, fmt.Errorf("fetch Claude OAuth %s: access token is empty", label)
+		return nil, time.Time{}, fmt.Errorf("fetch Claude OAuth %s: access token is empty", label)
 	}
 	req, errRequest := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if errRequest != nil {
-		return nil, fmt.Errorf("create Claude OAuth %s request: %w", label, errRequest)
+		return nil, time.Time{}, fmt.Errorf("create Claude OAuth %s request: %w", label, errRequest)
 	}
 	applyClaudeOAuthAxiosHeaders(req)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Cache-Control", "no-cache")
+	if endpoint == UsageURL {
+		req.Header.Set("Anthropic-Beta", "oauth-2025-04-20")
+	}
 
 	resp, errDo := o.httpClient.Do(req)
+	observedAt := time.Now() // Header receipt, before any potentially stalled body read.
 	if errDo != nil {
-		return nil, fmt.Errorf("fetch Claude OAuth %s: %w", label, errDo)
+		return nil, time.Time{}, fmt.Errorf("fetch Claude OAuth %s: %w", label, errDo)
 	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
@@ -253,17 +258,17 @@ func (o *ClaudeAuth) fetchOAuthControlPlaneJSON(ctx context.Context, endpoint, a
 	}()
 	body, errRead := readClaudeOAuthResponseBody(resp)
 	if errRead != nil {
-		return nil, fmt.Errorf("read Claude OAuth %s response: %w", label, errRead)
+		return nil, time.Time{}, fmt.Errorf("read Claude OAuth %s response: %w", label, errRead)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("fetch Claude OAuth %s failed with status %d", label, resp.StatusCode)
+		return nil, time.Time{}, fmt.Errorf("fetch Claude OAuth %s failed with status %d", label, resp.StatusCode)
 	}
-	return body, nil
+	return body, observedAt, nil
 }
 
 // FetchOAuthProfile retrieves the account identity associated with an OAuth access token.
 func (o *ClaudeAuth) FetchOAuthProfile(ctx context.Context, accessToken string) (*OAuthProfile, error) {
-	body, errFetch := o.fetchOAuthControlPlaneJSON(ctx, ProfileURL, accessToken, "profile")
+	body, _, errFetch := o.fetchOAuthControlPlaneJSON(ctx, ProfileURL, accessToken, "profile")
 	if errFetch != nil {
 		return nil, errFetch
 	}
@@ -277,12 +282,30 @@ func (o *ClaudeAuth) FetchOAuthProfile(ctx context.Context, accessToken string) 
 	return &profile, nil
 }
 
+// FetchOAuthUsage observes usage with the current access token; it never refreshes
+// credentials. Errors deliberately omit the upstream body and credentials.
+func (o *ClaudeAuth) FetchOAuthUsage(ctx context.Context, accessToken string) (map[string]OAuthUsageWindow, error) {
+	body, observedAt, errFetch := o.fetchOAuthControlPlaneJSON(ctx, UsageURL, accessToken, "usage")
+	if errFetch != nil {
+		return nil, errFetch
+	}
+	windows, errParse := parseOAuthUsage(body)
+	if errParse != nil {
+		return nil, errParse
+	}
+	for name, window := range windows {
+		window.ObservedAt = observedAt
+		windows[name] = window
+	}
+	return windows, nil
+}
+
 // FetchOAuthRoles performs the claude_cli roles lookup the native client issues
 // alongside the profile query after a token exchange. Only the request shape is
 // covered by captured evidence, so the payload stays opaque and is returned raw
 // instead of being decoded into a guessed structure.
 func (o *ClaudeAuth) FetchOAuthRoles(ctx context.Context, accessToken string) (json.RawMessage, error) {
-	body, errFetch := o.fetchOAuthControlPlaneJSON(ctx, RolesURL, accessToken, "claude_cli roles")
+	body, _, errFetch := o.fetchOAuthControlPlaneJSON(ctx, RolesURL, accessToken, "claude_cli roles")
 	if errFetch != nil {
 		return nil, errFetch
 	}
