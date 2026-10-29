@@ -1,0 +1,11 @@
+{
+  "five_hour": {"utilization": 100, "resets_at": "2026-11-02T02:59:00Z"},
+  "seven_day": {"utilization": 100, "resets_at": "2026-11-02T02:59:00Z"},
+  "limits": [
+    {
+      "scope": {"model": {"display_name": "Fable"}},
+      "percent": 100,
+      "resets_at": "2026-11-02T02:59:00Z"
+    }
+  ]
+}
