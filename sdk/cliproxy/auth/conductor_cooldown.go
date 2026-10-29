@@ -1049,18 +1049,23 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			isAuthActiveCooldown(auth, now) && auth.cooldownRecordedSeq > 0 && result.ExecutionSeq <= auth.cooldownRecordedSeq
 		// Long responses can finish after a newer poll or response established a
 		// guard hold. Their older headers cannot prove that hold has recovered.
-		if observeClaudeQuota && !headersObservedAt.IsZero() && isClaudeQuotaHold(modelState) && isModelStateActiveCooldown(modelState, now) {
-			guardObservedAt := modelState.UpdatedAt
-			// A newer cap observation can keep the same deadline without
-			// changing the model state. Its window watermark still supersedes
-			// an older response's success or below-cap snapshot.
-			for window := range modelState.Quota.guardWindows {
-				if observedAt := auth.Quota.Windows[window].ObservedAt; observedAt.After(guardObservedAt) {
-					guardObservedAt = observedAt
+		if observeClaudeQuota && result.Success && !headersObservedAt.IsZero() {
+			// A credential cooldown may still wrap the guard after its own
+			// expiry. Promote that layer before success can discard the shadow.
+			guardState, _ := claudeQuotaHoldLayer(auth, modelState, now)
+			if isClaudeQuotaHold(guardState) && isModelStateActiveCooldown(guardState, now) {
+				guardObservedAt := guardState.UpdatedAt
+				// A newer cap observation can keep the same deadline without
+				// changing the model state. Its window watermark still supersedes
+				// an older response's success or below-cap snapshot.
+				for window := range guardState.Quota.guardWindows {
+					if observedAt := auth.Quota.Windows[window].ObservedAt; observedAt.After(guardObservedAt) {
+						guardObservedAt = observedAt
+					}
 				}
-			}
-			if !headersObservedAt.After(guardObservedAt) {
-				retainModelCooldown = true
+				if !headersObservedAt.After(guardObservedAt) {
+					retainModelCooldown = true
+				}
 			}
 		}
 

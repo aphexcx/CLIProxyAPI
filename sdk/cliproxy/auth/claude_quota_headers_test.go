@@ -138,6 +138,85 @@ func TestClaudeQuotaResponseHeadersNewerUsageWithSameDeadline(t *testing.T) {
 	}
 }
 
+func TestClaudeQuotaResponseHeadersPreserveGuardAfterWrapperExpiry(t *testing.T) {
+	for _, source := range []string{"header", "poll"} {
+		t.Run(source, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, a, _ := newClaudeQuotaManager(t)
+				reset := time.Now().Add(time.Hour)
+				applyTestClaudeQuota(m, a, 100, reset, time.Now())
+				retry := time.Minute
+				m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, Error: &Error{HTTPStatus: 429}, CredentialScope: true, RetryAfter: &retry})
+				<-time.After(time.Second)
+				stale := claudeQuotaHeaderContext("7d_oi", "0", reset)
+				<-time.After(time.Second)
+				if source == "poll" {
+					applyTestClaudeQuota(m, a, 100, reset, time.Now())
+				} else {
+					m.MarkResult(claudeQuotaHeaderContext("7d_oi", "1", reset), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, Success: true})
+				}
+				<-time.After(time.Minute)
+				m.MarkResult(stale, Result{AuthID: a, Provider: "claude", Model: quotaFable, Success: true})
+				auth, _ := m.GetByID(a)
+				if blocked, _, until := isAuthBlockedForModel(auth, quotaFable, time.Now()); !blocked || !until.Equal(reset) {
+					t.Fatal("old success discarded the newer guard after its wrapper expired")
+				}
+				if !isClaudeQuotaHold(auth.ModelStates[quotaFable]) || auth.ModelStates[quotaFable].credentialQuotaShadow != nil {
+					t.Fatal("expired wrapper did not promote its owned guard")
+				}
+				<-time.After(time.Second)
+				m.MarkResult(claudeQuotaHeaderContext("7d_oi", "0", reset), Result{AuthID: a, Provider: "claude", Model: quotaFable, Success: true})
+				auth, _ = m.GetByID(a)
+				if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, time.Now()); blocked {
+					t.Fatal("new below-cap response did not release the promoted guard")
+				}
+			})
+		})
+	}
+}
+
+func TestClaudeQuotaResponseHeadersCapReloadKeepsReleasedWindowClear(t *testing.T) {
+	for _, wrapped := range []bool{false, true} {
+		t.Run(strconv.FormatBool(wrapped), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, a, _ := newClaudeQuotaManager(t)
+				cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+				cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {quotaFable}, "Additional": {quotaFable}}
+				cfg.Claude.Quota.WindowCaps = map[string]float64{"Fable": 99}
+				m.SetConfig(cfg)
+				short, long := time.Now().Add(time.Hour), time.Now().Add(2*time.Hour)
+				base, _ := m.GetByID(a)
+				m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+					"Fable": {Utilization: 99, ResetsAt: short}, "Additional": {Utilization: 100, ResetsAt: long},
+				}, time.Now())
+				if wrapped {
+					retry := time.Minute
+					m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, Error: &Error{HTTPStatus: 429}, CredentialScope: true, RetryAfter: &retry})
+				}
+				<-time.After(time.Second)
+				stale := claudeQuotaHeaderContext("7d_oi", "1", long.Add(time.Hour))
+				<-time.After(time.Second)
+				cfg.Claude.Quota.WindowCaps["Fable"] = 100
+				m.SetConfig(cfg)
+				<-time.After(time.Second)
+				m.MarkResult(stale, Result{AuthID: a, Provider: "claude", Model: quotaSonnet, Success: true})
+				auth, _ := m.GetByID(a)
+				owned, _ := claudeQuotaHoldLayer(auth, auth.ModelStates[quotaFable], time.Now())
+				if !owned.NextRetryAfter.Equal(long) || !owned.Quota.guardWindows["Fable"].IsZero() {
+					t.Fatalf("pre-reload header restored released ownership: %+v", owned.Quota.guardWindows)
+				}
+				<-time.After(time.Second)
+				m.MarkResult(claudeQuotaHeaderContext("7d_oi", "1", long.Add(time.Hour)), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, Success: true})
+				auth, _ = m.GetByID(a)
+				owned, _ = claudeQuotaHoldLayer(auth, auth.ModelStates[quotaFable], time.Now())
+				if !owned.Quota.guardWindows["Fable"].Equal(long.Add(time.Hour)) {
+					t.Fatal("post-reload observation could not establish a new hold")
+				}
+			})
+		})
+	}
+}
+
 func TestClaudeQuotaResponseHeadersDoNotRearmClearedHold(t *testing.T) {
 	for _, clear := range []string{"reset", "success"} {
 		t.Run(clear, func(t *testing.T) {

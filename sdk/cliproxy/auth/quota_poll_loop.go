@@ -446,8 +446,19 @@ func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfi
 		if isModelStateActiveCooldown(state, now) && !isClaudeQuotaHold(state) {
 			continue
 		}
+		ownershipChanged := !reflect.DeepEqual(state.Quota.guardWindows, hold.windows)
 		state.Quota.guardWindows = hold.windows
 		if state.Quota.Reason == "quota_cap" && state.NextRetryAfter.Equal(hold.reset) {
+			if ownershipChanged {
+				// A partial release is newer truth even when another window
+				// preserves the aggregate deadline. Keep that freshness on both
+				// the guard and its outer wrap for delayed observations/restores.
+				state.UpdatedAt = now
+				if state != outer {
+					composeClaudeQuotaHold(auth, outer, now)
+				}
+				changed = true
+			}
 			continue
 		}
 		state.Unavailable = true
