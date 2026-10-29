@@ -25,7 +25,7 @@ func (e *ClaudeExecutor) PollQuota(ctx context.Context, auth *cliproxyauth.Auth)
 	}
 	result := make(map[string]cliproxyauth.QuotaWindow, len(windows))
 	for name, window := range windows {
-		result[name] = cliproxyauth.QuotaWindow{Utilization: window.Utilization, ResetsAt: window.ResetsAt}
+		result[name] = cliproxyauth.QuotaWindow{Utilization: window.Utilization, ResetsAt: window.ResetsAt, ObservedAt: window.ObservedAt}
 	}
 	return result, nil
 }

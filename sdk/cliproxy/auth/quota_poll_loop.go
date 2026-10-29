@@ -13,6 +13,8 @@ import (
 )
 
 // QuotaPoller observes usage without refreshing or otherwise changing credentials.
+// ObservedAt is response header receipt time, before reading the body. Missing
+// receipt times remain older than all timestamped observations, never completion time.
 type QuotaPoller interface {
 	PollQuota(context.Context, *Auth) (map[string]QuotaWindow, error)
 }
@@ -176,12 +178,8 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 	results := make(chan result, 1)
 	go func() {
 		windows, errPoll := poller.PollQuota(ctx, base)
-		observedAt := time.Now()
 		snapshot := make(map[string]QuotaWindow, len(windows))
 		for name, window := range windows {
-			if window.ObservedAt.IsZero() {
-				window.ObservedAt = observedAt
-			}
 			snapshot[name] = window
 		}
 		results <- result{snapshot, errPoll}
@@ -322,7 +320,7 @@ func (m *Manager) applyClaudeQuotaUsage(ctx context.Context, cfg *internalconfig
 		release()
 		return
 	}
-	fresh := mergeClaudeQuotaWindows(auth, windows, now)
+	fresh := mergeClaudeQuotaWindows(auth, windows)
 	changed := m.reconcileClaudeQuotaHoldsLocked(auth, cfg, fresh, nil, now)
 	auth.Generation++
 	auth.UpdatedAt = now
@@ -338,7 +336,7 @@ func (m *Manager) applyClaudeQuotaUsage(ctx context.Context, cfg *internalconfig
 
 // Reconcile only cooldowns owned by this guard. Missing/invalid windows never
 // release an existing hold early; other upstream failures always retain ownership.
-func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfig.Config, observations map[string]QuotaWindow, beforeResult map[string]time.Time, now time.Time) bool {
+func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfig.Config, observations map[string]QuotaWindow, beforeResult map[string]claudeQuotaFreshness, now time.Time) bool {
 	quota := cfg.Claude.Quota.WithDefaults()
 	enabled := quota.Enabled && claudeQuotaEligible(auth) && !quotaCooldownDisabledForAuthWithConfig(auth, cfg)
 	type hold struct {
@@ -347,6 +345,11 @@ func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfi
 		windows map[string]time.Time
 	}
 	desired := make(map[string]hold)
+	mutated := make(map[string]bool)
+	before := make(map[string]claudeQuotaFreshness, len(auth.ModelStates))
+	for model, state := range auth.ModelStates {
+		before[model] = claudeQuotaModelFreshness(state)
+	}
 	changed := false
 	if enabled {
 		for window, models := range quota.ModelWindows {
@@ -364,22 +367,19 @@ func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfi
 				state := auth.ModelStates[model]
 				owned, normalized := claudeQuotaHoldLayer(auth, state, now)
 				changed = changed || normalized
-				updatedAt := time.Time{}
-				if state != nil {
-					updatedAt = state.UpdatedAt
-				}
+				freshness := claudeQuotaModelFreshness(state)
 				// A response's own success may have just cleared the model. Judge
 				// freshness against the state BEFORE that result, while still
 				// rejecting headers received before a manual or earlier success reset.
 				if at, ok := beforeResult[model]; ok {
-					updatedAt = at
+					freshness = at
 				}
 				// A hold for another window does not own this window's deadline.
 				// Delayed observations must not restore a cleared window merely
 				// because a newer observation has since held the same model again.
 				ownsWindow := isClaudeQuotaHold(owned) && isModelStateActiveCooldown(owned, now) &&
 					(owned.Quota.guardWindows == nil || owned.Quota.guardWindows[window].After(now))
-				fresh := exists && (ownsWindow || usage.ObservedAt.After(updatedAt))
+				fresh := exists && (ownsWindow || freshness.accepts(usage.ObservedAt))
 				if fresh {
 					if usage.Utilization >= quota.CapFor(window) {
 						reset = usage.ResetsAt
@@ -422,6 +422,7 @@ func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfi
 		_, keep := desired[model]
 		if !keep {
 			resetModelState(owned, now)
+			mutated[model] = true
 			if owned != state {
 				composeClaudeQuotaHold(auth, state, now)
 			}
@@ -450,10 +451,12 @@ func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfi
 		state.Quota.guardWindows = hold.windows
 		if state.Quota.Reason == "quota_cap" && state.NextRetryAfter.Equal(hold.reset) {
 			if ownershipChanged {
+				mutated[model] = true
 				// A partial release is newer truth even when another window
 				// preserves the aggregate deadline. Keep that freshness on both
 				// the guard and its outer wrap for delayed observations/restores.
 				state.UpdatedAt = now
+				state.quotaFreshness = claudeQuotaFreshness{}
 				if state != outer {
 					composeClaudeQuotaHold(auth, outer, now)
 				}
@@ -462,11 +465,13 @@ func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfi
 			continue
 		}
 		state.Unavailable = true
+		mutated[model] = true
 		state.Status = StatusError
 		state.StatusMessage = "quota_cap"
 		state.NextRetryAfter = hold.reset
 		state.LastError = nil
 		state.UpdatedAt = now
+		state.quotaFreshness = claudeQuotaFreshness{}
 		state.cooldownRecordedSeq = m.executionSeq.Load()
 		applyCooldownFields(&state.Quota, QuotaState{Exceeded: true, Reason: "quota_cap", NextRecoverAt: hold.reset})
 		if state != outer {
@@ -474,6 +479,29 @@ func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfi
 		}
 		changed = true
 		log.WithFields(log.Fields{"auth_file": claudeQuotaName(auth), "window": hold.window, "model": model, "resets_at": hold.reset}).Info("claude quota: hold")
+	}
+	if changed {
+		for window, models := range quota.ModelWindows {
+			observation, ok := observations[window]
+			if !ok || observation.ObservedAt.IsZero() {
+				continue
+			}
+			for _, model := range models {
+				model = canonicalModelKey(model)
+				state := auth.ModelStates[model]
+				if state == nil || !mutated[model] {
+					continue
+				}
+				freshness := before[model]
+				if current := state.quotaFreshness; current.updatedAt.Equal(now) && current.at.After(freshness.at) {
+					freshness = current
+				}
+				setClaudeQuotaFreshness(state, freshness, observation.ObservedAt)
+				if shadow := state.credentialQuotaShadow; isClaudeQuotaHold(shadow) && shadow.UpdatedAt.Equal(now) {
+					setClaudeQuotaFreshness(shadow, freshness, observation.ObservedAt)
+				}
+			}
+		}
 	}
 	return changed
 }
@@ -512,6 +540,7 @@ func composeClaudeQuotaHold(auth *Auth, state *ModelState, now time.Time) {
 	state.NextRetryAfter = next
 	state.Quota.NextRecoverAt = next
 	state.UpdatedAt = now
+	state.quotaFreshness = claudeQuotaFreshness{}
 }
 
 func claudeQuotaWindowForModel(quota internalconfig.ClaudeQuotaConfig, model string) string {

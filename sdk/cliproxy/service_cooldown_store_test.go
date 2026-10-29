@@ -76,7 +76,7 @@ func TestClaudeQuotaConfigApplyDoesNotRearmClearedHold(t *testing.T) {
 				if _, errRegister := manager.Register(ctx, &coreauth.Auth{ID: "quota-reload", Provider: "claude", Status: coreauth.StatusActive, Metadata: map[string]any{"access_token": "test-access"}}); errRegister != nil {
 					t.Fatal(errRegister)
 				}
-				poller := &quotaReloadPoller{windows: map[string]coreauth.QuotaWindow{"Fable": {Utilization: 100, ResetsAt: time.Now().Add(time.Hour)}}}
+				poller := &quotaReloadPoller{windows: map[string]coreauth.QuotaWindow{"Fable": {Utilization: 100, ResetsAt: time.Now().Add(time.Hour), ObservedAt: time.Now()}}}
 				manager.RegisterExecutor(poller)
 				manager.StartQuotaPolling(ctx)
 				t.Cleanup(manager.StopQuotaPolling)
@@ -144,7 +144,7 @@ func TestClaudeQuotaConfigApplyPreservesLiveWindowDeadlines(t *testing.T) {
 		}
 		long, short := time.Now().Add(2*time.Hour), time.Now().Add(time.Hour)
 		poller := &quotaReloadPoller{windows: map[string]coreauth.QuotaWindow{
-			"Fable": {Utilization: 100, ResetsAt: long}, "Additional": {Utilization: 100, ResetsAt: short},
+			"Fable": {Utilization: 100, ResetsAt: long, ObservedAt: time.Now()}, "Additional": {Utilization: 100, ResetsAt: short, ObservedAt: time.Now()},
 		}}
 		manager.RegisterExecutor(poller)
 		manager.StartQuotaPolling(ctx)
@@ -163,7 +163,7 @@ func TestClaudeQuotaConfigApplyPreservesLiveWindowDeadlines(t *testing.T) {
 		}
 		// The longer window releases; the omitted window must keep its own deadline.
 		<-time.After(time.Second)
-		poller.windows = map[string]coreauth.QuotaWindow{"Fable": {Utilization: 0, ResetsAt: long}}
+		poller.windows = map[string]coreauth.QuotaWindow{"Fable": {Utilization: 0, ResetsAt: long, ObservedAt: time.Now()}}
 		manager.RegisterExecutor(poller)
 		manager.StartQuotaPolling(ctx)
 		synctest.Wait()

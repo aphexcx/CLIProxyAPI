@@ -50,17 +50,28 @@ func claudeQuotaHeaderWindows(headers http.Header, observedAt time.Time) map[str
 // Retain the newest valid observation per window, including expired windows as
 // watermarks. Deleting an expired watermark would let an older response with a
 // longer reset become fresh again. Only newly accepted observations may arm holds.
-func mergeClaudeQuotaWindows(auth *Auth, windows map[string]QuotaWindow, now time.Time) map[string]QuotaWindow {
+func mergeClaudeQuotaWindows(auth *Auth, windows map[string]QuotaWindow) map[string]QuotaWindow {
 	fresh := make(map[string]QuotaWindow, len(windows))
 	for name, window := range windows {
 		if window.ResetsAt.IsZero() || math.IsNaN(window.Utilization) || math.IsInf(window.Utilization, 0) || window.Utilization < 0 {
 			continue
 		}
-		if window.ObservedAt.IsZero() {
-			window.ObservedAt = now
-		}
-		if previous, ok := auth.Quota.Windows[name]; ok && !window.ObservedAt.After(previous.ObservedAt) {
-			continue
+		if previous, ok := auth.Quota.Windows[name]; ok {
+			// Missing receipt times stay older than every timestamped observation.
+			// Ties conservatively keep the maximum utilization and reset from
+			// the tied observations, never releasing or shortening a hold.
+			if window.ObservedAt.Before(previous.ObservedAt) {
+				continue
+			}
+			if window.ObservedAt.Equal(previous.ObservedAt) {
+				window.Utilization = math.Max(window.Utilization, previous.Utilization)
+				if previous.ResetsAt.After(window.ResetsAt) {
+					window.ResetsAt = previous.ResetsAt
+				}
+				if window.Utilization == previous.Utilization && window.ResetsAt.Equal(previous.ResetsAt) {
+					continue
+				}
+			}
 		}
 		if auth.Quota.Windows == nil {
 			auth.Quota.Windows = make(map[string]QuotaWindow)
@@ -69,4 +80,36 @@ func mergeClaudeQuotaWindows(auth *Auth, windows map[string]QuotaWindow, now tim
 		fresh[name] = window
 	}
 	return fresh
+}
+
+type claudeQuotaFreshness struct {
+	at, updatedAt time.Time
+	receipt       bool
+}
+
+func claudeQuotaModelFreshness(state *ModelState) claudeQuotaFreshness {
+	if state == nil {
+		return claudeQuotaFreshness{}
+	}
+	if state.quotaFreshness.updatedAt.Equal(state.UpdatedAt) && !state.quotaFreshness.at.IsZero() {
+		return state.quotaFreshness
+	}
+	return claudeQuotaFreshness{at: state.UpdatedAt, updatedAt: state.UpdatedAt}
+}
+
+func (f claudeQuotaFreshness) accepts(at time.Time) bool {
+	return at.After(f.at) || at.Equal(f.at) && (f.receipt || f.at.IsZero())
+}
+
+// Observation-driven mutations retain receipt ordering without moving an explicit
+// reset backwards. UpdatedAt remains completion time for persistence arbitration.
+func setClaudeQuotaFreshness(state *ModelState, before claudeQuotaFreshness, observedAt time.Time) {
+	if state == nil || observedAt.IsZero() {
+		return
+	}
+	if before.accepts(observedAt) {
+		before.at, before.receipt = observedAt, true
+	}
+	before.updatedAt = state.UpdatedAt
+	state.quotaFreshness = before
 }

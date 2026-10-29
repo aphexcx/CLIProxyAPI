@@ -382,6 +382,9 @@ type ModelState struct {
 	Quota QuotaState `json:"quota"`
 	// UpdatedAt tracks the last update timestamp for this model state.
 	UpdatedAt time.Time `json:"updated_at"`
+	// quotaFreshness separates observation receipt from mutation/persistence time.
+	// Explicit resets invalidate it; it is runtime-only and copied by value.
+	quotaFreshness claudeQuotaFreshness
 	// cooldownRecordedSeq is the execution sequence watermark captured when
 	// the current model cooldown was recorded. Successes from executions
 	// stamped at or below it were dispatched before the cooldown existed and

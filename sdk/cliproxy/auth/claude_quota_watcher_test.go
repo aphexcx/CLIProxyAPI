@@ -17,7 +17,7 @@ type watcherQuotaPoller struct{ coreauth.ProviderExecutor }
 
 func (*watcherQuotaPoller) Identifier() string { return "claude" }
 func (*watcherQuotaPoller) PollQuota(context.Context, *coreauth.Auth) (map[string]coreauth.QuotaWindow, error) {
-	return map[string]coreauth.QuotaWindow{"Fable": {Utilization: 20, ResetsAt: time.Now().Add(time.Hour)}}, nil
+	return map[string]coreauth.QuotaWindow{"Fable": {Utilization: 20, ResetsAt: time.Now().Add(time.Hour), ObservedAt: time.Now()}}, nil
 }
 
 func TestClaudeQuotaWatcherSnapshotPreservesRankAndDoesNotPersistUsage(t *testing.T) {

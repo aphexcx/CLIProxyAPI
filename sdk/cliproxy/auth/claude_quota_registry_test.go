@@ -49,7 +49,7 @@ func TestClaudeQuotaSoleSeatModelsStayListedAndReleaseProjection(t *testing.T) {
 		}
 		poller := &registryQuotaPoller{windows: make(chan map[string]coreauth.QuotaWindow, 1)}
 		reset := time.Now().Add(time.Hour)
-		poller.windows <- map[string]coreauth.QuotaWindow{"Fable": {Utilization: 100, ResetsAt: reset}}
+		poller.windows <- map[string]coreauth.QuotaWindow{"Fable": {Utilization: 100, ResetsAt: reset, ObservedAt: time.Now()}}
 		m.RegisterExecutor(poller)
 		m.StartQuotaPolling(context.Background())
 		t.Cleanup(m.StopQuotaPolling)
@@ -81,7 +81,8 @@ func TestClaudeQuotaSoleSeatModelsStayListedAndReleaseProjection(t *testing.T) {
 		}
 		m.MarkResult(context.Background(), coreauth.Result{AuthID: id, Provider: "claude", Model: sonnet, Success: true})
 		assertListed("Sonnet succeeded under Fable hold")
-		poller.windows <- map[string]coreauth.QuotaWindow{"Fable": {Utilization: 0, ResetsAt: reset}}
+		<-time.After(time.Second)
+		poller.windows <- map[string]coreauth.QuotaWindow{"Fable": {Utilization: 0, ResetsAt: reset, ObservedAt: time.Now()}}
 		<-time.After(time.Minute)
 		synctest.Wait()
 		assertListed("hold released")

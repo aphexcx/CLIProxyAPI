@@ -12,6 +12,7 @@ import (
 type OAuthUsageWindow struct {
 	Utilization float64
 	ResetsAt    time.Time
+	ObservedAt  time.Time // Response header receipt; zero for a body parsed in isolation.
 }
 
 func parseOAuthUsage(body []byte) (map[string]OAuthUsageWindow, error) {

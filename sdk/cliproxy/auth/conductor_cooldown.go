@@ -1007,16 +1007,16 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		modelState := existingModelState(auth, modelKey)
 		cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 		observeClaudeQuota := !result.SkipQuotaObservation && strings.EqualFold(result.Provider, "claude") && cfg != nil && cfg.Claude.Quota.Enabled && claudeQuotaEligible(auth)
-		var beforeResult map[string]time.Time
+		var beforeResult map[string]claudeQuotaFreshness
 		if observeClaudeQuota {
-			beforeResult = make(map[string]time.Time, len(auth.ModelStates)+1)
+			beforeResult = make(map[string]claudeQuotaFreshness, len(auth.ModelStates)+1)
 			for model, state := range auth.ModelStates {
 				if state != nil {
-					beforeResult[model] = state.UpdatedAt
+					beforeResult[model] = claudeQuotaModelFreshness(state)
 				}
 			}
 			if modelState == nil && modelKey != "" {
-				beforeResult[modelKey] = time.Time{}
+				beforeResult[modelKey] = claudeQuotaFreshness{}
 			}
 		}
 		var cooldownRecordsBefore []CooldownStateRecord
@@ -1054,7 +1054,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			// expiry. Promote that layer before success can discard the shadow.
 			guardState, _ := claudeQuotaHoldLayer(auth, modelState, now)
 			if isClaudeQuotaHold(guardState) && isModelStateActiveCooldown(guardState, now) {
-				guardObservedAt := guardState.UpdatedAt
+				guardObservedAt := claudeQuotaModelFreshness(guardState).at
 				// A newer cap observation can keep the same deadline without
 				// changing the model state. Its window watermark still supersedes
 				// an older response's success or below-cap snapshot.
@@ -1485,9 +1485,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 		if observeClaudeQuota && claudeQuotaEligible(auth) && !headersObservedAt.IsZero() {
+			if result.Success && modelState != nil && modelState.Status == StatusActive && modelState.UpdatedAt.Equal(now) {
+				setClaudeQuotaFreshness(modelState, beforeResult[modelKey], headersObservedAt)
+			}
 			windows := claudeQuotaHeaderWindows(responseHeaders, headersObservedAt)
 			if len(windows) > 0 {
-				fresh := mergeClaudeQuotaWindows(auth, windows, now)
+				fresh := mergeClaudeQuotaWindows(auth, windows)
 				m.reconcileClaudeQuotaHoldsLocked(auth, cfg, fresh, beforeResult, now)
 				quotaSnapshots = m.recomputeClaudeQuotaRanksLocked(cfg, now)
 				quotaObserved = true
@@ -1789,6 +1792,7 @@ func resetModelState(state *ModelState, now time.Time) {
 	state.credentialQuotaShadow = nil
 	state.credentialQuotaPropagated = false
 	state.UpdatedAt = now
+	state.quotaFreshness = claudeQuotaFreshness{}
 }
 
 func isModelStateActiveCooldown(state *ModelState, now time.Time) bool {

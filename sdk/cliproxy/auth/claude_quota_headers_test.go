@@ -83,7 +83,7 @@ func TestClaudeQuotaResponseHeadersNewestWindowWins(t *testing.T) {
 					} else {
 						m.MarkResult(claudeQuotaHeaderContext("7d_oi", strconv.FormatFloat(percent/100, 'f', 2, 64), reset), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, Success: true})
 						base, _ := m.GetByID(a)
-						m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+						m.applyTestClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
 							"Fable": {Utilization: 100 - percent, ResetsAt: reset, ObservedAt: start},
 						}, time.Now())
 					}
@@ -186,7 +186,7 @@ func TestClaudeQuotaResponseHeadersCapReloadKeepsReleasedWindowClear(t *testing.
 				m.SetConfig(cfg)
 				short, long := time.Now().Add(time.Hour), time.Now().Add(2*time.Hour)
 				base, _ := m.GetByID(a)
-				m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+				m.applyTestClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
 					"Fable": {Utilization: 99, ResetsAt: short}, "Additional": {Utilization: 100, ResetsAt: long},
 				}, time.Now())
 				if wrapped {
@@ -274,7 +274,7 @@ func TestClaudeQuotaResponseHeadersClearedWindowStaysClearUnderNewHold(t *testin
 					}
 					<-time.After(time.Second)
 					base, _ := m.GetByID(a)
-					m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+					m.applyTestClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
 						"Additional": {Utilization: 100, ResetsAt: short},
 					}, time.Now())
 					<-time.After(time.Second)
@@ -282,7 +282,7 @@ func TestClaudeQuotaResponseHeadersClearedWindowStaysClearUnderNewHold(t *testin
 						m.MarkResult(stale, Result{AuthID: a, Provider: "claude", Model: quotaSonnet, Success: true})
 					} else {
 						base, _ = m.GetByID(a)
-						m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+						m.applyTestClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
 							"Fable": {Utilization: 100, ResetsAt: long, ObservedAt: staleAt},
 						}, time.Now())
 					}
@@ -313,7 +313,7 @@ func TestClaudeQuotaResponseHeadersPreserveOtherWindows(t *testing.T) {
 				m.SetConfig(cfg)
 				short, long := time.Now().Add(time.Hour), time.Now().Add(2*time.Hour)
 				base, _ := m.GetByID(a)
-				m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+				m.applyTestClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
 					"Fable": {Utilization: 100, ResetsAt: short}, "Additional": {Utilization: 100, ResetsAt: long},
 				}, time.Now())
 				<-time.After(time.Second)
@@ -520,7 +520,7 @@ func TestClaudeQuotaExpiredSevenDayWatermarkDoesNotRank(t *testing.T) {
 			sevenDay = now.Add(2 * time.Hour)
 		}
 		base, _ := m.GetByID(id)
-		m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+		m.applyTestClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
 			"Fable": {Utilization: 0, ResetsAt: now.Add(time.Hour)}, "seven_day": {Utilization: 0, ResetsAt: sevenDay},
 		}, now)
 	}
@@ -529,7 +529,7 @@ func TestClaudeQuotaExpiredSevenDayWatermarkDoesNotRank(t *testing.T) {
 		t.Fatal("earlier active seven-day window did not win the tie")
 	}
 	later := now.Add(2 * time.Minute)
-	m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), first, nil, later)
+	m.applyTestClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), first, nil, later)
 	first, _ = m.GetByID(a)
 	second, _ := m.GetByID(b)
 	if first.QuotaRank(later) != 0 || second.QuotaRank(later) != 1 {
@@ -560,7 +560,7 @@ func TestClaudeQuotaResponseHeadersRepeatedAndExpiredWatermarks(t *testing.T) {
 		}
 		<-time.After(time.Minute)
 		// An empty poll after reset must not discard the ordering watermark.
-		m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), auth, nil, time.Now())
+		m.applyTestClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), auth, nil, time.Now())
 		m.MarkResult(old, Result{AuthID: a, Provider: "claude", Model: quotaSonnet, Success: true})
 		auth, _ = m.GetByID(a)
 		if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, time.Now()); blocked || !auth.Quota.Windows["Fable"].ResetsAt.Equal(start.Add(time.Minute)) {
