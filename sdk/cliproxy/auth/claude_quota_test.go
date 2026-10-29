@@ -122,7 +122,7 @@ func TestClaudeQuotaReleaseResetAndReload(t *testing.T) {
 	}
 }
 
-func TestClaudeQuotaPartialPollDoesNotRestoreClearedHold(t *testing.T) {
+func TestClaudeQuotaPartialPollAndReloadDoNotRestoreClearedHold(t *testing.T) {
 	for _, mode := range []string{"manual reset", "successful request"} {
 		for _, invalid := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/invalid=%v", mode, invalid), func(t *testing.T) {
@@ -152,6 +152,23 @@ func TestClaudeQuotaPartialPollDoesNotRestoreClearedHold(t *testing.T) {
 				if blocked, _, _ := isAuthBlockedForModel(poll(), quotaFable, now); blocked {
 					t.Fatal("partial poll recreated the cleared hold")
 				}
+				reload := func(interval string) *Auth {
+					cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+					cfg.Claude.Quota.PollInterval = interval
+					m.SetConfig(cfg)
+					auth, _ := m.GetByID(a)
+					return auth
+				}
+				auth := reload("2m")
+				if auth.Quota.Windows["Fable"].Utilization != 100 {
+					t.Fatal("test lost the retained exhausted-window observation")
+				}
+				if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, now); blocked {
+					t.Fatal("interval-only reload recreated the cleared hold from retained usage")
+				}
+				if registry.GetGlobalRegistry().IsModelSuspendedForClient(a, quotaFable) {
+					t.Fatal("interval-only reload suspended the cleared model in the registry")
+				}
 				shortReset := now.Add(5 * time.Minute)
 				windows["Additional"] = QuotaWindow{Utilization: 100, ResetsAt: shortReset}
 				if blocked, _, until := isAuthBlockedForModel(poll(), quotaFable, now); !blocked || !until.Equal(shortReset) {
@@ -160,6 +177,13 @@ func TestClaudeQuotaPartialPollDoesNotRestoreClearedHold(t *testing.T) {
 				delete(windows, "Additional")
 				if blocked, _, until := isAuthBlockedForModel(poll(), quotaFable, now); !blocked || !until.Equal(shortReset) {
 					t.Fatal("omitted windows did not retain exactly the newly owned hold")
+				}
+				if blocked, _, until := isAuthBlockedForModel(reload("3m"), quotaFable, now); !blocked || !until.Equal(shortReset) {
+					t.Fatal("reload did not retain exactly the newly owned hold")
+				}
+				windows["Fable"] = QuotaWindow{Utilization: 100, ResetsAt: now.Add(time.Hour)}
+				if blocked, _, until := isAuthBlockedForModel(poll(), quotaFable, now); !blocked || !until.Equal(now.Add(time.Hour)) {
+					t.Fatal("a fresh exhausted-window observation did not re-arm the hold")
 				}
 			})
 		}
@@ -459,6 +483,13 @@ func TestClaudeQuotaRestoredHoldPreservesUnknownLongerWindow(t *testing.T) {
 	base, _ := restored.GetByID(a)
 	if len(base.Quota.Windows) != 0 {
 		t.Fatal("restored runtime observations")
+	}
+	reloaded := restored.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+	reloaded.Claude.Quota.PollInterval = "2m"
+	restored.SetConfig(reloaded)
+	base, _ = restored.GetByID(a)
+	if !base.ModelStates[quotaFable].NextRetryAfter.Equal(long) {
+		t.Fatal("interval-only reload lost the restored hold")
 	}
 	restored.applyClaudeQuotaUsage(context.Background(), restored.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
 		"Additional": {Utilization: 100, ResetsAt: now.Add(time.Hour)},
@@ -872,17 +903,28 @@ func TestClaudeQuotaPollFailureDoesNotDisable(t *testing.T) {
 func TestClaudeQuotaPollCadenceDoesNotOverlapStalledSeat(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m, a, b := newClaudeQuotaManager(t)
+		reset := time.Now().Add(time.Minute)
+		applyTestClaudeQuota(m, a, 100, reset, time.Now())
+		applyTestClaudeQuota(m, b, 20, reset, time.Now())
+		seat, _ := m.GetByID(b)
+		if seat.QuotaRank(time.Now()) != 1 {
+			t.Fatal("test did not install the rank")
+		}
 		called := make(chan string, 8)
 		cancelled := make(chan error, 2)
+		complete := make(chan struct{})
 		m.RegisterExecutor(&claudeQuotaTestPoller{poll: func(ctx context.Context, auth *Auth) (map[string]QuotaWindow, error) {
-			if deadline, ok := ctx.Deadline(); !ok || !deadline.Equal(time.Now().Add(30*time.Second)) {
-				t.Error("usage read is missing its 30-second deadline")
+			if _, ok := ctx.Deadline(); ok {
+				t.Error("usage read has a total-request deadline")
 			}
 			called <- auth.ID
 			if auth.ID == a {
-				<-ctx.Done()
-				cancelled <- ctx.Err()
-				return nil, ctx.Err()
+				select {
+				case <-complete:
+				case <-ctx.Done():
+					cancelled <- ctx.Err()
+					return nil, ctx.Err()
+				}
 			}
 			return map[string]QuotaWindow{}, nil
 		}})
@@ -894,25 +936,38 @@ func TestClaudeQuotaPollCadenceDoesNotOverlapStalledSeat(t *testing.T) {
 		}
 		<-called
 		<-called
-		// synctest advances virtual time; the read gets its full deadline.
-		<-time.After(claudeQuotaPollTimeout / 2)
+		// Local expiry must recover both routing and rank while a read is hung.
+		<-time.After(time.Minute)
 		synctest.Wait()
 		if len(cancelled) != 0 {
-			t.Fatal("usage read timed out early")
+			t.Fatal("established usage read was cancelled by a timeout")
 		}
-		<-time.After(claudeQuotaPollTimeout / 2)
-		synctest.Wait()
-		if len(cancelled) != 1 || !errors.Is(<-cancelled, context.DeadlineExceeded) {
-			t.Fatal("stalled usage read did not time out")
+		seat, _ = m.GetByID(a)
+		if blocked, _, _ := isAuthBlockedForModel(seat, quotaFable, time.Now()); blocked {
+			t.Fatal("hung read prevented local hold expiry")
+		}
+		if registry.GetGlobalRegistry().IsModelSuspendedForClient(a, quotaFable) {
+			t.Fatal("hung read prevented registry recovery")
+		}
+		seat, _ = m.GetByID(b)
+		if seat.QuotaRank(time.Now()) != 0 || !seat.Quota.RankExpiresAt.IsZero() {
+			t.Fatal("hung read prevented local rank expiry")
 		}
 		if len(called) != 0 {
 			t.Fatal("poll overlapped an outstanding read")
 		}
-		// A timed-out seat is retried on the next normal poll tick.
-		<-time.After(5*time.Minute - claudeQuotaPollTimeout)
+		// The next tick still polls available seats without overlapping a hung read.
+		<-time.After(4 * time.Minute)
+		synctest.Wait()
+		if len(cancelled) != 0 || len(called) != 1 || <-called != b {
+			t.Fatal("next tick cancelled or overlapped the hung read, or skipped the other seat")
+		}
+		close(complete)
+		synctest.Wait()
+		<-time.After(5 * time.Minute)
 		synctest.Wait()
 		if len(called) != 2 {
-			t.Fatal("timed-out seat was not retried on the next tick")
+			t.Fatal("completed seat was not retried on the next tick")
 		}
 		seen := map[string]bool{<-called: true, <-called: true}
 		if !seen[a] || !seen[b] {

@@ -12,8 +12,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const claudeQuotaPollTimeout = 30 * time.Second
-
 // QuotaPoller observes usage without refreshing or otherwise changing credentials.
 type QuotaPoller interface {
 	PollQuota(context.Context, *Auth) (map[string]QuotaWindow, error)
@@ -80,8 +78,8 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 	expiry := time.NewTimer(time.Hour)
 	expiry.Stop()
 	defer expiry.Stop()
-	// One outstanding read per seat. Usage reads have a bounded lifetime so a
-	// stalled read cannot prevent that seat from being polled on later ticks.
+	// One outstanding read per seat. Per AGENTS.md, established upstream reads
+	// have no timeout; local expiry and other seats' polls proceed independently.
 	running := make(map[string]bool)
 	completed := make(chan string)
 	poll := func() {
@@ -103,9 +101,7 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 			}
 			running[auth.ID] = true
 			go func() {
-				pollCtx, cancel := context.WithTimeout(ctx, claudeQuotaPollTimeout)
-				windows, errPoll := poller.PollQuota(pollCtx, auth)
-				cancel()
+				windows, errPoll := poller.PollQuota(ctx, auth)
 				if errPoll != nil {
 					// Transport errors may contain proxy credentials. Never log the error.
 					log.WithField("auth_file", claudeQuotaName(auth)).Debug("claude quota: usage read failed")
@@ -568,7 +564,9 @@ func (m *Manager) updateClaudeQuotaConfig(previous, cfg *internalconfig.Config) 
 	var snapshots []*Auth
 	now := time.Now()
 	for _, auth := range m.auths {
-		if m.reconcileClaudeQuotaHoldsLocked(auth, cfg, auth.Quota.Windows, now) {
+		// Reload is not a new usage observation. Reconcile only live or restored
+		// ownership so retained windows cannot revive an explicitly cleared hold.
+		if m.reconcileClaudeQuotaHoldsLocked(auth, cfg, nil, now) {
 			changed = true
 			auth.Generation++
 			auth.UpdatedAt = now
