@@ -1049,8 +1049,19 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			isAuthActiveCooldown(auth, now) && auth.cooldownRecordedSeq > 0 && result.ExecutionSeq <= auth.cooldownRecordedSeq
 		// Long responses can finish after a newer poll or response established a
 		// guard hold. Their older headers cannot prove that hold has recovered.
-		if observeClaudeQuota && !headersObservedAt.IsZero() && isClaudeQuotaHold(modelState) && isModelStateActiveCooldown(modelState, now) && !headersObservedAt.After(modelState.UpdatedAt) {
-			retainModelCooldown = true
+		if observeClaudeQuota && !headersObservedAt.IsZero() && isClaudeQuotaHold(modelState) && isModelStateActiveCooldown(modelState, now) {
+			guardObservedAt := modelState.UpdatedAt
+			// A newer cap observation can keep the same deadline without
+			// changing the model state. Its window watermark still supersedes
+			// an older response's success or below-cap snapshot.
+			for window := range modelState.Quota.guardWindows {
+				if observedAt := auth.Quota.Windows[window].ObservedAt; observedAt.After(guardObservedAt) {
+					guardObservedAt = observedAt
+				}
+			}
+			if !headersObservedAt.After(guardObservedAt) {
+				retainModelCooldown = true
+			}
 		}
 
 		if result.Success {
@@ -1518,17 +1529,23 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 	}
 
-	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(result.AuthID)
-	reg := registry.GetGlobalRegistry()
-	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
-	for _, sm := range supportedModels {
-		if sm == nil || strings.TrimSpace(sm.ID) == "" {
-			continue
+	if quotaObserved {
+		// Include the observed credential even when rank recomputation returned
+		// no snapshots. Its old hold must never adopt a replacement's epoch.
+		m.publishClaudeQuotaSnapshots([]*Auth{authSnapshot})
+	} else {
+		supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(result.AuthID)
+		reg := registry.GetGlobalRegistry()
+		projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
+		for _, sm := range supportedModels {
+			if sm == nil || strings.TrimSpace(sm.ID) == "" {
+				continue
+			}
+			projections = append(projections, m.clientModelProjectionForAuth(authSnapshot, sm.ID, now))
 		}
-		projections = append(projections, m.clientModelProjectionForAuth(authSnapshot, sm.ID, now))
-	}
-	if authSnapshot != nil && len(projections) > 0 {
-		reg.ApplyClientModelProjections(result.AuthID, regEpoch, authSnapshot.Generation, projections)
+		if authSnapshot != nil && len(projections) > 0 {
+			reg.ApplyClientModelProjections(result.AuthID, regEpoch, authSnapshot.Generation, projections)
+		}
 	}
 
 	m.hook.OnResult(ctx, result)

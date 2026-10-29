@@ -100,6 +100,44 @@ func TestClaudeQuotaResponseHeadersNewestWindowWins(t *testing.T) {
 	}
 }
 
+func TestClaudeQuotaResponseHeadersNewerUsageWithSameDeadline(t *testing.T) {
+	for _, source := range []string{"header", "poll"} {
+		for _, seq := range []uint64{0, 1} {
+			t.Run(source+"/"+strconv.FormatUint(seq, 10), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					m, a, _ := newClaudeQuotaManager(t)
+					reset := time.Now().Add(time.Hour)
+					applyTestClaudeQuota(m, a, 100, reset, time.Now())
+					<-time.After(time.Second)
+					stale := claudeQuotaHeaderContext("7d_oi", "0", reset)
+					<-time.After(time.Second)
+					latestAt := time.Now()
+					if source == "poll" {
+						applyTestClaudeQuota(m, a, 100, reset, latestAt)
+					} else {
+						m.MarkResult(claudeQuotaHeaderContext("7d_oi", "1", reset), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, Success: true})
+					}
+					<-time.After(time.Second)
+					m.MarkResult(stale, Result{AuthID: a, Provider: "claude", Model: quotaFable, Success: true, ExecutionSeq: seq})
+					auth, _ := m.GetByID(a)
+					if blocked, _, until := isAuthBlockedForModel(auth, quotaFable, time.Now()); !blocked || !until.Equal(reset) {
+						t.Fatal("old success cleared a newer cap observation with the same deadline")
+					}
+					if window := auth.Quota.Windows["Fable"]; window.Utilization != 100 || !window.ObservedAt.Equal(latestAt) {
+						t.Fatalf("newest usage lost: %+v", window)
+					}
+					<-time.After(time.Second)
+					m.MarkResult(claudeQuotaHeaderContext("7d_oi", "0", reset), Result{AuthID: a, Provider: "claude", Model: quotaFable, Success: true, ExecutionSeq: seq})
+					auth, _ = m.GetByID(a)
+					if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, time.Now()); blocked {
+						t.Fatal("new below-cap response did not release the guard")
+					}
+				})
+			})
+		}
+	}
+}
+
 func TestClaudeQuotaResponseHeadersDoNotRearmClearedHold(t *testing.T) {
 	for _, clear := range []string{"reset", "success"} {
 		t.Run(clear, func(t *testing.T) {
@@ -130,6 +168,59 @@ func TestClaudeQuotaResponseHeadersDoNotRearmClearedHold(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+func TestClaudeQuotaResponseHeadersClearedWindowStaysClearUnderNewHold(t *testing.T) {
+	for _, clear := range []string{"reset", "success"} {
+		for _, source := range []string{"header", "poll"} {
+			t.Run(clear+"/"+source, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					m, a, _ := newClaudeQuotaManager(t)
+					cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+					cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {quotaFable}, "Additional": {quotaFable}}
+					m.SetConfig(cfg)
+					short, long := time.Now().Add(time.Hour), time.Now().Add(2*time.Hour)
+					applyTestClaudeQuota(m, a, 100, long, time.Now())
+					<-time.After(time.Second)
+					staleAt := time.Now()
+					stale := claudeQuotaHeaderContext("7d_oi", "1", long)
+					<-time.After(time.Second)
+					if clear == "reset" {
+						if _, _, errReset := m.ResetQuota(context.Background(), a); errReset != nil {
+							t.Fatal(errReset)
+						}
+					} else {
+						m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaFable, Success: true})
+					}
+					<-time.After(time.Second)
+					base, _ := m.GetByID(a)
+					m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+						"Additional": {Utilization: 100, ResetsAt: short},
+					}, time.Now())
+					<-time.After(time.Second)
+					if source == "header" {
+						m.MarkResult(stale, Result{AuthID: a, Provider: "claude", Model: quotaSonnet, Success: true})
+					} else {
+						base, _ = m.GetByID(a)
+						m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+							"Fable": {Utilization: 100, ResetsAt: long, ObservedAt: staleAt},
+						}, time.Now())
+					}
+					auth, _ := m.GetByID(a)
+					state := auth.ModelStates[quotaFable]
+					if !state.NextRetryAfter.Equal(short) || !state.Quota.guardWindows["Fable"].IsZero() {
+						t.Fatalf("delayed %s restored cleared window: %+v", source, state.Quota.guardWindows)
+					}
+					<-time.After(time.Second)
+					m.MarkResult(claudeQuotaHeaderContext("7d_oi", "1", long), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, Success: true})
+					auth, _ = m.GetByID(a)
+					if !auth.ModelStates[quotaFable].Quota.guardWindows["Fable"].Equal(long) {
+						t.Fatal("new observation did not restore its own window")
+					}
+				})
+			})
+		}
 	}
 }
 
@@ -250,6 +341,123 @@ func TestClaudeQuotaResponseHeadersAndPollAgree(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+func TestClaudeQuotaResponseHeadersDecimalCapBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		fraction string
+		percent  float64
+	}{{"0.58", 58}, {"0.29", 29}, {"0.57", 57}, {"0.0058", 0.58}, {"5.8e-1", 58}} {
+		t.Run(tc.fraction, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, a, _ := newClaudeQuotaManager(t)
+				cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+				cfg.Claude.Quota.WindowCaps = map[string]float64{"Fable": tc.percent}
+				m.SetConfig(cfg)
+				reset := time.Now().Add(time.Hour)
+				applyTestClaudeQuota(m, a, tc.percent, reset, time.Now())
+				<-time.After(time.Second)
+				m.MarkResult(claudeQuotaHeaderContext("7d_oi", tc.fraction, reset), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, Success: true})
+				auth, _ := m.GetByID(a)
+				if window := auth.Quota.Windows["Fable"]; window.Utilization != tc.percent {
+					t.Fatalf("header and poll disagree: utilization=%v cap=%v", window.Utilization, tc.percent)
+				}
+				if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, time.Now()); !blocked {
+					t.Fatal("equivalent at-cap header released the poll hold")
+				}
+				<-time.After(time.Second)
+				m.MarkResult(claudeQuotaHeaderContext("7d_oi", strconv.FormatFloat((tc.percent-0.01)/100, 'f', -1, 64), reset), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, Success: true})
+				auth, _ = m.GetByID(a)
+				if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, time.Now()); blocked {
+					t.Fatal("below-cap header retained the hold")
+				}
+			})
+		})
+	}
+}
+
+func TestClaudeQuotaResponseHeadersPublicationRejectsReplacement(t *testing.T) {
+	for _, rank := range []bool{false, true} {
+		t.Run(strconv.FormatBool(rank), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, a, _ := newClaudeQuotaManager(t)
+				cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+				cfg.Claude.Quota.PriorityAtReset = rank
+				m.SetConfig(cfg)
+				for i := 0; i < 5; i++ {
+					m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, Success: true})
+				}
+				store := &blockingCooldownStateStore{started: make(chan struct{}), release: make(chan struct{})}
+				m.SetCooldownStateStore(store)
+				defer func() {
+					select {
+					case <-store.release:
+					default:
+						close(store.release)
+					}
+				}()
+				ctx := claudeQuotaHeaderContext("7d_oi", "1", time.Now().Add(time.Hour))
+				completed := make(chan struct{})
+				go func() {
+					m.MarkResult(ctx, Result{AuthID: a, Provider: "claude", Model: quotaSonnet, Success: true})
+					close(completed)
+				}()
+				<-store.started
+				stale, _ := m.GetByID(a)
+				// Register replaces the existing credential with a new epoch and
+				// generation while the old result waits in cooldown persistence.
+				reg := registry.GetGlobalRegistry()
+				reg.UnregisterClient(a)
+				if _, errRegister := m.Register(context.Background(), &Auth{ID: a, Provider: "claude", Status: StatusActive, Metadata: map[string]any{"access_token": "replacement-access"}}); errRegister != nil {
+					t.Fatal(errRegister)
+				}
+				reg.RegisterClient(a, "claude", []*registry.ModelInfo{{ID: quotaFable}, {ID: quotaSonnet}})
+				fresh, _ := m.GetByID(a)
+				if fresh.RegistrationEpoch <= stale.RegistrationEpoch || fresh.Generation >= stale.Generation {
+					t.Fatal("test did not replace the registration and reset generation")
+				}
+				close(store.release)
+				<-completed
+				if reg.IsModelSuspendedForClient(a, quotaFable) || reg.IsModelQuotaExceededForClient(a, quotaFable) {
+					t.Fatal("old header hold was published onto the replacement")
+				}
+				m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaFable, CredentialVersion: fresh.CredentialVersion, RegistrationEpoch: fresh.RegistrationEpoch, Error: &Error{HTTPStatus: 404, Message: "replacement failure"}})
+				if !reg.IsModelSuspendedForClient(a, quotaFable) {
+					current, _ := m.GetByID(a)
+					t.Fatalf("fresh registry publication missing: generation=%d state=%+v", current.Generation, current.ModelStates[quotaFable])
+				}
+			})
+		})
+	}
+}
+
+func TestClaudeQuotaExpiredSevenDayWatermarkDoesNotRank(t *testing.T) {
+	m, a, b := newClaudeQuotaManager(t)
+	now := time.Now()
+	for _, id := range []string{a, b} {
+		sevenDay := now.Add(time.Minute)
+		if id == b {
+			sevenDay = now.Add(2 * time.Hour)
+		}
+		base, _ := m.GetByID(id)
+		m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+			"Fable": {Utilization: 0, ResetsAt: now.Add(time.Hour)}, "seven_day": {Utilization: 0, ResetsAt: sevenDay},
+		}, now)
+	}
+	first, _ := m.GetByID(a)
+	if first.QuotaRank(now) != 1 {
+		t.Fatal("earlier active seven-day window did not win the tie")
+	}
+	later := now.Add(2 * time.Minute)
+	m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), first, nil, later)
+	first, _ = m.GetByID(a)
+	second, _ := m.GetByID(b)
+	if first.QuotaRank(later) != 0 || second.QuotaRank(later) != 1 {
+		t.Fatal("expired seven-day watermark still wins the ranking tie")
+	}
+	if !first.Quota.Windows["seven_day"].ResetsAt.Equal(now.Add(time.Minute)) {
+		t.Fatal("expiry discarded the observation ordering watermark")
 	}
 }
 

@@ -374,7 +374,12 @@ func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfi
 				if at, ok := beforeResult[model]; ok {
 					updatedAt = at
 				}
-				fresh := exists && (isClaudeQuotaHold(owned) && isModelStateActiveCooldown(owned, now) || usage.ObservedAt.After(updatedAt))
+				// A hold for another window does not own this window's deadline.
+				// Delayed observations must not restore a cleared window merely
+				// because a newer observation has since held the same model again.
+				ownsWindow := isClaudeQuotaHold(owned) && isModelStateActiveCooldown(owned, now) &&
+					(owned.Quota.guardWindows == nil || owned.Quota.guardWindows[window].After(now))
+				fresh := exists && (ownsWindow || usage.ObservedAt.After(updatedAt))
 				if fresh {
 					if usage.Utilization >= quota.CapFor(window) {
 						reset = usage.ResetsAt
@@ -537,7 +542,11 @@ func (m *Manager) recomputeClaudeQuotaRanksLocked(cfg *internalconfig.Config, no
 					ready = ready || !blocked
 				}
 				if ready && (best.auth == nil || usage.ResetsAt.Before(best.reset) || usage.ResetsAt.Equal(best.reset) && window < best.window) {
-					best = candidate{auth, usage.ResetsAt, auth.Quota.Windows["seven_day"].ResetsAt, window}
+					sevenDay := auth.Quota.Windows["seven_day"].ResetsAt
+					if !sevenDay.After(now) {
+						sevenDay = time.Time{}
+					}
+					best = candidate{auth, usage.ResetsAt, sevenDay, window}
 				}
 			}
 			if best.auth != nil {

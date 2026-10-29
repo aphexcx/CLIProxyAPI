@@ -21,8 +21,13 @@ func claudeQuotaHeaderWindows(headers http.Header, observedAt time.Time) map[str
 	} {
 		prefix := "Anthropic-Ratelimit-Unified-" + mapping.header
 		fraction, errParse := strconv.ParseFloat(signals[http.CanonicalHeaderKey(prefix+"-Utilization")], 64)
-		percent := fraction * 100
-		if errParse != nil || math.IsNaN(percent) || math.IsInf(percent, 0) || percent < 0 {
+		if errParse != nil {
+			continue
+		}
+		// Scale the decimal before converting back to float, so a header of
+		// 0.58 agrees with usage-body utilization 58 at the configured cap.
+		percent, errPercent := strconv.ParseFloat(strconv.FormatFloat(fraction, 'f', -1, 64)+"e2", 64)
+		if errPercent != nil || math.IsNaN(percent) || math.IsInf(percent, 0) || percent < 0 {
 			continue
 		}
 		rawReset := signals[http.CanonicalHeaderKey(prefix+"-Reset")]
