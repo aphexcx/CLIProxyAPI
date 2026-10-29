@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -62,6 +63,38 @@ func TestFetchOAuthUsageCurrentTokenOnly(t *testing.T) {
 	windows, errFetch := auth.FetchOAuthUsage(context.Background(), "test-access")
 	if errFetch != nil || calls != 1 || windows["Fable"].Utilization != 100 {
 		t.Fatalf("calls=%d windows=%v err=%v", calls, windows, errFetch)
+	}
+}
+
+func TestParseOAuthUsageScopedModel(t *testing.T) {
+	// Synthetic fixture built from the round-12 sidecar body-shape report;
+	// this is not a captured account response and contains no credentials.
+	body, errRead := os.ReadFile("testdata/oauth_usage_scoped_limits.json")
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	reset := time.Date(2026, 11, 2, 2, 59, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name, body string
+		want       map[string]OAuthUsageWindow
+	}{
+		{"documented live shape", string(body), map[string]OAuthUsageWindow{"five_hour": {Utilization: 100, ResetsAt: reset}, "seven_day": {Utilization: 100, ResetsAt: reset}, "Fable": {Utilization: 100, ResetsAt: reset}}},
+		{"nested name wins", `{"limits":[{"scope":{"model":{"display_name":" Fable "}},"display_name":"Other","percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"Fable": {Utilization: 100, ResetsAt: reset}}},
+		{"missing model uses legacy name", `{"limits":[{"scope":{},"display_name":" Fable ","percent":0,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"Fable": {ResetsAt: reset}}},
+		{"null model uses legacy name", `{"limits":[{"scope":{"model":null},"display_name":"Fable","percent":0,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"Fable": {ResetsAt: reset}}},
+		{"present unnamed model does not fall back", `{"limits":[{"scope":{"model":{"display_name":" "}},"display_name":"Fable","percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}},
+		{"utilization fallback", `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"utilization":99.5,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"Fable": {Utilization: 99.5, ResetsAt: reset}}},
+		{"legacy utilization fallback", `{"limits":[{"display_name":"Fable","utilization":99.5,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"Fable": {Utilization: 99.5, ResetsAt: reset}}},
+		{"zero percent wins over utilization", `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":0,"utilization":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"Fable": {ResetsAt: reset}}},
+		{"invalid percent does not fall back", `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":-1,"utilization":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}},
+		{"nested reserved name", `{"limits":[{"scope":{"model":{"display_name":" five_hour "}},"percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, errParse := parseOAuthUsage([]byte(tc.body))
+			if errParse != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("windows=%v err=%v, want %v", got, errParse, tc.want)
+			}
+		})
 	}
 }
 

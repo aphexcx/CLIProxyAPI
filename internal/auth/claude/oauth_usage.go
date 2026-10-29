@@ -21,6 +21,11 @@ func parseOAuthUsage(body []byte) (map[string]OAuthUsageWindow, error) {
 		Percent     *float64 `json:"percent"`
 		ResetsAt    string   `json:"resets_at"`
 		DisplayName string   `json:"display_name"`
+		Scope       struct {
+			Model *struct {
+				DisplayName string `json:"display_name"`
+			} `json:"model"`
+		} `json:"scope"`
 	}
 	var payload struct {
 		FiveHour *usageWindow  `json:"five_hour"`
@@ -49,10 +54,17 @@ func parseOAuthUsage(body []byte) (map[string]OAuthUsageWindow, error) {
 	}
 	for _, window := range payload.Limits {
 		name := strings.TrimSpace(window.DisplayName)
+		if window.Scope.Model != nil {
+			name = strings.TrimSpace(window.Scope.Model.DisplayName)
+		}
 		if name == "" || name == "five_hour" || name == "seven_day" {
 			continue
 		}
-		add(name, &window, window.Percent)
+		percent := window.Percent
+		if percent == nil {
+			percent = window.Utilization
+		}
+		add(name, &window, percent)
 	}
 	return windows, nil
 }
