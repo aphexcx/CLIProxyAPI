@@ -417,10 +417,15 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 		UpdatedAt:      updatedAt,
 	}
 	// As with live window ownership below, a live clear wins over an older
-	// or equally recent guard record. Upstream-owned cooldowns still merge.
-	if isClaudeQuotaHold(restored) && !restored.UpdatedAt.After(state.UpdatedAt) &&
-		!isModelStateActiveCooldown(state, now) {
-		return false
+	// or equally recent guard layer, including one saved beneath a credential
+	// wrap. Only the guard layer is rejected; upstream-owned cooldowns merge.
+	if !isModelStateActiveCooldown(state, now) {
+		if isClaudeQuotaHold(restored) && !restored.UpdatedAt.After(state.UpdatedAt) {
+			return false
+		}
+		if isClaudeQuotaHold(record.IndependentState) && !record.IndependentState.UpdatedAt.After(state.UpdatedAt) {
+			record.IndependentState = nil
+		}
 	}
 	// Candidate independent layers for a wrapped record: the live shadow, or
 	// — when the live state is still unwrapped — the live state itself (a
