@@ -23,12 +23,13 @@ func TestParseOAuthUsage(t *testing.T) {
 		want       map[string]OAuthUsageWindow
 		fail       bool
 	}{
-		{"all windows", `{"five_hour":{"utilization":12.5,"resets_at":"2026-11-02T02:59:00Z"},"seven_day":{"utilization":100,"resets_at":"2026-11-02T02:59:00Z"},"limits":[{"display_name":"Fable","percent":100.5,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"five_hour": {Utilization: 12.5, ResetsAt: reset}, "seven_day": {Utilization: 100, ResetsAt: reset}, "Fable": {Utilization: 100.5, ResetsAt: reset}}, false},
-		{"zero is valid", `{"limits":[{"display_name":"Fable","percent":0,"resets_at":"2026-11-02T02:59:00.000Z"}]}`, map[string]OAuthUsageWindow{"Fable": {Utilization: 0, ResetsAt: reset}}, false},
-		{"missing is not zero", `{"five_hour":null,"limits":[{"display_name":"Fable","resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}, false},
+		{"top-level name skipped with account windows retained", `{"five_hour":{"utilization":12.5,"resets_at":"2026-11-02T02:59:00Z"},"seven_day":{"utilization":100,"resets_at":"2026-11-02T02:59:00Z"},"limits":[{"display_name":"Fable","percent":100.5,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"five_hour": {Utilization: 12.5, ResetsAt: reset}, "seven_day": {Utilization: 100, ResetsAt: reset}}, false},
+		{"top-level zero skipped", `{"limits":[{"display_name":"Fable","percent":0,"resets_at":"2026-11-02T02:59:00.000Z"}]}`, map[string]OAuthUsageWindow{}, false},
+		{"zero is valid", `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":0,"resets_at":"2026-11-02T02:59:00.000Z"}]}`, map[string]OAuthUsageWindow{"Fable": {Utilization: 0, ResetsAt: reset}}, false},
+		{"missing is not zero", `{"five_hour":null,"limits":[{"scope":{"model":{"display_name":"Fable"}},"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}, false},
 		{"invalid reset and negative usage", `{"five_hour":{"utilization":99,"resets_at":"invalid"},"seven_day":{"utilization":-1,"resets_at":"2026-11-02T02:59:00Z"}}`, map[string]OAuthUsageWindow{}, false},
-		{"invalid longer model window is omitted", `{"limits":[{"display_name":"Fable","percent":100,"resets_at":"2026-11-02T02:59:00Z"},{"display_name":"Additional","percent":100,"resets_at":"invalid"}]}`, map[string]OAuthUsageWindow{"Fable": {Utilization: 100, ResetsAt: reset}}, false},
-		{"reserved name", `{"limits":[{"display_name":"five_hour","percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}, false},
+		{"invalid longer model window is omitted", `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":100,"resets_at":"2026-11-02T02:59:00Z"},{"scope":{"model":{"display_name":"Additional"}},"percent":100,"resets_at":"invalid"}]}`, map[string]OAuthUsageWindow{"Fable": {Utilization: 100, ResetsAt: reset}}, false},
+		{"reserved name", `{"limits":[{"scope":{"model":{"display_name":"five_hour"}},"percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}, false},
 		{"malformed", `{"secret":`, nil, true},
 		{"null", `null`, nil, true},
 		{"wrong percentage type", `{"five_hour":{"utilization":"secret"}}`, nil, true},
@@ -58,7 +59,7 @@ func TestFetchOAuthUsageCurrentTokenOnly(t *testing.T) {
 		if _, ok := req.Context().Deadline(); ok {
 			t.Fatal("usage read added a deadline")
 		}
-		return jsonResponse(req, `{"limits":[{"display_name":"Fable","percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`), nil
+		return jsonResponse(req, `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`), nil
 	})}}
 	windows, errFetch := auth.FetchOAuthUsage(context.Background(), "test-access")
 	if errFetch != nil || calls != 1 || windows["Fable"].Utilization != 100 {
@@ -80,11 +81,13 @@ func TestParseOAuthUsageScopedModel(t *testing.T) {
 	}{
 		{"documented live shape", string(body), map[string]OAuthUsageWindow{"five_hour": {Utilization: 100, ResetsAt: reset}, "seven_day": {Utilization: 100, ResetsAt: reset}, "Fable": {Utilization: 100, ResetsAt: reset}}},
 		{"nested name wins", `{"limits":[{"scope":{"model":{"display_name":" Fable "}},"display_name":"Other","percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"Fable": {Utilization: 100, ResetsAt: reset}}},
-		{"missing model uses legacy name", `{"limits":[{"scope":{},"display_name":" Fable ","percent":0,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"Fable": {ResetsAt: reset}}},
-		{"null model uses legacy name", `{"limits":[{"scope":{"model":null},"display_name":"Fable","percent":0,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"Fable": {ResetsAt: reset}}},
-		{"present unnamed model does not fall back", `{"limits":[{"scope":{"model":{"display_name":" "}},"display_name":"Fable","percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}},
+		{"missing model is skipped", `{"limits":[{"scope":{},"display_name":" Fable ","percent":0,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}},
+		{"null model is skipped", `{"limits":[{"scope":{"model":null},"display_name":"Fable","percent":0,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}},
+		{"null scope is skipped", `{"limits":[{"scope":null,"display_name":"Fable","percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}},
+		{"unnamed model is skipped", `{"limits":[{"scope":{"model":{}},"display_name":"Fable","percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}},
+		{"blank model name is skipped", `{"limits":[{"scope":{"model":{"display_name":" "}},"display_name":"Fable","percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}},
 		{"utilization fallback", `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"utilization":99.5,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"Fable": {Utilization: 99.5, ResetsAt: reset}}},
-		{"legacy utilization fallback", `{"limits":[{"display_name":"Fable","utilization":99.5,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"Fable": {Utilization: 99.5, ResetsAt: reset}}},
+		{"top-level name with utilization is skipped", `{"limits":[{"display_name":"Fable","utilization":99.5,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}},
 		{"zero percent wins over utilization", `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":0,"utilization":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"Fable": {ResetsAt: reset}}},
 		{"invalid percent does not fall back", `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":-1,"utilization":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}},
 		{"nested reserved name", `{"limits":[{"scope":{"model":{"display_name":" five_hour "}},"percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}},
@@ -116,7 +119,7 @@ func TestClaudeQuotaUsageCapturesReceiptBeforeBody(t *testing.T) {
 		auth := &ClaudeAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			resp := jsonResponse(req, "")
 			resp.Body = io.NopCloser(&delayedUsageBody{
-				Reader:  strings.NewReader(`{"limits":[{"display_name":"Fable","percent":0,"resets_at":"2026-11-02T02:59:00Z"}]}`),
+				Reader:  strings.NewReader(`{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":0,"resets_at":"2026-11-02T02:59:00Z"}]}`),
 				release: bodyReady,
 			})
 			return resp, nil
@@ -162,7 +165,7 @@ func TestClaudeQuotaDelayedUsageBodyCannotReleaseHeaderHold(t *testing.T) {
 		usage := &ClaudeAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			resp := jsonResponse(req, "")
 			resp.Body = io.NopCloser(&delayedUsageBody{
-				Reader:  strings.NewReader(`{"limits":[{"display_name":"Fable","percent":0,"resets_at":"2026-11-02T02:59:00Z"}]}`),
+				Reader:  strings.NewReader(`{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":0,"resets_at":"2026-11-02T02:59:00Z"}]}`),
 				release: bodyReady,
 			})
 			return resp, nil
