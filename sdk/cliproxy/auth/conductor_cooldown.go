@@ -479,14 +479,15 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 			state.credentialQuotaShadow = liveShadow
 		}
 	}
-	// Restoring the same or older aggregate hold must not discard live window
-	// ownership. Otherwise reconciliation gives every window the longest reset.
+	// The merge retains the newest state timestamp but the longest deadline.
+	// Preserve live window ownership when its state is at least as recent,
+	// even if a poll shortened the hold while the older record was loading.
 	guard := state
 	if !isClaudeQuotaHold(guard) {
 		guard = state.credentialQuotaShadow
 	}
 	if isClaudeQuotaHold(guard) && isClaudeQuotaHold(liveShadow) &&
-		!guard.UpdatedAt.After(liveShadow.UpdatedAt) && guard.NextRetryAfter.Equal(liveShadow.NextRetryAfter) {
+		!guard.UpdatedAt.After(liveShadow.UpdatedAt) {
 		guard.Quota.guardWindows = liveShadow.Quota.guardWindows
 	}
 	auth.Generation++

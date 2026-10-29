@@ -600,6 +600,126 @@ func TestClaudeQuotaRestorePreservesLiveWindowDeadlines(t *testing.T) {
 	}
 }
 
+type delayedClaudeQuotaLoadStore struct {
+	recordingCooldownStateStore
+	loaded  chan struct{}
+	release chan struct{}
+}
+
+func (s *delayedClaudeQuotaLoadStore) Load(ctx context.Context) ([]CooldownStateRecord, error) {
+	records, errLoad := s.recordingCooldownStateStore.Load(ctx)
+	close(s.loaded)
+	select {
+	case <-s.release:
+		return records, errLoad
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestClaudeQuotaDelayedRestorePreservesNewerLiveWindowOwnership(t *testing.T) {
+	for _, wrapped := range []bool{false, true} {
+		for _, newerRecord := range []bool{false, true} {
+			t.Run(fmt.Sprintf("wrapped=%t/newer_record=%t", wrapped, newerRecord), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					m, a, _ := newClaudeQuotaManager(t)
+					cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+					cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {quotaFable}, "Additional": {quotaFable}}
+					m.SetConfig(cfg)
+					store := &recordingCooldownStateStore{}
+					m.SetCooldownStateStore(store)
+					now := time.Now()
+					long, short := now.Add(2*time.Hour), now.Add(time.Hour)
+					base, _ := m.GetByID(a)
+					m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+						"Fable": {Utilization: 100, ResetsAt: long}, "Additional": {Utilization: 100, ResetsAt: short},
+					}, now)
+					if wrapped {
+						delay := 3 * time.Hour
+						m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, RetryAfter: &delay, CredentialScope: true, Error: &Error{HTTPStatus: 429}})
+					}
+					// Persisted records have no runtime per-window ownership.
+					data, errMarshal := json.Marshal(store.savedRecords())
+					if errMarshal != nil {
+						t.Fatal(errMarshal)
+					}
+					var records []CooldownStateRecord
+					if errUnmarshal := json.Unmarshal(data, &records); errUnmarshal != nil {
+						t.Fatal(errUnmarshal)
+					}
+					if newerRecord {
+						// A genuinely newer saved state must retain the conservative
+						// aggregate fallback instead of using older live ownership.
+						for i := range records {
+							records[i].UpdatedAt = now.Add(2 * time.Second)
+							if records[i].IndependentState != nil {
+								records[i].IndependentState.UpdatedAt = now.Add(2 * time.Second)
+							}
+						}
+					}
+					delayed := &delayedClaudeQuotaLoadStore{
+						recordingCooldownStateStore: recordingCooldownStateStore{load: records},
+						loaded:                      make(chan struct{}),
+						release:                     make(chan struct{}),
+					}
+					m.SetCooldownStateStore(delayed)
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					done := make(chan error, 1)
+					go func() { done <- m.RestoreCooldownStates(ctx) }()
+					<-delayed.loaded
+					<-time.After(time.Second)
+					base, _ = m.GetByID(a)
+					m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+						"Fable": {Utilization: 0, ResetsAt: long},
+					}, time.Now())
+					auth, _ := m.GetByID(a)
+					owned, _ := claudeQuotaHoldLayer(auth, auth.ModelStates[quotaFable], time.Now())
+					if !isClaudeQuotaHold(owned) || !owned.NextRetryAfter.Equal(short) {
+						t.Fatalf("partial usage update did not shorten the live hold: %+v", owned)
+					}
+					close(delayed.release)
+					if errRestore := <-done; errRestore != nil {
+						t.Fatal(errRestore)
+					}
+					want := short
+					if newerRecord {
+						want = long
+					}
+					auth, _ = m.GetByID(a)
+					owned, _ = claudeQuotaHoldLayer(auth, auth.ModelStates[quotaFable], time.Now())
+					if !isClaudeQuotaHold(owned) || !owned.NextRetryAfter.Equal(want) || !owned.Quota.NextRecoverAt.Equal(want) {
+						t.Fatalf("restore lost the newer hold deadline: got %+v, want %v", owned, want)
+					}
+					if _, exists := owned.Quota.guardWindows["Fable"]; exists || len(owned.Quota.guardWindows) != 1 || !owned.Quota.guardWindows["Additional"].Equal(want) {
+						t.Fatalf("restore changed window ownership: %v", owned.Quota.guardWindows)
+					}
+					if blocked, _, _ := isAuthBlockedForModel(auth, quotaSonnet, time.Now()); blocked != wrapped {
+						t.Fatal("restore changed independent credential cooldown ownership")
+					}
+					found := false
+					for _, record := range delayed.savedRecords() {
+						if record.AuthID != a || record.Model != quotaFable {
+							continue
+						}
+						found = true
+						deadline := record.NextRetryAfter
+						if wrapped && record.IndependentState != nil {
+							deadline = record.IndependentState.NextRetryAfter
+						}
+						if !deadline.Equal(want) {
+							t.Fatalf("persisted deadline = %v, want %v", deadline, want)
+						}
+					}
+					if !found {
+						t.Fatal("remaining hold was not persisted")
+					}
+				})
+			})
+		}
+	}
+}
+
 func TestClaudeQuotaRestoredHoldPreservesUnknownLongerWindow(t *testing.T) {
 	m, a, _ := newClaudeQuotaManager(t)
 	cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
