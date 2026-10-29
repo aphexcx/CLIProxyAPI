@@ -925,12 +925,22 @@ func TestClaudeQuotaDelayedRestoreDoesNotRearmClearedWrappedHold(t *testing.T) {
 					if auth.Quota.Reason != "credential_quota" || !auth.Quota.NextRecoverAt.Equal(now.Add(delay)) || state.Quota.Reason != "credential_quota" {
 						t.Fatal("restore lost the upstream-owned credential cooldown")
 					}
+					wantDeadline := now.Add(delay)
+					if wantShadow {
+						wantDeadline = long
+					}
+					if !state.NextRetryAfter.Equal(wantDeadline) || !state.Quota.NextRecoverAt.Equal(wantDeadline) {
+						t.Errorf("restored model deadlines retry=%v recover=%v, want %v", state.NextRetryAfter, state.Quota.NextRecoverAt, wantDeadline)
+					}
 					found = false
 					for _, record := range delayed.savedRecords() {
 						if record.AuthID == a && record.Model == quotaFable {
 							found = true
 							if (record.IndependentState != nil) != wantShadow {
 								t.Fatalf("persisted independent state=%+v, want present=%t", record.IndependentState, wantShadow)
+							}
+							if !record.NextRetryAfter.Equal(wantDeadline) || !record.Quota.NextRecoverAt.Equal(wantDeadline) {
+								t.Errorf("persisted model retained a rejected deadline: %+v", record)
 							}
 						}
 					}
@@ -943,17 +953,76 @@ func TestClaudeQuotaDelayedRestoreDoesNotRearmClearedWrappedHold(t *testing.T) {
 						}
 						return
 					}
-					// Omitted windows and the end of the 90-minute wrap must never
-					// promote the rejected two-hour guard layer back into a hold.
-					<-time.After(delay)
+					// Route through the real selector on both sides of the wrap's
+					// expiry, before a poll could mask a stale aggregate deadline.
+					selector := &FillFirstSelector{}
+					<-time.After(time.Until(now.Add(delay - time.Second)))
+					if picked, errPick := selector.Pick(context.Background(), "claude", quotaFable, cliproxyexecutor.Options{}, []*Auth{auth}); errPick == nil || picked != nil {
+						t.Fatal("selector ignored the surviving credential cooldown")
+					}
+					<-time.After(2 * time.Second)
+					if picked, errPick := selector.Pick(context.Background(), "claude", quotaFable, cliproxyexecutor.Options{}, []*Auth{auth}); errPick != nil || picked == nil || picked.ID != a {
+						t.Errorf("selector still blocked after the credential cooldown expired: auth=%v err=%v", picked, errPick)
+					}
+					// An omitted-window poll must not promote or re-persist the
+					// rejected two-hour guard layer after the wrap expires.
 					m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), auth, map[string]QuotaWindow{}, time.Now())
 					auth, _ = m.GetByID(a)
 					if isClaudeQuotaHold(auth.ModelStates[quotaFable]) || auth.ModelStates[quotaFable].credentialQuotaShadow != nil {
 						t.Fatal("expired wrap promoted the cleared guard hold")
 					}
+					m.persistCooldownStates(context.Background())
+					if len(delayed.savedRecords()) != 0 {
+						t.Fatalf("expired wrap re-persisted a cooldown: %+v", delayed.savedRecords())
+					}
+					if picked, errPick := selector.Pick(context.Background(), "claude", quotaFable, cliproxyexecutor.Options{}, []*Auth{auth}); errPick != nil || picked == nil || picked.ID != a {
+						t.Fatalf("poll re-armed a cleared cooldown: auth=%v err=%v", picked, errPick)
+					}
 				})
 			})
 		}
+	}
+}
+
+func TestClaudeQuotaRejectedWrappedHoldRequiresSurvivingCredentialCooldown(t *testing.T) {
+	for _, saved := range []string{"missing credential", "expired credential"} {
+		t.Run(saved, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, a, _ := newClaudeQuotaManager(t)
+				store := &recordingCooldownStateStore{}
+				m.SetCooldownStateStore(store)
+				now := time.Now()
+				applyTestClaudeQuota(m, a, 100, now.Add(2*time.Hour), now)
+				delay := 90 * time.Minute
+				m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, RetryAfter: &delay, CredentialScope: true, Error: &Error{HTTPStatus: 429}})
+				var records []CooldownStateRecord
+				for _, record := range store.savedRecords() {
+					if record.Model == quotaFable {
+						records = append(records, record)
+					} else if record.Model == "" && saved == "expired credential" {
+						record.NextRetryAfter = now
+						record.Quota.NextRecoverAt = now
+						records = append(records, record)
+					}
+				}
+				<-time.After(time.Second)
+				if _, _, errReset := m.ResetQuota(context.Background(), a); errReset != nil {
+					t.Fatal(errReset)
+				}
+				store.load = records
+				if errRestore := m.RestoreCooldownStates(context.Background()); errRestore != nil {
+					t.Fatal(errRestore)
+				}
+				auth, _ := m.GetByID(a)
+				selector := &FillFirstSelector{}
+				if picked, errPick := selector.Pick(context.Background(), "claude", quotaFable, cliproxyexecutor.Options{}, []*Auth{auth}); errPick != nil || picked == nil || picked.ID != a {
+					t.Fatalf("rejected guard aggregate restored without a surviving credential deadline: auth=%v err=%v", picked, errPick)
+				}
+				if len(store.savedRecords()) != 0 || auth.ModelStates[quotaFable].credentialQuotaShadow != nil {
+					t.Fatal("restore persisted the rejected wrapped guard")
+				}
+			})
+		})
 	}
 }
 

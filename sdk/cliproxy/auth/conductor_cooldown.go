@@ -327,15 +327,27 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 
 	now := time.Now()
 	authLevelRecords := make([]CooldownStateRecord, 0)
+	credentialDeadlines := make(map[string]time.Time)
 	snapshotsByID := make(map[string]*Auth)
+	for _, record := range records {
+		if strings.TrimSpace(record.Model) == "" {
+			authLevelRecords = append(authLevelRecords, record)
+			if record.Quota.Exceeded && record.Quota.Reason == "credential_quota" {
+				deadline := record.Quota.NextRecoverAt
+				if deadline.IsZero() {
+					deadline = record.NextRetryAfter
+				}
+				credentialDeadlines[strings.TrimSpace(record.AuthID)] = deadline
+			}
+		}
+	}
 
 	m.mu.Lock()
 	for _, record := range records {
 		if strings.TrimSpace(record.Model) == "" {
-			authLevelRecords = append(authLevelRecords, record)
 			continue
 		}
-		if m.restoreCooldownRecordLocked(record, now) {
+		if m.restoreCooldownRecordWithCredentialDeadlineLocked(record, now, credentialDeadlines[strings.TrimSpace(record.AuthID)]) {
 			if auth := m.auths[strings.TrimSpace(record.AuthID)]; auth != nil {
 				snapshotsByID[auth.ID] = auth.Clone()
 			}
@@ -372,6 +384,10 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 }
 
 func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now time.Time) bool {
+	return m.restoreCooldownRecordWithCredentialDeadlineLocked(record, now, time.Time{})
+}
+
+func (m *Manager) restoreCooldownRecordWithCredentialDeadlineLocked(record CooldownStateRecord, now, credentialDeadline time.Time) bool {
 	authID := strings.TrimSpace(record.AuthID)
 	if authID == "" || record.NextRetryAfter.IsZero() || !record.NextRetryAfter.After(now) {
 		return false
@@ -425,6 +441,14 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 		}
 		if isClaudeQuotaHold(record.IndependentState) && !record.IndependentState.UpdatedAt.After(state.UpdatedAt) {
 			record.IndependentState = nil
+			// The model's saved deadlines include the rejected guard layer.
+			// Only the companion auth record carries the wrap's own deadline;
+			// without a surviving wrap, the aggregate cannot restore a block.
+			if !credentialDeadline.After(now) {
+				return false
+			}
+			restored.NextRetryAfter = credentialDeadline
+			restored.Quota.NextRecoverAt = credentialDeadline
 		}
 	}
 	// Candidate independent layers for a wrapped record: the live shadow, or
