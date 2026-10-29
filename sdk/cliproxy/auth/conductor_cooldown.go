@@ -407,6 +407,21 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 	}
 
 	state := ensureModelState(auth, model)
+	restored := &ModelState{
+		Unavailable:    true,
+		Status:         StatusError,
+		StatusMessage:  reason,
+		NextRetryAfter: record.NextRetryAfter,
+		Quota:          quota,
+		LastError:      cloneError(record.LastError),
+		UpdatedAt:      updatedAt,
+	}
+	// As with live window ownership below, a live clear wins over an older
+	// or equally recent guard record. Upstream-owned cooldowns still merge.
+	if isClaudeQuotaHold(restored) && !restored.UpdatedAt.After(state.UpdatedAt) &&
+		!isModelStateActiveCooldown(state, now) {
+		return false
+	}
 	// Candidate independent layers for a wrapped record: the live shadow, or
 	// — when the live state is still unwrapped — the live state itself (a
 	// delayed store load must never erase a newer independent cooldown that
@@ -421,15 +436,7 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 	}
 	wasLiveWrapped := state.credentialQuotaPropagated || state.Quota.Reason == "credential_quota" ||
 		(auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now))
-	mergeModelState(state, &ModelState{
-		Unavailable:    true,
-		Status:         StatusError,
-		StatusMessage:  reason,
-		NextRetryAfter: record.NextRetryAfter,
-		Quota:          quota,
-		LastError:      cloneError(record.LastError),
-		UpdatedAt:      updatedAt,
-	})
+	mergeModelState(state, restored)
 	// The persisted independent layer joins the merge newest-wins; a newer
 	// live independent layer (shadow or freshly captured unwrapped state,
 	// e.g. an own failure recorded during a delayed store load) is never

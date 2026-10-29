@@ -720,6 +720,115 @@ func TestClaudeQuotaDelayedRestorePreservesNewerLiveWindowOwnership(t *testing.T
 	}
 }
 
+func TestClaudeQuotaDelayedRestoreDoesNotRearmClearedHold(t *testing.T) {
+	for _, mode := range []string{"manual reset", "successful request"} {
+		for _, saved := range []string{"older guard", "tied guard", "newer guard", "older upstream"} {
+			t.Run(mode+"/"+saved, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					m, a, b := newClaudeQuotaManager(t)
+					m.Remove(context.Background(), b)
+					cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+					cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {quotaFable}, "Additional": {quotaFable}}
+					m.SetConfig(cfg)
+					store := &recordingCooldownStateStore{}
+					m.SetCooldownStateStore(store)
+					now := time.Now()
+					long, short := now.Add(2*time.Hour), now.Add(time.Hour)
+					base, _ := m.GetByID(a)
+					m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+						"Fable": {Utilization: 100, ResetsAt: long}, "Additional": {Utilization: 100, ResetsAt: short},
+					}, now)
+					data, errMarshal := json.Marshal(store.savedRecords())
+					if errMarshal != nil {
+						t.Fatal(errMarshal)
+					}
+					var records []CooldownStateRecord
+					if errUnmarshal := json.Unmarshal(data, &records); errUnmarshal != nil {
+						t.Fatal(errUnmarshal)
+					}
+					if len(records) != 1 || records[0].Model != quotaFable || !records[0].NextRetryAfter.Equal(long) {
+						t.Fatalf("expected the saved two-window hold, got %+v", records)
+					}
+					switch saved {
+					case "tied guard":
+						records[0].UpdatedAt = now.Add(time.Second)
+					case "newer guard":
+						records[0].UpdatedAt = now.Add(2 * time.Second)
+					case "older upstream":
+						records[0].Quota.Reason = "quota"
+						records[0].LastError = &Error{HTTPStatus: 429}
+					}
+					delayed := &delayedClaudeQuotaLoadStore{
+						recordingCooldownStateStore: recordingCooldownStateStore{load: records},
+						loaded:                      make(chan struct{}),
+						release:                     make(chan struct{}),
+					}
+					m.SetCooldownStateStore(delayed)
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					done := make(chan error, 1)
+					go func() { done <- m.RestoreCooldownStates(ctx) }()
+					<-delayed.loaded
+					<-time.After(time.Second)
+					if mode == "manual reset" {
+						if _, _, errReset := m.ResetQuota(context.Background(), a); errReset != nil {
+							t.Fatal(errReset)
+						}
+					} else {
+						m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaFable, Success: true})
+					}
+					auth, _ := m.GetByID(a)
+					if isModelStateActiveCooldown(auth.ModelStates[quotaFable], time.Now()) || len(delayed.savedRecords()) != 0 {
+						t.Fatal("clear did not remove the hold and its persisted record")
+					}
+					close(delayed.release)
+					if errRestore := <-done; errRestore != nil {
+						t.Fatal(errRestore)
+					}
+					auth, _ = m.GetByID(a)
+					wantBlocked := saved == "newer guard" || saved == "older upstream"
+					if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, time.Now()); blocked != wantBlocked {
+						t.Fatalf("restored blocked=%t, want %t: %+v", blocked, wantBlocked, auth.ModelStates[quotaFable])
+					}
+					if wantBlocked {
+						found := false
+						for _, record := range delayed.savedRecords() {
+							if record.AuthID == a && record.Model == quotaFable && record.NextRetryAfter.Equal(long) {
+								found = true
+							}
+						}
+						if !auth.ModelStates[quotaFable].NextRetryAfter.Equal(long) || !found {
+							t.Fatalf("restore lost a newer guard or upstream-owned cooldown: state=%+v records=%+v", auth.ModelStates[quotaFable], delayed.savedRecords())
+						}
+						return
+					}
+					if isClaudeQuotaHold(auth.ModelStates[quotaFable]) || len(delayed.savedRecords()) != 0 {
+						t.Fatal("restore re-persisted the cleared quota_cap hold")
+					}
+					picked, errPick := m.scheduler.pickSingle(context.Background(), "claude", quotaFable, cliproxyexecutor.Options{}, nil)
+					if errPick != nil || picked == nil || picked.ID != a {
+						t.Fatalf("scheduler did not retain the clear: picked=%v err=%v", picked, errPick)
+					}
+					// Retained exhaustion cannot re-arm the hold on an omitted window.
+					m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), auth, map[string]QuotaWindow{}, time.Now())
+					auth, _ = m.GetByID(a)
+					if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, time.Now()); blocked || len(delayed.savedRecords()) != 0 {
+						t.Fatal("partial poll re-armed a cleared hold")
+					}
+					// A fresh observation can install a new hold at its own reset.
+					m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), auth, map[string]QuotaWindow{
+						"Additional": {Utilization: 100, ResetsAt: short},
+					}, time.Now())
+					auth, _ = m.GetByID(a)
+					if !isClaudeQuotaHold(auth.ModelStates[quotaFable]) || !auth.ModelStates[quotaFable].NextRetryAfter.Equal(short) {
+						t.Fatal("fresh poll did not establish its own hold deadline")
+					}
+				})
+			})
+		}
+	}
+}
+
 func TestClaudeQuotaRestoredHoldPreservesUnknownLongerWindow(t *testing.T) {
 	m, a, _ := newClaudeQuotaManager(t)
 	cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
