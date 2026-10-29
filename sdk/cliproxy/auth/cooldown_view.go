@@ -94,7 +94,7 @@ func newCooldownView(scope, model string, next, now time.Time, quota QuotaState,
 	// Zero recovery times can occur in legacy quota state with only a retry time.
 	if quota.Exceeded && (quota.NextRecoverAt.IsZero() || !quota.NextRecoverAt.Before(next)) {
 		switch quota.Reason {
-		case "credential_quota", "quota":
+		case "credential_quota", "quota", "quota_cap":
 			view.Reason = quota.Reason
 		case "cloudflare challenge":
 			view.Reason = "cloudflare_challenge"

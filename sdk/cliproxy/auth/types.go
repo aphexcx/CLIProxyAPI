@@ -307,8 +307,17 @@ type RecentRequestBucket struct {
 	Failed  int64  `json:"failed"`
 }
 
+// QuotaWindow is a runtime-only usage observation, independent of header signals.
+type QuotaWindow struct {
+	Utilization float64   `json:"utilization"`
+	ResetsAt    time.Time `json:"resets_at"`
+	ObservedAt  time.Time `json:"observed_at"`
+}
+
 // QuotaState contains limiter tracking data for a credential.
 type QuotaState struct {
+	// Windows is never copied into auth metadata or persisted cooldown records.
+	Windows map[string]QuotaWindow `json:"windows,omitempty"`
 	// Exceeded indicates the credential recently hit a quota error.
 	Exceeded bool `json:"exceeded"`
 	// Reason provides an optional provider specific human readable description.
@@ -331,6 +340,12 @@ type QuotaState struct {
 // Clone returns an independent copy of the quota state.
 func (q QuotaState) Clone() QuotaState {
 	copyQuota := q
+	if q.Windows != nil {
+		copyQuota.Windows = make(map[string]QuotaWindow, len(q.Windows))
+		for key, value := range q.Windows {
+			copyQuota.Windows[key] = value
+		}
+	}
 	if len(q.Signals) > 0 {
 		copyQuota.Signals = make(map[string]string, len(q.Signals))
 		for key, value := range q.Signals {

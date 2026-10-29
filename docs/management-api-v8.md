@@ -80,6 +80,44 @@ comments. Historical API paths remain usable. Home configuration publishers
 need matching client schema support before emitting the new path; older YAML
 payloads remain readable.
 
+### Claude OAuth quota guard
+
+`/config/upstream/claude/quota` accepts the following configuration. Changes
+apply on reload; the guard is disabled by default.
+
+```yaml
+upstream:
+  claude:
+    quota:
+      enabled: false # Enable usage reads and per-model holds.
+      poll-interval: "5m" # Read each enabled OAuth seat at this cadence.
+      cap-percent: 100 # Default utilization threshold for governed model windows.
+      window-caps: {} # Optional display-name caps, for example Fable: 99.
+      model-windows: # Map usage display names to upstream model IDs.
+        Fable: [claude-fable-5-1]
+      priority-at-reset: false # Add quota_rank to the stored routing priority.
+```
+
+`five_hour` and `seven_day` are observation-only: they cannot appear in
+`model-windows`, and their `window-caps` overrides cannot be below 100. The guard
+never disables a credential. Upstream errors still use the existing retry and
+cooldown behavior. Keep `model-level-cooling: false` to preserve account-wide
+cooling for upstream 5h/7d rejections.
+
+`GET /v8/management/credentials` adds `quota.windows`, keyed by `five_hour`,
+`seven_day`, and each model-window display name (such as `Fable`). Each value has
+`utilization`, `resets_at`, and `observed_at`. These observations and the
+top-level `quota_rank` (0 or 1) are runtime-only. `priority` remains the configured
+file priority; selection uses their sum. One eligible seat receives rank 1,
+ordered by its earliest usable governed reset, then seven-day reset and filename.
+Stale windows whose reset has passed are not ranked until a fresh usage read.
+
+Guard holds appear in `cooldowns[]` with scope `model` and reason `quota_cap`.
+They expire at `resets_at`; `/routing/cooldown/reset` clears them immediately,
+and a later usage poll may restore a hold if the window remains full.
+`routing.cooldown.save-cooldown-status: true` persists holds across restarts;
+usage observations and ranks are never written to auth files.
+
 ## Operational endpoints
 
 All paths below are relative to `/v8/management`. Request and response bodies

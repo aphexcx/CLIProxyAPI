@@ -43,6 +43,7 @@ func (cfg *Config) NormalizeClaudeConfig() {
 		days := DefaultClaudeSessionDatePinDays
 		cfg.Claude.SessionDatePinDays = &days
 	}
+	cfg.Claude.Quota = cfg.Claude.Quota.WithDefaults()
 }
 
 // SanitizeCodexHeaderDefaults trims surrounding whitespace from the

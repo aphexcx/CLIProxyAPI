@@ -27,6 +27,7 @@ const (
 	TokenURL        = "https://platform.claude.com/v1/oauth/token"
 	RefreshTokenURL = "https://platform.claude.com/v1/oauth/token"
 	ProfileURL      = "https://api.anthropic.com/api/oauth/profile"
+	UsageURL        = "https://api.anthropic.com/api/oauth/usage"
 	// RolesURL is the claude_cli role endpoint the native client queries right
 	// after a successful token exchange, alongside the profile lookup.
 	RolesURL         = "https://api.anthropic.com/api/oauth/claude_cli/roles"
@@ -241,6 +242,9 @@ func (o *ClaudeAuth) fetchOAuthControlPlaneJSON(ctx context.Context, endpoint, a
 	applyClaudeOAuthAxiosHeaders(req)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Cache-Control", "no-cache")
+	if endpoint == UsageURL {
+		req.Header.Set("Anthropic-Beta", "oauth-2025-04-20")
+	}
 
 	resp, errDo := o.httpClient.Do(req)
 	if errDo != nil {
@@ -275,6 +279,16 @@ func (o *ClaudeAuth) FetchOAuthProfile(ctx context.Context, accessToken string) 
 		return nil, fmt.Errorf("fetch Claude OAuth profile: response account UUID is empty")
 	}
 	return &profile, nil
+}
+
+// FetchOAuthUsage observes usage with the current access token; it never refreshes
+// credentials. Errors deliberately omit the upstream body and credentials.
+func (o *ClaudeAuth) FetchOAuthUsage(ctx context.Context, accessToken string) (map[string]OAuthUsageWindow, error) {
+	body, errFetch := o.fetchOAuthControlPlaneJSON(ctx, UsageURL, accessToken, "usage")
+	if errFetch != nil {
+		return nil, errFetch
+	}
+	return parseOAuthUsage(body)
 }
 
 // FetchOAuthRoles performs the claude_cli roles lookup the native client issues

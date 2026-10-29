@@ -173,6 +173,7 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 	}
 	m.runtimeConfig.Store(cfg)
 	clearedCooldowns := m.clearDisabledCooldownStates(cfg)
+	clearedCooldowns = m.updateClaudeQuotaConfig(previousCfg, cfg) || clearedCooldowns
 	if clearedCooldowns && oldCooldownStore != nil {
 		m.mu.Lock()
 		if m.cooldownStore == oldCooldownStore {
@@ -347,6 +348,17 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 	for _, record := range authLevelRecords {
 		if m.restoreCooldownRecordLocked(record, now) {
 			if auth := m.auths[strings.TrimSpace(record.AuthID)]; auth != nil {
+				snapshotsByID[auth.ID] = auth.Clone()
+			}
+		}
+	}
+	// A saved guard hold is meaningful only while its opt-in rule still exists.
+	// Upstream cooldowns remain independent of the guard configuration.
+	if cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config); cfg != nil {
+		for _, auth := range m.auths {
+			if m.reconcileClaudeQuotaHoldsLocked(auth, cfg, now) {
+				auth.Generation++
+				auth.UpdatedAt = now
 				snapshotsByID[auth.ID] = auth.Clone()
 			}
 		}

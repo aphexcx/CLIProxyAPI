@@ -167,6 +167,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Claude.ToolSearch != newCfg.Claude.ToolSearch {
 		changes = append(changes, fmt.Sprintf("claude.tool-search: %t -> %t", oldCfg.Claude.ToolSearch, newCfg.Claude.ToolSearch))
 	}
+	if !reflect.DeepEqual(oldCfg.Claude.Quota.WithDefaults(), newCfg.Claude.Quota.WithDefaults()) {
+		changes = append(changes, "upstream.claude.quota: updated")
+	}
 	if oldCfg.XAI.InjectXSearch != newCfg.XAI.InjectXSearch {
 		changes = append(changes, fmt.Sprintf("xai.inject-x-search: %t -> %t", oldCfg.XAI.InjectXSearch, newCfg.XAI.InjectXSearch))
 	}

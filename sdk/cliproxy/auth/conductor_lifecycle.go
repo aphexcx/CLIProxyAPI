@@ -157,6 +157,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	m.structuralEpoch.Add(1)
 	m.queueRefreshReschedule(auth.ID)
+	m.refreshClaudeQuotaRanks()
 	m.hook.OnAuthRegistered(ctx, auth.Clone())
 	if cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
@@ -267,6 +268,7 @@ func (m *Manager) finishAuthUpdate(ctx context.Context, committed *Auth, persist
 	}
 	m.structuralEpoch.Add(1)
 	m.queueRefreshReschedule(committed.ID)
+	m.refreshClaudeQuotaRanks()
 	m.hook.OnAuthUpdated(ctx, committed.Clone())
 	if persistCooldown {
 		m.persistCooldownStates(context.Background())
@@ -494,6 +496,17 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 		return nil, false, false, fmt.Errorf("auth %s changed registration during persistence", auth.ID)
 	}
 	mergeAuthSaveDelta(auth, existingBeforeSave, existing, false)
+	// Usage and rank belong to the running manager, never to file snapshots or
+	// refresh results. Preserve them even when an update replaces Attributes.
+	auth.Quota.Windows = existing.Quota.Clone().Windows
+	if auth.Attributes == nil && existing.Attributes["quota_rank"] != "" {
+		auth.Attributes = make(map[string]string)
+	}
+	if rank := existing.Attributes["quota_rank"]; rank != "" {
+		auth.Attributes["quota_rank"] = rank
+	} else {
+		delete(auth.Attributes, "quota_rank")
+	}
 	if (auth.RejectedAccessToken == "" && existing.RejectedAccessToken != "") || (auth.RejectedSIWCAccessToken == "" && existing.RejectedSIWCAccessToken != "") {
 		probe := auth.Clone()
 		probe.CodexRefreshPatch = refreshPatchBeforeSave
@@ -572,6 +585,7 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 	}
 	m.structuralEpoch.Add(1)
 	m.queueRefreshUnschedule(id)
+	m.refreshClaudeQuotaRanks()
 	m.invalidateSessionAffinity(id)
 
 	if provider != "" {

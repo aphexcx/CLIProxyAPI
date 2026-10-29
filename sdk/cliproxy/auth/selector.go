@@ -366,12 +366,12 @@ func authPriority(auth *Auth) int {
 		return 0
 	}
 	raw := strings.TrimSpace(auth.Attributes["priority"])
-	if raw == "" {
-		return 0
-	}
 	parsed, err := strconv.Atoi(raw)
 	if err != nil {
-		return 0
+		parsed = 0
+	}
+	if auth.Attributes["quota_rank"] == "1" && parsed < math.MaxInt {
+		parsed++
 	}
 	return parsed
 }
