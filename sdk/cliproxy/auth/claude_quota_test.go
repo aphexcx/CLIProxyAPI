@@ -984,6 +984,170 @@ func TestClaudeQuotaDelayedRestoreDoesNotRearmClearedWrappedHold(t *testing.T) {
 	}
 }
 
+func TestClaudeQuotaDelayedRestoreRejectsClearedGuardUnderLiveUpstreamCooldown(t *testing.T) {
+	for _, mode := range []string{"manual reset", "successful request"} {
+		for _, wrappedRecord := range []bool{false, true} {
+			for _, credentialScope := range []bool{false, true} {
+				for _, tied := range []bool{false, true} {
+					t.Run(fmt.Sprintf("%s/wrapped=%t/credential_scope=%t/tied=%t", mode, wrappedRecord, credentialScope, tied), func(t *testing.T) {
+						synctest.Test(t, func(t *testing.T) {
+							m, a, _ := newClaudeQuotaManager(t)
+							cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+							cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {quotaFable}, "Additional": {quotaFable}}
+							m.SetConfig(cfg)
+							cfg = m.runtimeConfig.Load().(*config.Config)
+							store := &recordingCooldownStateStore{}
+							m.SetCooldownStateStore(store)
+							now := time.Now()
+							windows := map[string]QuotaWindow{
+								"Fable":      {Utilization: 100, ResetsAt: now.Add(2 * time.Hour)},
+								"Additional": {Utilization: 100, ResetsAt: now.Add(time.Hour)},
+							}
+							base, _ := m.GetByID(a)
+							m.applyClaudeQuotaUsage(context.Background(), cfg, base, windows, now)
+							auth, _ := m.GetByID(a)
+							if !isClaudeQuotaHold(auth.ModelStates[quotaFable]) || len(store.savedRecords()) == 0 {
+								t.Fatal("fixture did not install and persist the guard hold")
+							}
+							savedWrapDeadline := now.Add(90 * time.Minute)
+							if wrappedRecord {
+								delay := 90 * time.Minute
+								m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, RetryAfter: &delay, CredentialScope: true, Error: &Error{HTTPStatus: 429}})
+							}
+							data, errMarshal := json.Marshal(store.savedRecords())
+							if errMarshal != nil {
+								t.Fatal(errMarshal)
+							}
+							var records []CooldownStateRecord
+							if errUnmarshal := json.Unmarshal(data, &records); errUnmarshal != nil {
+								t.Fatal(errUnmarshal)
+							}
+							tiedAt := now.Add(2 * time.Second)
+							if credentialScope {
+								// Sibling propagation preserves the clear's state timestamp.
+								tiedAt = now.Add(time.Second)
+							}
+							for i := range records {
+								if records[i].Model == quotaFable && tied {
+									if wrappedRecord {
+										records[i].IndependentState.UpdatedAt = tiedAt
+									} else {
+										records[i].UpdatedAt = tiedAt
+									}
+								}
+							}
+							if wrappedRecord && mode == "successful request" {
+								// Success retains a credential wrap, so lift it before Load
+								// and let the in-flight success clear an independent hold.
+								if _, _, errReset := m.ResetQuota(context.Background(), a); errReset != nil {
+									t.Fatal(errReset)
+								}
+								base, _ = m.GetByID(a)
+								m.applyClaudeQuotaUsage(context.Background(), cfg, base, windows, now)
+							}
+							delayed := &delayedClaudeQuotaLoadStore{
+								recordingCooldownStateStore: recordingCooldownStateStore{load: records},
+								loaded:                      make(chan struct{}),
+								release:                     make(chan struct{}),
+							}
+							m.SetCooldownStateStore(delayed)
+							ctx, cancel := context.WithCancel(context.Background())
+							defer cancel()
+							done := make(chan error, 1)
+							go func() { done <- m.RestoreCooldownStates(ctx) }()
+							<-delayed.loaded
+							<-time.After(time.Second)
+							if mode == "manual reset" {
+								if _, _, errReset := m.ResetQuota(context.Background(), a); errReset != nil {
+									t.Fatal(errReset)
+								}
+							} else {
+								m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaFable, Success: true})
+							}
+							auth, _ = m.GetByID(a)
+							if isModelStateActiveCooldown(auth.ModelStates[quotaFable], time.Now()) || len(delayed.savedRecords()) != 0 {
+								t.Fatal("clear did not remove the live hold and persisted records")
+							}
+							<-time.After(time.Second)
+							delay := 30 * time.Minute
+							liveDeadline := time.Now().Add(delay)
+							model := quotaFable
+							if credentialScope {
+								model = quotaSonnet
+							}
+							m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: model, RetryAfter: &delay, CredentialScope: credentialScope, Error: &Error{HTTPStatus: 429}})
+							auth, _ = m.GetByID(a)
+							if state := auth.ModelStates[quotaFable]; state == nil || !state.UpdatedAt.Equal(tiedAt) || !state.NextRetryAfter.Equal(liveDeadline) {
+								t.Fatalf("fixture did not establish the live upstream state: %+v", state)
+							}
+							close(delayed.release)
+							if errRestore := <-done; errRestore != nil {
+								t.Fatal(errRestore)
+							}
+							auth, _ = m.GetByID(a)
+							state := auth.ModelStates[quotaFable]
+							if isClaudeQuotaHold(state) || isClaudeQuotaHold(state.credentialQuotaShadow) {
+								t.Error("restore re-installed the cleared guard beneath an upstream cooldown")
+							}
+							if credentialScope && state.credentialQuotaShadow != nil {
+								t.Error("propagated live cooldown acquired an independent shadow")
+							}
+							wantDeadline := liveDeadline
+							if wrappedRecord && !credentialScope {
+								wantDeadline = savedWrapDeadline
+							}
+							if !state.NextRetryAfter.Equal(wantDeadline) || !state.Quota.NextRecoverAt.Equal(wantDeadline) {
+								t.Errorf("model deadlines retry=%v recover=%v, want upstream deadline %v", state.NextRetryAfter, state.Quota.NextRecoverAt, wantDeadline)
+							}
+							for _, record := range delayed.savedRecords() {
+								if record.AuthID != a || record.Model != quotaFable {
+									continue
+								}
+								if record.Quota.Reason == "quota_cap" || isClaudeQuotaHold(record.IndependentState) || (credentialScope && record.IndependentState != nil) {
+									t.Error("restore re-persisted the rejected guard layer")
+								}
+								if !record.NextRetryAfter.Equal(wantDeadline) || !record.Quota.NextRecoverAt.Equal(wantDeadline) {
+									t.Errorf("persisted model retained the guard's aggregate deadline: %+v", record)
+								}
+							}
+							selectableAt := liveDeadline
+							if wrappedRecord {
+								// Auth-level restore still replaces the live 30-minute wrap
+								// with the saved 90-minute wrap; that upstream rule is unchanged.
+								if !auth.Quota.NextRecoverAt.Equal(savedWrapDeadline) {
+									t.Fatal("auth-level restore behavior changed")
+								}
+								selectableAt = savedWrapDeadline
+							}
+							selector := &FillFirstSelector{}
+							<-time.After(time.Until(selectableAt.Add(-time.Second)))
+							if picked, errPick := selector.Pick(context.Background(), "claude", quotaFable, cliproxyexecutor.Options{}, []*Auth{auth}); errPick == nil || picked != nil {
+								t.Error("selector ignored the surviving upstream cooldown")
+							}
+							<-time.After(2 * time.Second)
+							if picked, errPick := selector.Pick(context.Background(), "claude", quotaFable, cliproxyexecutor.Options{}, []*Auth{auth}); errPick != nil || picked == nil || picked.ID != a {
+								t.Errorf("selector still blocked after upstream expiry: auth=%v err=%v", picked, errPick)
+							}
+							m.applyClaudeQuotaUsage(context.Background(), cfg, auth, map[string]QuotaWindow{}, time.Now())
+							auth, _ = m.GetByID(a)
+							if isClaudeQuotaHold(auth.ModelStates[quotaFable]) || isClaudeQuotaHold(auth.ModelStates[quotaFable].credentialQuotaShadow) {
+								t.Error("expired upstream cooldown promoted the rejected guard")
+							}
+							m.persistCooldownStates(context.Background())
+							if len(delayed.savedRecords()) != 0 {
+								t.Errorf("expired upstream cooldown re-persisted: %+v", delayed.savedRecords())
+							}
+							if picked, errPick := selector.Pick(context.Background(), "claude", quotaFable, cliproxyexecutor.Options{}, []*Auth{auth}); errPick != nil || picked == nil || picked.ID != a {
+								t.Errorf("empty poll re-armed the cleared guard: auth=%v err=%v", picked, errPick)
+							}
+						})
+					})
+				}
+			}
+		}
+	}
+}
+
 func TestClaudeQuotaRejectedWrappedHoldRequiresSurvivingCredentialCooldown(t *testing.T) {
 	for _, saved := range []string{"missing credential", "expired credential"} {
 		t.Run(saved, func(t *testing.T) {

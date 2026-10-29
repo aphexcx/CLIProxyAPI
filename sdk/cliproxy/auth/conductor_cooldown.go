@@ -434,16 +434,25 @@ func (m *Manager) restoreCooldownRecordWithCredentialDeadlineLocked(record Coold
 	}
 	// As with live window ownership below, a live clear wins over an older
 	// or equally recent guard layer, including one saved beneath a credential
-	// wrap. Only the guard layer is rejected; upstream-owned cooldowns merge.
-	if !isModelStateActiveCooldown(state, now) {
+	// wrap. An upstream cooldown is not guard ownership: it cannot let a
+	// cleared guard return. Check the live guard itself, including its shadow.
+	liveGuard := state
+	if !isClaudeQuotaHold(liveGuard) {
+		liveGuard = state.credentialQuotaShadow
+	}
+	if !isClaudeQuotaHold(liveGuard) || !isModelStateActiveCooldown(liveGuard, now) {
 		if isClaudeQuotaHold(restored) && !restored.UpdatedAt.After(state.UpdatedAt) {
 			return false
 		}
 		if isClaudeQuotaHold(record.IndependentState) && !record.IndependentState.UpdatedAt.After(state.UpdatedAt) {
 			record.IndependentState = nil
 			// The model's saved deadlines include the rejected guard layer.
-			// Only the companion auth record carries the wrap's own deadline;
-			// without a surviving wrap, the aggregate cannot restore a block.
+			// A live credential wrap keeps its own deadline; otherwise use
+			// the companion auth record. Neither uses the saved aggregate.
+			if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
+				credentialDeadline = auth.Quota.NextRecoverAt
+			}
+			// Without a surviving wrap, the aggregate cannot restore a block.
 			if !credentialDeadline.After(now) {
 				return false
 			}
