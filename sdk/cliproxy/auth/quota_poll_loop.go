@@ -464,6 +464,10 @@ func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfi
 			}
 			continue
 		}
+		// Restoring an older aggregate can require only a deadline correction.
+		// Unchanged live ownership is not a new observation or an explicit reset.
+		preserveFreshness := !ownershipChanged && isClaudeQuotaHold(state)
+		stateFreshness, outerFreshness := claudeQuotaModelFreshness(state), claudeQuotaModelFreshness(outer)
 		state.Unavailable = true
 		mutated[model] = true
 		state.Status = StatusError
@@ -476,6 +480,14 @@ func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfi
 		applyCooldownFields(&state.Quota, QuotaState{Exceeded: true, Reason: "quota_cap", NextRecoverAt: hold.reset})
 		if state != outer {
 			composeClaudeQuotaHold(auth, outer, now)
+		}
+		if preserveFreshness {
+			stateFreshness.updatedAt = state.UpdatedAt
+			state.quotaFreshness = stateFreshness
+			if state != outer {
+				outerFreshness.updatedAt = outer.UpdatedAt
+				outer.quotaFreshness = outerFreshness
+			}
 		}
 		changed = true
 		log.WithFields(log.Fields{"auth_file": claudeQuotaName(auth), "window": hold.window, "model": model, "resets_at": hold.reset}).Info("claude quota: hold")

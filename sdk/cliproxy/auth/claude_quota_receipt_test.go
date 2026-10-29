@@ -226,3 +226,66 @@ func TestClaudeQuotaRestorePreservesReceiptOrdering(t *testing.T) {
 		})
 	}
 }
+
+func TestClaudeQuotaOlderRestorePreservesReceiptOrdering(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		restore, wrapped bool
+	}{
+		{"without-restore", false, false}, {"with-restore", true, false},
+		{"wrapped-without-restore", false, true}, {"wrapped-with-restore", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, id, _ := newClaudeQuotaManager(t)
+				cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+				cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {quotaFable}, "Additional": {quotaFable}}
+				m.SetConfig(cfg)
+				store := &recordingCooldownStateStore{}
+				m.SetCooldownStateStore(store)
+				if tc.wrapped {
+					retry := 30 * time.Minute
+					m.MarkResult(context.Background(), Result{AuthID: id, Provider: "claude", Model: quotaSonnet, Error: &Error{HTTPStatus: 429}, CredentialScope: true, RetryAfter: &retry})
+					<-time.After(time.Second)
+				}
+				short, long := time.Now().Add(time.Hour), time.Now().Add(2*time.Hour)
+				oldBase, _ := m.GetByID(id)
+				m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), oldBase, map[string]QuotaWindow{
+					"Fable":      {Utilization: 100, ResetsAt: long, ObservedAt: time.Now()},
+					"Additional": {Utilization: 100, ResetsAt: short, ObservedAt: time.Now()},
+				}, time.Now())
+				oldRecords := store.savedRecords()
+				<-time.After(time.Second)
+				receipt := time.Now()
+				<-time.After(time.Second)
+				generation := claudeQuotaHeaderContext("7d_oi", "1.0", long)
+				<-time.After(time.Second)
+				base, _ := m.GetByID(id)
+				m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+					"Fable":      {Utilization: 0, ResetsAt: long, ObservedAt: receipt},
+					"Additional": {Utilization: 100, ResetsAt: short, ObservedAt: receipt},
+				}, time.Now())
+				<-time.After(time.Second)
+				if tc.restore {
+					store.load = oldRecords
+					if len(store.load) == 0 {
+						t.Fatal("test did not save its guard")
+					}
+					if errRestore := m.RestoreCooldownStates(context.Background()); errRestore != nil {
+						t.Fatal(errRestore)
+					}
+				}
+				<-time.After(time.Second)
+				m.MarkResult(generation, Result{AuthID: id, Provider: "claude", Model: quotaSonnet, Success: true})
+				auth, _ := m.GetByID(id)
+				state := auth.ModelStates[quotaFable]
+				if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, time.Now()); !blocked || state == nil || !state.NextRetryAfter.Equal(long) {
+					t.Fatalf("restore suppressed the newer window: blocked=%v state=%+v want=%v", blocked, state, long)
+				}
+				if blocked, _, until := isAuthBlockedForModel(auth, quotaFable, short.Add(time.Second)); !blocked || !until.Equal(long) {
+					t.Fatal("model became selectable before the newer window reset")
+				}
+			})
+		})
+	}
+}
