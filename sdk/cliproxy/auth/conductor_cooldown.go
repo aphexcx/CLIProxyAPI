@@ -534,7 +534,10 @@ func (m *Manager) restoreCooldownRecordWithCredentialDeadlineLocked(record Coold
 	if isClaudeQuotaHold(guard) && isClaudeQuotaHold(liveShadow) &&
 		!guard.UpdatedAt.After(liveShadow.UpdatedAt) {
 		guard.Quota.guardWindows = liveShadow.Quota.guardWindows
-		guard.quotaFreshness = liveShadow.quotaFreshness
+		// Carry the effective live barrier even when a config release cleared
+		// receipt metadata. The saved layer's timestamp must not replace it.
+		guard.quotaFreshness = claudeQuotaModelFreshness(liveShadow)
+		guard.quotaFreshness.updatedAt = guard.UpdatedAt
 	}
 	auth.Generation++
 	auth.UpdatedAt = updatedAt

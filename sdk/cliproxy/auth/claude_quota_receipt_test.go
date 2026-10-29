@@ -227,6 +227,86 @@ func TestClaudeQuotaRestorePreservesReceiptOrdering(t *testing.T) {
 	}
 }
 
+func TestClaudeQuotaRestorePreservesCapReloadAfterPromotion(t *testing.T) {
+	for _, restore := range []bool{false, true} {
+		for _, promote := range []bool{false, true} {
+			for _, fresh := range []bool{false, true} {
+				name := "control"
+				if restore {
+					name = "restore"
+				}
+				if promote {
+					name += "/promoted"
+				} else {
+					name += "/wrapped"
+				}
+				if fresh {
+					name += "/post-reload"
+				} else {
+					name += "/pre-reload"
+				}
+				t.Run(name, func(t *testing.T) {
+					synctest.Test(t, func(t *testing.T) {
+						m, id, _ := newClaudeQuotaManager(t)
+						cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+						cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {quotaFable}, "Additional": {quotaFable}}
+						cfg.Claude.Quota.WindowCaps = map[string]float64{"Fable": 99}
+						m.SetConfig(cfg)
+						store := &recordingCooldownStateStore{}
+						m.SetCooldownStateStore(store)
+						// Establish the credential cooldown before Fable has a state.
+						retry := 30 * time.Minute
+						m.MarkResult(context.Background(), Result{AuthID: id, Provider: "claude", Model: quotaSonnet, Error: &Error{HTTPStatus: 429}, CredentialScope: true, RetryAfter: &retry})
+						<-time.After(time.Second)
+						short, long := time.Now().Add(time.Hour), time.Now().Add(2*time.Hour)
+						base, _ := m.GetByID(id)
+						m.applyTestClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+							"Fable": {Utilization: 99, ResetsAt: long}, "Additional": {Utilization: 100, ResetsAt: short},
+						}, time.Now())
+						oldRecords := store.savedRecords()
+						if len(oldRecords) == 0 {
+							t.Fatal("test did not save its guard")
+						}
+						<-time.After(time.Second)
+						header := claudeQuotaHeaderContext("7d_oi", "1.0", long)
+						<-time.After(time.Second)
+						cfg.Claude.Quota.WindowCaps["Fable"] = 100
+						m.SetConfig(cfg)
+						<-time.After(time.Second)
+						if fresh {
+							header = claudeQuotaHeaderContext("7d_oi", "1.0", long)
+						}
+						if restore {
+							store.load = oldRecords
+							if errRestore := m.RestoreCooldownStates(context.Background()); errRestore != nil {
+								t.Fatal(errRestore)
+							}
+						}
+						if promote {
+							<-time.After(31 * time.Minute)
+							base, _ = m.GetByID(id)
+							m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, nil, time.Now())
+						}
+						m.MarkResult(header, Result{AuthID: id, Provider: "claude", Model: quotaSonnet, Success: true})
+						auth, _ := m.GetByID(id)
+						owned, _ := claudeQuotaHoldLayer(auth, auth.ModelStates[quotaFable], time.Now())
+						want := short
+						if fresh {
+							want = long
+						}
+						if owned == nil || !owned.NextRetryAfter.Equal(want) || owned.Quota.guardWindows["Fable"].IsZero() == fresh {
+							t.Fatalf("restore changed cap-reload arbitration: state=%+v want=%v", owned, want)
+						}
+						if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, short.Add(time.Second)); blocked != fresh {
+							t.Fatalf("after short hold: blocked=%v want=%v", blocked, fresh)
+						}
+					})
+				})
+			}
+		}
+	}
+}
+
 func TestClaudeQuotaOlderRestorePreservesReceiptOrdering(t *testing.T) {
 	for _, tc := range []struct {
 		name             string
