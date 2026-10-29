@@ -689,11 +689,7 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 			windows = map[string]coreauth.QuotaWindow{}
 		}
 		entry["quota"].(gin.H)["windows"] = windows
-		rank := 0
-		if auth.Attributes["quota_rank"] == "1" {
-			rank = 1
-		}
-		entry["quota_rank"] = rank
+		entry["quota_rank"] = auth.QuotaRank(time.Now())
 	}
 	if modelQuotas := modelQuotaObservationPayload(auth.Provider, auth.ModelStates); len(modelQuotas) > 0 {
 		entry["model_quotas"] = modelQuotas

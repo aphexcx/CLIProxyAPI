@@ -8,8 +8,11 @@ import (
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	log "github.com/sirupsen/logrus"
 )
+
+const claudeQuotaPollTimeout = 30 * time.Second
 
 // QuotaPoller observes usage without refreshing or otherwise changing credentials.
 type QuotaPoller interface {
@@ -74,8 +77,11 @@ func (m *Manager) restartQuotaPollingLocked() {
 func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	// One outstanding read per seat. A stalled seat cannot stall other seats,
-	// and no deadline is imposed on an established upstream connection.
+	expiry := time.NewTimer(time.Hour)
+	expiry.Stop()
+	defer expiry.Stop()
+	// One outstanding read per seat. Usage reads have a bounded lifetime so a
+	// stalled read cannot prevent that seat from being polled on later ticks.
 	running := make(map[string]bool)
 	completed := make(chan string)
 	poll := func() {
@@ -97,7 +103,9 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 			}
 			running[auth.ID] = true
 			go func() {
-				windows, errPoll := poller.PollQuota(ctx, auth)
+				pollCtx, cancel := context.WithTimeout(ctx, claudeQuotaPollTimeout)
+				windows, errPoll := poller.PollQuota(pollCtx, auth)
+				cancel()
 				if errPoll != nil {
 					// Transport errors may contain proxy credentials. Never log the error.
 					log.WithField("auth_file", claudeQuotaName(auth)).Debug("claude quota: usage read failed")
@@ -114,14 +122,94 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 	}
 	poll()
 	for {
+		var expiryC <-chan time.Time
+		if next := m.nextClaudeQuotaExpiry(); !next.IsZero() {
+			expiry.Reset(time.Until(next))
+			expiryC = expiry.C
+		}
 		select {
 		case <-ctx.Done():
 			return
+		case <-expiryC:
+			m.expireClaudeQuotaState(ctx)
 		case id := <-completed:
 			delete(running, id)
 		case <-ticker.C:
 			poll()
 		}
+		expiry.Stop()
+	}
+}
+
+// Schedule local recovery independently of usage requests, including hung reads.
+func (m *Manager) nextClaudeQuotaExpiry() time.Time {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var next time.Time
+	include := func(at time.Time) {
+		if !at.IsZero() && (next.IsZero() || at.Before(next)) {
+			next = at
+		}
+	}
+	for _, auth := range m.auths {
+		include(auth.Quota.RankExpiresAt)
+		for _, state := range auth.ModelStates {
+			if isClaudeQuotaHold(state) {
+				include(state.NextRetryAfter)
+			} else if state != nil && isClaudeQuotaHold(state.credentialQuotaShadow) {
+				include(state.credentialQuotaShadow.NextRetryAfter)
+			}
+		}
+	}
+	return next
+}
+
+func (m *Manager) expireClaudeQuotaState(ctx context.Context) {
+	m.configCooldownMu.Lock()
+	defer m.configCooldownMu.Unlock()
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if ctx.Err() != nil || cfg == nil || !cfg.Claude.Quota.Enabled {
+		return
+	}
+	m.mu.Lock()
+	now := time.Now()
+	var snapshots []*Auth
+	changed := false
+	for _, auth := range m.auths {
+		authChanged := false
+		for model, state := range auth.ModelStates {
+			if state == nil {
+				continue
+			}
+			owned := state
+			if !isClaudeQuotaHold(owned) {
+				owned = state.credentialQuotaShadow
+			}
+			if !isClaudeQuotaHold(owned) || owned.NextRetryAfter.After(now) {
+				continue
+			}
+			owned, _ = claudeQuotaHoldLayer(auth, state, now)
+			resetModelState(owned, now)
+			if owned != state {
+				composeClaudeQuotaHold(auth, state, now)
+			}
+			authChanged = true
+			log.WithFields(log.Fields{"auth_file": claudeQuotaName(auth), "model": model, "window": claudeQuotaWindowForModel(cfg.Claude.Quota.WithDefaults(), model)}).Info("claude quota: release")
+		}
+		// Expiry only clears owned holds; it never recreates a cleared sibling
+		// from an old observation. A new usage read owns that decision.
+		if authChanged {
+			auth.Generation++
+			auth.UpdatedAt = now
+			snapshots = append(snapshots, auth.Clone())
+			changed = true
+		}
+	}
+	snapshots = append(snapshots, m.recomputeClaudeQuotaRanksLocked(cfg, now)...)
+	m.mu.Unlock()
+	m.publishClaudeQuotaSnapshots(snapshots)
+	if changed {
+		m.persistCooldownStatesLocked(ctx)
 	}
 }
 
@@ -165,12 +253,24 @@ func (m *Manager) applyClaudeQuotaUsage(ctx context.Context, cfg *internalconfig
 		release()
 		return
 	}
-	auth.Quota.Windows = make(map[string]QuotaWindow, len(windows))
+	// Retain each last valid observation until its own reset. An omitted or
+	// malformed window must not shorten another window's outstanding hold.
+	if auth.Quota.Windows == nil {
+		auth.Quota.Windows = make(map[string]QuotaWindow, len(windows))
+	}
+	for name, window := range auth.Quota.Windows {
+		if !window.ResetsAt.After(now) {
+			delete(auth.Quota.Windows, name)
+		}
+	}
 	for name, window := range windows {
+		if window.ResetsAt.IsZero() {
+			continue
+		}
 		window.ObservedAt = now
 		auth.Quota.Windows[name] = window
 	}
-	changed := m.reconcileClaudeQuotaHoldsLocked(auth, cfg, now)
+	changed := m.reconcileClaudeQuotaHoldsLocked(auth, cfg, windows, now)
 	auth.Generation++
 	auth.UpdatedAt = now
 	snapshots := m.recomputeClaudeQuotaRanksLocked(cfg, now)
@@ -185,44 +285,67 @@ func (m *Manager) applyClaudeQuotaUsage(ctx context.Context, cfg *internalconfig
 
 // Reconcile only cooldowns owned by this guard. Missing/invalid windows never
 // release an existing hold early; other upstream failures always retain ownership.
-func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfig.Config, now time.Time) bool {
+func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfig.Config, observations map[string]QuotaWindow, now time.Time) bool {
 	quota := cfg.Claude.Quota.WithDefaults()
 	enabled := quota.Enabled && claudeQuotaEligible(auth) && !quotaCooldownDisabledForAuthWithConfig(auth, cfg)
 	type hold struct {
-		window string
-		reset  time.Time
+		window  string
+		reset   time.Time
+		windows map[string]time.Time
 	}
 	desired := make(map[string]hold)
-	governed := make(map[string]bool)
-	unknown := make(map[string]bool)
+	changed := false
 	if enabled {
 		for window, models := range quota.ModelWindows {
 			if window == "five_hour" || window == "seven_day" {
 				continue
 			}
-			usage, exists := auth.Quota.Windows[window]
+			usage, exists := observations[window]
+			exists = exists && !usage.ResetsAt.IsZero()
 			for _, model := range models {
 				model = canonicalModelKey(model)
 				if model == "" {
 					continue
 				}
-				governed[model] = true
-				unknown[model] = unknown[model] || !exists
-				if exists && usage.Utilization >= quota.CapFor(window) && usage.ResetsAt.After(now) && usage.ResetsAt.After(desired[model].reset) {
-					desired[model] = hold{window, usage.ResetsAt}
+				var reset time.Time
+				if exists {
+					if usage.Utilization >= quota.CapFor(window) {
+						reset = usage.ResetsAt
+					}
+				} else {
+					owned, normalized := claudeQuotaHoldLayer(auth, auth.ModelStates[model], now)
+					changed = changed || normalized
+					if isClaudeQuotaHold(owned) {
+						reset = owned.Quota.guardWindows[window]
+						// Persisted cooldowns have no runtime provenance. Keep their
+						// aggregate deadline until every mapped window is observed.
+						if owned.Quota.guardWindows == nil {
+							reset = owned.Quota.NextRecoverAt
+						}
+					}
+				}
+				if reset.After(now) {
+					current := desired[model]
+					if current.windows == nil {
+						current.windows = make(map[string]time.Time)
+					}
+					current.windows[window] = reset
+					if reset.After(current.reset) {
+						current.window, current.reset = window, reset
+					}
+					desired[model] = current
 				}
 			}
 		}
 	}
-	changed := false
 	for model, state := range auth.ModelStates {
 		owned, normalized := claudeQuotaHoldLayer(auth, state, now)
 		changed = changed || normalized
-		if owned == nil || owned.Quota.Reason != "quota_cap" {
+		if !isClaudeQuotaHold(owned) {
 			continue
 		}
 		_, keep := desired[model]
-		if !keep && !(governed[model] && unknown[model] && owned.Quota.NextRecoverAt.After(now)) {
+		if !keep {
 			resetModelState(owned, now)
 			if owned != state {
 				composeClaudeQuotaHold(auth, state, now)
@@ -245,9 +368,10 @@ func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfi
 			outer.credentialQuotaPropagated = true
 			state = outer.credentialQuotaShadow
 		}
-		if isModelStateActiveCooldown(state, now) && state.Quota.Reason != "quota_cap" {
+		if isModelStateActiveCooldown(state, now) && !isClaudeQuotaHold(state) {
 			continue
 		}
+		state.Quota.guardWindows = hold.windows
 		if state.Quota.Reason == "quota_cap" && state.NextRetryAfter.Equal(hold.reset) {
 			continue
 		}
@@ -268,9 +392,16 @@ func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfi
 	return changed
 }
 
+// The reason alone is insufficient for old states written by MarkResult: an
+// upstream failure may have replaced the guard's deadline without its reason.
+func isClaudeQuotaHold(state *ModelState) bool {
+	return state != nil && state.Quota.Reason == "quota_cap" && state.LastError == nil &&
+		state.NextRetryAfter.Equal(state.Quota.NextRecoverAt)
+}
+
 // Restore an independent guard layer once the upstream credential wrap expires.
 func claudeQuotaHoldLayer(auth *Auth, state *ModelState, now time.Time) (*ModelState, bool) {
-	if state == nil || state.credentialQuotaShadow == nil || state.credentialQuotaShadow.Quota.Reason != "quota_cap" {
+	if state == nil || !isClaudeQuotaHold(state.credentialQuotaShadow) {
 		return state, false
 	}
 	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
@@ -366,10 +497,12 @@ func (m *Manager) recomputeClaudeQuotaRanksLocked(cfg *internalconfig.Config, no
 	var snapshots []*Auth
 	for _, auth := range m.auths {
 		rank := ""
+		var expiresAt time.Time
 		if len(candidates) > 0 && candidates[0].auth == auth {
 			rank = "1"
+			expiresAt = candidates[0].reset
 		}
-		if auth.Attributes["quota_rank"] == rank {
+		if auth.Attributes["quota_rank"] == rank && auth.Quota.RankExpiresAt.Equal(expiresAt) {
 			continue
 		}
 		if auth.Attributes == nil {
@@ -380,6 +513,7 @@ func (m *Manager) recomputeClaudeQuotaRanksLocked(cfg *internalconfig.Config, no
 		} else {
 			auth.Attributes["quota_rank"] = rank
 		}
+		auth.Quota.RankExpiresAt = expiresAt
 		auth.Generation++
 		auth.UpdatedAt = now
 		snapshots = append(snapshots, auth.Clone())
@@ -402,6 +536,25 @@ func (m *Manager) publishClaudeQuotaSnapshots(snapshots []*Auth) {
 		if m.scheduler != nil {
 			m.scheduler.upsertAuth(auth)
 		}
+		reg := registry.GetGlobalRegistry()
+		models, epoch := reg.GetModelsAndEpochForClient(auth.ID)
+		// Hold the manager read lock through publication so an old snapshot
+		// cannot adopt a replacement credential's registry epoch or poison its
+		// reset generation. Use the latest state within that same registration
+		// so a concurrent ordinary update cannot discard an expiry publication.
+		m.mu.RLock()
+		current := m.auths[auth.ID]
+		if current != nil && current.RegistrationEpoch == auth.RegistrationEpoch {
+			projections := make([]registry.ClientModelProjection, 0, len(models))
+			now := time.Now()
+			for _, model := range models {
+				if model != nil && strings.TrimSpace(model.ID) != "" {
+					projections = append(projections, m.clientModelProjectionForAuth(current, model.ID, now))
+				}
+			}
+			reg.ApplyClientModelProjections(auth.ID, epoch, current.Generation, projections)
+		}
+		m.mu.RUnlock()
 	}
 }
 
@@ -415,7 +568,7 @@ func (m *Manager) updateClaudeQuotaConfig(previous, cfg *internalconfig.Config) 
 	var snapshots []*Auth
 	now := time.Now()
 	for _, auth := range m.auths {
-		if m.reconcileClaudeQuotaHoldsLocked(auth, cfg, now) {
+		if m.reconcileClaudeQuotaHoldsLocked(auth, cfg, auth.Quota.Windows, now) {
 			changed = true
 			auth.Generation++
 			auth.UpdatedAt = now

@@ -22,7 +22,7 @@ func TestV8CredentialsExposeClaudeQuotaWindowsRankAndHold(t *testing.T) {
 	registerAuthForLookupTest(t, m, &coreauth.Auth{
 		ID: "quota-test", Provider: "claude", Status: coreauth.StatusActive,
 		Attributes:  map[string]string{"runtime_only": "true", "priority": "4", "quota_rank": "1"},
-		Quota:       coreauth.QuotaState{Windows: map[string]coreauth.QuotaWindow{"Fable": {Utilization: 100, ResetsAt: reset, ObservedAt: now}}, Signals: map[string]string{"Anthropic-Ratelimit-Unified-5h-Status": "allowed"}},
+		Quota:       coreauth.QuotaState{RankExpiresAt: reset, Windows: map[string]coreauth.QuotaWindow{"Fable": {Utilization: 100, ResetsAt: reset, ObservedAt: now}}, Signals: map[string]string{"Anthropic-Ratelimit-Unified-5h-Status": "allowed"}},
 		ModelStates: map[string]*coreauth.ModelState{"claude-fable-5-1": {Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: reset, Quota: coreauth.QuotaState{Exceeded: true, Reason: "quota_cap", NextRecoverAt: reset}}},
 	})
 	h := NewHandlerWithoutConfigFilePath(cfg, m)

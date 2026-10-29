@@ -318,6 +318,11 @@ type QuotaWindow struct {
 type QuotaState struct {
 	// Windows is never copied into auth metadata or persisted cooldown records.
 	Windows map[string]QuotaWindow `json:"windows,omitempty"`
+	// RankExpiresAt bounds the runtime priority boost independently of polling.
+	RankExpiresAt time.Time `json:"-"`
+	// guardWindows tracks which runtime windows own this model's quota_cap hold.
+	// Passive observations cannot recreate a hold after an explicit reset.
+	guardWindows map[string]time.Time
 	// Exceeded indicates the credential recently hit a quota error.
 	Exceeded bool `json:"exceeded"`
 	// Reason provides an optional provider specific human readable description.
@@ -340,6 +345,12 @@ type QuotaState struct {
 // Clone returns an independent copy of the quota state.
 func (q QuotaState) Clone() QuotaState {
 	copyQuota := q
+	if q.guardWindows != nil {
+		copyQuota.guardWindows = make(map[string]time.Time, len(q.guardWindows))
+		for key, value := range q.guardWindows {
+			copyQuota.guardWindows[key] = value
+		}
+	}
 	if q.Windows != nil {
 		copyQuota.Windows = make(map[string]QuotaWindow, len(q.Windows))
 		for key, value := range q.Windows {

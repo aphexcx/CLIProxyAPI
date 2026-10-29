@@ -20,6 +20,7 @@ func TestParseOAuthUsage(t *testing.T) {
 		{"zero is valid", `{"limits":[{"display_name":"Fable","percent":0,"resets_at":"2026-11-02T02:59:00.000Z"}]}`, map[string]OAuthUsageWindow{"Fable": {0, reset}}, false},
 		{"missing is not zero", `{"five_hour":null,"limits":[{"display_name":"Fable","resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}, false},
 		{"invalid reset and negative usage", `{"five_hour":{"utilization":99,"resets_at":"invalid"},"seven_day":{"utilization":-1,"resets_at":"2026-11-02T02:59:00Z"}}`, map[string]OAuthUsageWindow{}, false},
+		{"invalid longer model window is omitted", `{"limits":[{"display_name":"Fable","percent":100,"resets_at":"2026-11-02T02:59:00Z"},{"display_name":"Additional","percent":100,"resets_at":"invalid"}]}`, map[string]OAuthUsageWindow{"Fable": {100, reset}}, false},
 		{"reserved name", `{"limits":[{"display_name":"five_hour","percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}, false},
 		{"malformed", `{"secret":`, nil, true},
 		{"null", `null`, nil, true},

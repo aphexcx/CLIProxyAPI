@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
@@ -81,7 +83,7 @@ func TestClaudeQuotaHoldIsPerModelAndExpires(t *testing.T) {
 }
 
 func TestClaudeQuotaReleaseResetAndReload(t *testing.T) {
-	for _, mode := range []string{"below cap", "manual reset", "disabled feature", "removed mapping", "disabled cooling"} {
+	for _, mode := range []string{"below cap", "manual reset", "disabled feature", "removed mapping", "disabled cooling", "disabled cooling and feature"} {
 		t.Run(mode, func(t *testing.T) {
 			m, a, _ := newClaudeQuotaManager(t)
 			now := time.Now()
@@ -100,8 +102,11 @@ func TestClaudeQuotaReleaseResetAndReload(t *testing.T) {
 					cfg.Claude.Quota.Enabled = false
 				case "removed mapping":
 					cfg.Claude.Quota.ModelWindows = map[string][]string{}
-				case "disabled cooling":
+				case "disabled cooling", "disabled cooling and feature":
 					cfg.DisableCooling = true
+					if mode == "disabled cooling and feature" {
+						cfg.Claude.Quota.Enabled = false
+					}
 				}
 				m.SetConfig(cfg)
 			}
@@ -109,7 +114,55 @@ func TestClaudeQuotaReleaseResetAndReload(t *testing.T) {
 			if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, now); blocked {
 				t.Fatalf("%s did not release hold", mode)
 			}
+			reg := registry.GetGlobalRegistry()
+			if reg.IsModelSuspendedForClient(a, quotaFable) || reg.IsModelQuotaExceededForClient(a, quotaFable) || reg.GetModelCount(quotaFable) != 2 {
+				t.Fatalf("%s did not restore registry routing", mode)
+			}
 		})
+	}
+}
+
+func TestClaudeQuotaPartialPollDoesNotRestoreClearedHold(t *testing.T) {
+	for _, mode := range []string{"manual reset", "successful request"} {
+		for _, invalid := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/invalid=%v", mode, invalid), func(t *testing.T) {
+				m, a, _ := newClaudeQuotaManager(t)
+				cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+				cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {quotaFable}, "Additional": {quotaFable}}
+				m.SetConfig(cfg)
+				now := time.Now()
+				applyTestClaudeQuota(m, a, 100, now.Add(time.Hour), now)
+				if mode == "manual reset" {
+					if _, _, errReset := m.ResetQuota(context.Background(), a); errReset != nil {
+						t.Fatal(errReset)
+					}
+				} else {
+					m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaFable, Success: true})
+				}
+				windows := make(map[string]QuotaWindow)
+				if invalid {
+					windows["Fable"] = QuotaWindow{Utilization: 100}
+				}
+				poll := func() *Auth {
+					base, _ := m.GetByID(a)
+					m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, windows, now)
+					auth, _ := m.GetByID(a)
+					return auth
+				}
+				if blocked, _, _ := isAuthBlockedForModel(poll(), quotaFable, now); blocked {
+					t.Fatal("partial poll recreated the cleared hold")
+				}
+				shortReset := now.Add(5 * time.Minute)
+				windows["Additional"] = QuotaWindow{Utilization: 100, ResetsAt: shortReset}
+				if blocked, _, until := isAuthBlockedForModel(poll(), quotaFable, now); !blocked || !until.Equal(shortReset) {
+					t.Fatal("new window revived the old longer hold")
+				}
+				delete(windows, "Additional")
+				if blocked, _, until := isAuthBlockedForModel(poll(), quotaFable, now); !blocked || !until.Equal(shortReset) {
+					t.Fatal("omitted windows did not retain exactly the newly owned hold")
+				}
+			})
+		}
 	}
 }
 
@@ -151,6 +204,74 @@ func TestClaudeQuotaDoesNotEraseCredentialCooldown(t *testing.T) {
 	shadow := auth.ModelStates[quotaFable].credentialQuotaShadow
 	if shadow != nil && shadow.Quota.Reason == "quota_cap" {
 		t.Fatal("guard shadow did not release")
+	}
+}
+
+func TestClaudeQuotaPreservesUpstreamFailureOwnership(t *testing.T) {
+	for _, status := range []int{404, 429, 503} {
+		for _, wrapped := range []bool{false, true} {
+			t.Run(strconv.Itoa(status)+"/wrapped="+strconv.FormatBool(wrapped), func(t *testing.T) {
+				m, a, _ := newClaudeQuotaManager(t)
+				now := time.Now()
+				applyTestClaudeQuota(m, a, 100, now.Add(time.Hour), now)
+				if wrapped {
+					delay := 10 * time.Minute
+					m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, RetryAfter: &delay, CredentialScope: true, Error: &Error{HTTPStatus: 429}})
+				}
+				delay := 2 * time.Hour
+				var retryAfter *time.Duration
+				if status != 404 {
+					retryAfter = &delay
+				}
+				m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaFable, RetryAfter: retryAfter, Error: &Error{HTTPStatus: status, Message: "upstream failure"}})
+				before, _ := m.GetByID(a)
+				until := before.ModelStates[quotaFable].NextRetryAfter
+				if !until.After(now.Add(time.Hour)) {
+					t.Fatal("upstream failure did not establish a longer cooldown")
+				}
+				for _, percent := range []float64{100, 0} {
+					applyTestClaudeQuota(m, a, percent, now.Add(time.Hour), now.Add(time.Second))
+					after, _ := m.GetByID(a)
+					if blocked, _, next := isAuthBlockedForModel(after, quotaFable, now.Add(20*time.Minute)); !blocked || !next.Equal(until) {
+						t.Fatalf("usage %v changed upstream cooldown: blocked=%v next=%v want=%v", percent, blocked, next, until)
+					}
+					if !reflect.DeepEqual(before.ModelStates[quotaFable], after.ModelStates[quotaFable]) {
+						t.Fatal("poll mutated an upstream-owned model state")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestClaudeQuotaFailureWithoutCooldownPreservesHold(t *testing.T) {
+	for _, mode := range []string{"disabled transient cooling", "zero transient retry hint"} {
+		t.Run(mode, func(t *testing.T) {
+			m, a, _ := newClaudeQuotaManager(t)
+			now := time.Now()
+			reset := now.Add(time.Hour)
+			applyTestClaudeQuota(m, a, 100, reset, now)
+			result := Result{AuthID: a, Provider: "claude", Model: quotaFable, Error: &Error{HTTPStatus: 503, Message: "upstream failure"}}
+			if mode == "disabled transient cooling" {
+				previous := transientErrorCooldownSeconds.Load()
+				transientErrorCooldownSeconds.Store(-1)
+				t.Cleanup(func() { transientErrorCooldownSeconds.Store(previous) })
+			} else {
+				zero := time.Duration(0)
+				result.RetryAfter = &zero
+				result.Error = &Error{HTTPStatus: 429, Code: ErrorCodeTransientRateLimit}
+			}
+			m.MarkResult(context.Background(), result)
+			auth, _ := m.GetByID(a)
+			if blocked, _, until := isAuthBlockedForModel(auth, quotaFable, now); !blocked || !until.Equal(reset) || !isClaudeQuotaHold(auth.ModelStates[quotaFable]) {
+				t.Fatal("failure without a new cooldown erased or took ownership of the guard")
+			}
+			applyTestClaudeQuota(m, a, 0, reset, now.Add(time.Second))
+			auth, _ = m.GetByID(a)
+			if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, now); blocked {
+				t.Fatal("valid usage release could not clear the retained guard")
+			}
+		})
 	}
 }
 
@@ -274,9 +395,260 @@ func TestClaudeQuotaRankRebucketsAndPreservesFilePriority(t *testing.T) {
 		t.Fatal("file priority changed")
 	}
 	auth.Attributes["quota_rank"] = "1"
+	auth.Quota.RankExpiresAt = now.Add(time.Hour)
 	auth.Attributes["priority"] = strconv.Itoa(math.MaxInt)
 	if authPriority(auth) != math.MaxInt {
 		t.Fatal("rank overflowed priority")
+	}
+}
+
+func TestClaudeQuotaOverlappingWindowsPreserveUnknownLongerHold(t *testing.T) {
+	for _, invalid := range []bool{false, true} {
+		t.Run("invalid="+strconv.FormatBool(invalid), func(t *testing.T) {
+			m, a, _ := newClaudeQuotaManager(t)
+			cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+			cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {quotaFable}, "Additional": {quotaFable}}
+			m.SetConfig(cfg)
+			now := time.Now()
+			short, long := now.Add(time.Hour), now.Add(2*time.Hour)
+			apply := func(windows map[string]QuotaWindow, at time.Time) {
+				base, _ := m.GetByID(a)
+				m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, windows, at)
+			}
+			apply(map[string]QuotaWindow{"Fable": {Utilization: 100, ResetsAt: short}, "Additional": {Utilization: 100, ResetsAt: long}}, now)
+			windows := map[string]QuotaWindow{"Fable": {Utilization: 100, ResetsAt: short}}
+			if invalid {
+				windows["Additional"] = QuotaWindow{Utilization: 0}
+			}
+			apply(windows, now.Add(time.Minute))
+			auth, _ := m.GetByID(a)
+			if !auth.ModelStates[quotaFable].NextRetryAfter.Equal(long) || !auth.Quota.Windows["Additional"].ObservedAt.Equal(now) {
+				t.Fatal("unknown longer window lost its hold or original observation time")
+			}
+			if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, long); blocked {
+				t.Fatal("unknown longer window did not expire at its own reset")
+			}
+			apply(map[string]QuotaWindow{"Additional": {Utilization: 0, ResetsAt: long}}, now.Add(2*time.Minute))
+			auth, _ = m.GetByID(a)
+			if !auth.ModelStates[quotaFable].NextRetryAfter.Equal(short) {
+				t.Fatal("valid release of the longer window did not restore the shorter hold")
+			}
+		})
+	}
+}
+
+func TestClaudeQuotaRestoredHoldPreservesUnknownLongerWindow(t *testing.T) {
+	m, a, _ := newClaudeQuotaManager(t)
+	cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+	cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {quotaFable}, "Additional": {quotaFable}}
+	m.SetConfig(cfg)
+	store := &recordingCooldownStateStore{}
+	m.SetCooldownStateStore(store)
+	now := time.Now()
+	long := now.Add(2 * time.Hour)
+	applyTestClaudeQuota(m, a, 100, long, now)
+	restored := NewManager(nil, nil, nil)
+	restored.SetConfig(cfg)
+	if _, errRegister := restored.Register(context.Background(), &Auth{ID: a, Provider: "claude", Status: StatusActive, Metadata: map[string]any{"access_token": "test-access"}}); errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	restored.SetCooldownStateStore(&recordingCooldownStateStore{load: store.savedRecords()})
+	if errRestore := restored.RestoreCooldownStates(context.Background()); errRestore != nil {
+		t.Fatal(errRestore)
+	}
+	base, _ := restored.GetByID(a)
+	if len(base.Quota.Windows) != 0 {
+		t.Fatal("restored runtime observations")
+	}
+	restored.applyClaudeQuotaUsage(context.Background(), restored.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+		"Additional": {Utilization: 100, ResetsAt: now.Add(time.Hour)},
+	}, now.Add(time.Second))
+	after, _ := restored.GetByID(a)
+	if !after.ModelStates[quotaFable].NextRetryAfter.Equal(long) {
+		t.Fatal("partial observation shortened a restored hold")
+	}
+}
+
+func TestClaudeQuotaExpiryPublishesWhilePollsFail(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, a, b := newClaudeQuotaManager(t)
+		m.Remove(context.Background(), b)
+		reg := registry.GetGlobalRegistry()
+		reg.UnregisterClient(b)
+		reg.RegisterClient(a, "claude", []*registry.ModelInfo{{ID: quotaFable}})
+		cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+		cfg.Claude.Quota.PollInterval = "10s"
+		m.SetConfig(cfg)
+		store := &recordingCooldownStateStore{}
+		m.SetCooldownStateStore(store)
+		now := time.Now()
+		reset := now.Add(45 * time.Second)
+		applyTestClaudeQuota(m, a, 100, reset, now)
+		if reg.GetModelCount(quotaFable) != 0 {
+			t.Fatal("live hold did not suspend routing")
+		}
+		polls := 0
+		m.RegisterExecutor(&claudeQuotaTestPoller{poll: func(context.Context, *Auth) (map[string]QuotaWindow, error) {
+			polls++
+			return nil, errors.New("usage unavailable")
+		}})
+		m.StartQuotaPolling(context.Background())
+		t.Cleanup(m.StopQuotaPolling)
+		synctest.Wait()
+		<-time.After(45 * time.Second)
+		synctest.Wait()
+		if polls < 5 {
+			t.Fatal("test did not exercise repeated failed usage reads")
+		}
+		auth, _ := m.GetByID(a)
+		if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, time.Now()); blocked {
+			t.Fatal("hold remained active at reset")
+		}
+		if reg.IsModelSuspendedForClient(a, quotaFable) || reg.IsModelQuotaExceededForClient(a, quotaFable) || reg.GetModelCount(quotaFable) != 1 {
+			t.Fatal("expiry did not clear the registry projection independently of polling")
+		}
+		if got := util.ResolveAutoModel("auto"); got != quotaFable {
+			t.Fatalf("automatic model routing after reset resolved %q", got)
+		}
+		if len(store.savedRecords()) != 0 {
+			t.Fatal("expired guard remained in cooldown persistence")
+		}
+	})
+}
+
+func TestClaudeQuotaExpiryDoesNotRestoreClearedSibling(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, a, _ := newClaudeQuotaManager(t)
+		cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+		cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {quotaFable}, "Additional": {quotaSonnet}}
+		m.SetConfig(cfg)
+		now := time.Now()
+		base, _ := m.GetByID(a)
+		m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+			"Fable": {Utilization: 100, ResetsAt: now.Add(time.Minute)}, "Additional": {Utilization: 100, ResetsAt: now.Add(time.Hour)},
+		}, now)
+		m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, Success: true})
+		m.RegisterExecutor(&claudeQuotaTestPoller{poll: func(context.Context, *Auth) (map[string]QuotaWindow, error) {
+			return nil, errors.New("usage unavailable")
+		}})
+		m.StartQuotaPolling(context.Background())
+		t.Cleanup(m.StopQuotaPolling)
+		synctest.Wait()
+		<-time.After(time.Minute)
+		synctest.Wait()
+		auth, _ := m.GetByID(a)
+		for _, model := range []string{quotaFable, quotaSonnet} {
+			if blocked, _, _ := isAuthBlockedForModel(auth, model, time.Now()); blocked {
+				t.Fatalf("expiry retained or restored %s", model)
+			}
+		}
+	})
+}
+
+func TestClaudeQuotaPublicationRejectsReplacedRegistration(t *testing.T) {
+	m, a, _ := newClaudeQuotaManager(t)
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		applyTestClaudeQuota(m, a, 100, now.Add(time.Hour), now)
+	}
+	stale, _ := m.GetByID(a)
+	m.Remove(context.Background(), a)
+	reg := registry.GetGlobalRegistry()
+	reg.UnregisterClient(a)
+	if _, errRegister := m.Register(context.Background(), &Auth{ID: a, Provider: "claude", Status: StatusActive, Metadata: map[string]any{"access_token": "replacement-access"}}); errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	reg.RegisterClient(a, "claude", []*registry.ModelInfo{{ID: quotaFable}, {ID: quotaSonnet}})
+	fresh, _ := m.GetByID(a)
+	if fresh.RegistrationEpoch <= stale.RegistrationEpoch || fresh.Generation >= stale.Generation {
+		t.Fatal("test did not replace the registration and reset its generation")
+	}
+	// Deterministically deliver the delayed old publication after replacement.
+	m.publishClaudeQuotaSnapshots([]*Auth{stale})
+	if reg.IsModelSuspendedForClient(a, quotaFable) || reg.IsModelQuotaExceededForClient(a, quotaFable) {
+		t.Fatal("old hold was published onto the replacement credential")
+	}
+	m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaFable, Error: &Error{HTTPStatus: 404, Message: "replacement failure"}})
+	if !reg.IsModelSuspendedForClient(a, quotaFable) {
+		t.Fatal("old generation poisoned subsequent fresh registry publications")
+	}
+}
+
+func TestClaudeQuotaPublicationUsesLatestSameRegistration(t *testing.T) {
+	m, a, _ := newClaudeQuotaManager(t)
+	now := time.Now()
+	applyTestClaudeQuota(m, a, 100, now.Add(time.Hour), now)
+	// Pause an expiry between its manager mutation and registry publication.
+	m.mu.Lock()
+	current := m.auths[a]
+	resetModelState(current.ModelStates[quotaFable], now)
+	current.Generation++
+	delayed := current.Clone()
+	m.mu.Unlock()
+	updated := delayed.Clone()
+	updated.Attributes = map[string]string{"priority": "2"}
+	if _, errUpdate := m.Update(context.Background(), updated); errUpdate != nil {
+		t.Fatal(errUpdate)
+	}
+	latest, _ := m.GetByID(a)
+	if latest.RegistrationEpoch != delayed.RegistrationEpoch || latest.Generation <= delayed.Generation {
+		t.Fatal("test did not advance generation within the same registration")
+	}
+	m.publishClaudeQuotaSnapshots([]*Auth{delayed})
+	reg := registry.GetGlobalRegistry()
+	if reg.IsModelSuspendedForClient(a, quotaFable) || reg.IsModelQuotaExceededForClient(a, quotaFable) {
+		t.Fatal("ordinary concurrent update discarded the pending hold release")
+	}
+}
+
+func TestClaudeQuotaRankExpiresWithoutPollCompletion(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, a, b := newClaudeQuotaManager(t)
+		now := time.Now()
+		applyTestClaudeQuota(m, b, 20, now.Add(time.Minute), now)
+		pick := func(model, want string) {
+			t.Helper()
+			got, errPick := m.scheduler.pickSingle(context.Background(), "claude", model, cliproxyexecutor.Options{}, nil)
+			if errPick != nil || got == nil || got.ID != want {
+				t.Fatalf("%s pick=%v err=%v want=%s", model, got, errPick, want)
+			}
+		}
+		// Prime both model shards before expiry; they share provider metadata.
+		pick(quotaFable, b)
+		pick(quotaSonnet, b)
+		m.RegisterExecutor(&claudeQuotaTestPoller{poll: func(ctx context.Context, _ *Auth) (map[string]QuotaWindow, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}})
+		m.StartQuotaPolling(context.Background())
+		t.Cleanup(m.StopQuotaPolling)
+		synctest.Wait()
+		<-time.After(time.Minute)
+		synctest.Wait()
+		auth, _ := m.GetByID(b)
+		if auth.QuotaRank(time.Now()) != 0 || authPriority(auth) != 0 {
+			t.Fatal("rank stayed live after its window reset without a successful poll")
+		}
+		pick(quotaFable, a)
+		pick(quotaSonnet, a)
+		// A newly built shard must not reuse the provider's stale priority.
+		m.scheduler.mu.Lock()
+		delete(m.scheduler.providers["claude"].modelShards, quotaFable)
+		m.scheduler.mu.Unlock()
+		pick(quotaFable, a)
+	})
+}
+
+func TestClaudeQuotaPriorityFilterUsesOneInstant(t *testing.T) {
+	reset := time.Now().Add(-time.Hour)
+	a := &Auth{ID: "a"}
+	b := &Auth{ID: "b", Attributes: map[string]string{"quota_rank": "1"}, Quota: QuotaState{RankExpiresAt: reset}}
+	auths := []*Auth{a, b}
+	if got := highestPriorityAuthsAt(auths, reset.Add(-time.Nanosecond)); len(got) != 1 || got[0] != b {
+		t.Fatal("priority passes did not share the supplied instant before reset")
+	}
+	if got := highestPriorityAuthsAt(auths, reset); len(got) != 2 {
+		t.Fatal("rank expiry left the priority filter empty")
 	}
 }
 
@@ -286,9 +658,13 @@ func TestClaudeQuotaObservationIsRuntimeOnlyAndCloned(t *testing.T) {
 	applyTestClaudeQuota(m, a, 100, now.Add(time.Hour), now)
 	auth, _ := m.GetByID(a)
 	auth.Quota.Windows["Fable"] = QuotaWindow{}
+	delete(auth.ModelStates[quotaFable].Quota.guardWindows, "Fable")
 	current, _ := m.GetByID(a)
 	if current.Quota.Windows["Fable"].Utilization != 100 {
 		t.Fatal("usage snapshot aliases manager memory")
+	}
+	if !current.ModelStates[quotaFable].Quota.guardWindows["Fable"].Equal(now.Add(time.Hour)) {
+		t.Fatal("hold provenance aliases manager memory")
 	}
 	if _, ok := current.Metadata["quota_rank"]; ok {
 		t.Fatal("rank stored in metadata")
@@ -497,10 +873,15 @@ func TestClaudeQuotaPollCadenceDoesNotOverlapStalledSeat(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m, a, b := newClaudeQuotaManager(t)
 		called := make(chan string, 8)
+		cancelled := make(chan error, 2)
 		m.RegisterExecutor(&claudeQuotaTestPoller{poll: func(ctx context.Context, auth *Auth) (map[string]QuotaWindow, error) {
+			if deadline, ok := ctx.Deadline(); !ok || !deadline.Equal(time.Now().Add(30*time.Second)) {
+				t.Error("usage read is missing its 30-second deadline")
+			}
 			called <- auth.ID
 			if auth.ID == a {
 				<-ctx.Done()
+				cancelled <- ctx.Err()
 				return nil, ctx.Err()
 			}
 			return map[string]QuotaWindow{}, nil
@@ -513,11 +894,29 @@ func TestClaudeQuotaPollCadenceDoesNotOverlapStalledSeat(t *testing.T) {
 		}
 		<-called
 		<-called
-		// synctest advances virtual time; no wall-clock sleep or network deadline.
-		<-time.After(5 * time.Minute)
+		// synctest advances virtual time; the read gets its full deadline.
+		<-time.After(claudeQuotaPollTimeout / 2)
 		synctest.Wait()
-		if len(called) != 1 || <-called != b {
-			t.Fatal("poll cadence overlapped a stalled seat or stalled a healthy one")
+		if len(cancelled) != 0 {
+			t.Fatal("usage read timed out early")
+		}
+		<-time.After(claudeQuotaPollTimeout / 2)
+		synctest.Wait()
+		if len(cancelled) != 1 || !errors.Is(<-cancelled, context.DeadlineExceeded) {
+			t.Fatal("stalled usage read did not time out")
+		}
+		if len(called) != 0 {
+			t.Fatal("poll overlapped an outstanding read")
+		}
+		// A timed-out seat is retried on the next normal poll tick.
+		<-time.After(5*time.Minute - claudeQuotaPollTimeout)
+		synctest.Wait()
+		if len(called) != 2 {
+			t.Fatal("timed-out seat was not retried on the next tick")
+		}
+		seen := map[string]bool{<-called: true, <-called: true}
+		if !seen[a] || !seen[b] {
+			t.Fatal("next tick did not poll both seats")
 		}
 	})
 }

@@ -499,6 +499,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	// Usage and rank belong to the running manager, never to file snapshots or
 	// refresh results. Preserve them even when an update replaces Attributes.
 	auth.Quota.Windows = existing.Quota.Clone().Windows
+	auth.Quota.RankExpiresAt = existing.Quota.RankExpiresAt
 	if auth.Attributes == nil && existing.Attributes["quota_rank"] != "" {
 		auth.Attributes = make(map[string]string)
 	}

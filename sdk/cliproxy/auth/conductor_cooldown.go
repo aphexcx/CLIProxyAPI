@@ -299,11 +299,7 @@ func (m *Manager) clearDisabledCooldownStates(cfg *internalconfig.Config) bool {
 	}
 	m.mu.Unlock()
 
-	if m.scheduler != nil {
-		for _, snapshot := range snapshots {
-			m.scheduler.upsertAuth(snapshot)
-		}
-	}
+	m.publishClaudeQuotaSnapshots(snapshots)
 	return len(snapshots) > 0
 }
 
@@ -356,7 +352,7 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 	// Upstream cooldowns remain independent of the guard configuration.
 	if cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config); cfg != nil {
 		for _, auth := range m.auths {
-			if m.reconcileClaudeQuotaHoldsLocked(auth, cfg, now) {
+			if m.reconcileClaudeQuotaHoldsLocked(auth, cfg, auth.Quota.Windows, now) {
 				auth.Generation++
 				auth.UpdatedAt = now
 				snapshotsByID[auth.ID] = auth.Clone()
@@ -1047,10 +1043,21 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							*state = *fresh
 						}
 					}
+					var previousGuard *ModelState
+					if !result.CredentialScope && isClaudeQuotaHold(state) {
+						previousGuard = state.cloneShallow()
+					}
 					state.Unavailable = true
 					state.Status = StatusError
 					state.UpdatedAt = now
 					prevModelRetryAfter := state.NextRetryAfter
+					// An own failure takes ownership of this cooldown. Keep the
+					// monotonic retry deadline, but never leave a guard label that
+					// a later usage poll could mistake for permission to clear it.
+					// Credential failures preserve the guard in the saved shadow.
+					if !result.CredentialScope && state.Quota.Reason == "quota_cap" {
+						applyCooldownFields(&state.Quota, QuotaState{})
+					}
 					if result.Error != nil {
 						state.LastError = cloneError(result.Error)
 						state.StatusMessage = result.Error.Message
@@ -1272,6 +1279,13 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					if result.Error != nil && result.Error.Code == ErrorCodeForceCooldown && state.NextRetryAfter.IsZero() {
 						state.NextRetryAfter = now.Add(transientErrorCooldown)
 						state.Unavailable = true
+					}
+					// A failure that establishes no cooldown (for example, disabled
+					// transient cooling) cannot release an already exhausted window.
+					// Retain guard ownership so a later usage read can still release it.
+					if previousGuard != nil && !disableCooling && state.NextRetryAfter.IsZero() && previousGuard.NextRetryAfter.After(now) {
+						*state = *previousGuard
+						state.UpdatedAt = now
 					}
 					// A later failure only extends a still-live cooldown; it never
 					// shortens one. A deliberate zero write (disableCooling) still
