@@ -534,6 +534,7 @@ func (m *Manager) restoreCooldownRecordWithCredentialDeadlineLocked(record Coold
 	if isClaudeQuotaHold(guard) && isClaudeQuotaHold(liveShadow) &&
 		!guard.UpdatedAt.After(liveShadow.UpdatedAt) {
 		guard.Quota.guardWindows = liveShadow.Quota.guardWindows
+		guard.quotaFreshness = liveShadow.quotaFreshness
 	}
 	auth.Generation++
 	auth.UpdatedAt = updatedAt
@@ -1006,9 +1007,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		responseHeaders, headersObservedAt := internallogging.GetResponseHeadersSnapshot(ctx)
 		modelState := existingModelState(auth, modelKey)
 		cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
-		observeClaudeQuota := !result.SkipQuotaObservation && strings.EqualFold(result.Provider, "claude") && cfg != nil && cfg.Claude.Quota.Enabled && claudeQuotaEligible(auth)
+		trackClaudeQuotaFreshness := strings.EqualFold(result.Provider, "claude") && cfg != nil && cfg.Claude.Quota.Enabled && claudeQuotaEligible(auth)
+		observeClaudeQuota := trackClaudeQuotaFreshness && !result.SkipQuotaObservation
 		var beforeResult map[string]claudeQuotaFreshness
-		if observeClaudeQuota {
+		if trackClaudeQuotaFreshness {
 			beforeResult = make(map[string]claudeQuotaFreshness, len(auth.ModelStates)+1)
 			for model, state := range auth.ModelStates {
 				if state != nil {
@@ -1049,7 +1051,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			isAuthActiveCooldown(auth, now) && auth.cooldownRecordedSeq > 0 && result.ExecutionSeq <= auth.cooldownRecordedSeq
 		// Long responses can finish after a newer poll or response established a
 		// guard hold. Their older headers cannot prove that hold has recovered.
-		if observeClaudeQuota && result.Success && !headersObservedAt.IsZero() {
+		if trackClaudeQuotaFreshness && result.Success && !headersObservedAt.IsZero() {
 			// A credential cooldown may still wrap the guard after its own
 			// expiry. Promote that layer before success can discard the shadow.
 			guardState, _ := claudeQuotaHoldLayer(auth, modelState, now)
@@ -1484,10 +1486,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
 			}
 		}
+		// Token-count responses skip usage/signals, but a successful clear must
+		// still use receipt time rather than introducing a completion-time barrier.
+		if trackClaudeQuotaFreshness && result.Success && !headersObservedAt.IsZero() && modelState != nil && modelState.Status == StatusActive && modelState.UpdatedAt.Equal(now) {
+			setClaudeQuotaFreshness(modelState, beforeResult[modelKey], headersObservedAt)
+		}
 		if observeClaudeQuota && claudeQuotaEligible(auth) && !headersObservedAt.IsZero() {
-			if result.Success && modelState != nil && modelState.Status == StatusActive && modelState.UpdatedAt.Equal(now) {
-				setClaudeQuotaFreshness(modelState, beforeResult[modelKey], headersObservedAt)
-			}
 			windows := claudeQuotaHeaderWindows(responseHeaders, headersObservedAt)
 			if len(windows) > 0 {
 				fresh := mergeClaudeQuotaWindows(auth, windows)
@@ -1721,6 +1725,9 @@ func mergeModelState(target, source *ModelState) *ModelState {
 			BackoffLevel:  target.Quota.BackoffLevel,
 		},
 		UpdatedAt: target.UpdatedAt,
+		// The preferred state's timestamp wins below; keep its receipt metadata
+		// with it instead of turning a live observation into an explicit barrier.
+		quotaFreshness: preferred.quotaFreshness,
 	}
 	merged.Quota = mergeQuotaObservation(merged.Quota, fallback.Quota)
 	merged.Quota = mergeQuotaObservation(merged.Quota, preferred.Quota)
