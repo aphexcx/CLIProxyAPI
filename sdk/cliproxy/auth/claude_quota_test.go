@@ -190,6 +190,100 @@ func TestClaudeQuotaPartialPollAndReloadDoNotRestoreClearedHold(t *testing.T) {
 	}
 }
 
+func TestClaudeQuotaCapReloadRechecksOnlyOwnedHolds(t *testing.T) {
+	for _, capSource := range []string{"cap-percent", "window-caps", "model-windows"} {
+		t.Run(capSource, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, a, _ := newClaudeQuotaManager(t)
+				cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+				capPercent := float64(80)
+				cfg.Claude.Quota.CapPercent = &capPercent
+				if capSource == "window-caps" {
+					*cfg.Claude.Quota.CapPercent = 100
+					cfg.Claude.Quota.WindowCaps = map[string]float64{"Fable": 80}
+				}
+				m.SetConfig(cfg)
+				applyTestClaudeQuota(m, a, 90, time.Now().Add(time.Hour), time.Now())
+				auth, _ := m.GetByID(a)
+				if !isClaudeQuotaHold(auth.ModelStates[quotaFable]) {
+					t.Fatal("test did not install the hold")
+				}
+				m.RegisterExecutor(&claudeQuotaTestPoller{poll: func(context.Context, *Auth) (map[string]QuotaWindow, error) {
+					return nil, errors.New("usage unavailable")
+				}})
+				m.StartQuotaPolling(context.Background())
+				t.Cleanup(m.StopQuotaPolling)
+				synctest.Wait()
+				cfg = cfg.CloneForRuntime()
+				switch capSource {
+				case "cap-percent":
+					*cfg.Claude.Quota.CapPercent = 100
+				case "window-caps":
+					cfg.Claude.Quota.WindowCaps["Fable"] = 100
+				case "model-windows":
+					cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {quotaSonnet}}
+				}
+				m.SetConfig(cfg)
+				synctest.Wait()
+				auth, _ = m.GetByID(a)
+				for _, model := range []string{quotaFable, quotaSonnet} {
+					if blocked, _, _ := isAuthBlockedForModel(auth, model, time.Now()); blocked {
+						t.Fatalf("reload kept or created a hold for %s", model)
+					}
+				}
+				cfg = cfg.CloneForRuntime()
+				*cfg.Claude.Quota.CapPercent = 70
+				cfg.Claude.Quota.WindowCaps = nil
+				cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {quotaFable}}
+				m.SetConfig(cfg)
+				synctest.Wait()
+				auth, _ = m.GetByID(a)
+				if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, time.Now()); blocked {
+					t.Fatal("lower cap re-armed a hold from retained usage")
+				}
+			})
+		})
+	}
+}
+
+func TestClaudeQuotaRestoreDoesNotRearmClearedHold(t *testing.T) {
+	for _, mode := range []string{"manual reset", "successful request"} {
+		t.Run(mode, func(t *testing.T) {
+			m, a, b := newClaudeQuotaManager(t)
+			now := time.Now()
+			applyTestClaudeQuota(m, a, 100, now.Add(time.Hour), now)
+			if mode == "manual reset" {
+				if _, _, errReset := m.ResetQuota(context.Background(), a); errReset != nil {
+					t.Fatal(errReset)
+				}
+			} else {
+				m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaFable, Success: true})
+			}
+			base, _ := m.GetByID(a)
+			m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{}, now)
+			store := &recordingCooldownStateStore{load: []CooldownStateRecord{{
+				AuthID: b, Model: quotaSonnet, NextRetryAfter: now.Add(time.Hour),
+				Quota: QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: now.Add(time.Hour)},
+			}}}
+			m.SetCooldownStateStore(store)
+			if errRestore := m.RestoreCooldownStates(context.Background()); errRestore != nil {
+				t.Fatal(errRestore)
+			}
+			auth, _ := m.GetByID(a)
+			if auth.Quota.Windows["Fable"].Utilization != 100 {
+				t.Fatal("test lost retained exhausted usage")
+			}
+			if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, now); blocked {
+				t.Fatal("restore re-armed the cleared hold from retained usage")
+			}
+			other, _ := m.GetByID(b)
+			if blocked, _, _ := isAuthBlockedForModel(other, quotaSonnet, now); !blocked {
+				t.Fatal("restore did not load the independent cooldown")
+			}
+		})
+	}
+}
+
 func TestClaudeQuotaMissingWindowAndIndependentCooldown(t *testing.T) {
 	m, a, _ := newClaudeQuotaManager(t)
 	now := time.Now()
@@ -456,6 +550,51 @@ func TestClaudeQuotaOverlappingWindowsPreserveUnknownLongerHold(t *testing.T) {
 			auth, _ = m.GetByID(a)
 			if !auth.ModelStates[quotaFable].NextRetryAfter.Equal(short) {
 				t.Fatal("valid release of the longer window did not restore the shorter hold")
+			}
+		})
+	}
+}
+
+func TestClaudeQuotaRestorePreservesLiveWindowDeadlines(t *testing.T) {
+	for _, wrapped := range []bool{false, true} {
+		t.Run(strconv.FormatBool(wrapped), func(t *testing.T) {
+			m, a, _ := newClaudeQuotaManager(t)
+			cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+			cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {quotaFable}, "Additional": {quotaFable}}
+			m.SetConfig(cfg)
+			store := &recordingCooldownStateStore{}
+			m.SetCooldownStateStore(store)
+			now := time.Now()
+			long, short := now.Add(2*time.Hour), now.Add(time.Hour)
+			base, _ := m.GetByID(a)
+			m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+				"Fable": {Utilization: 100, ResetsAt: long}, "Additional": {Utilization: 100, ResetsAt: short},
+			}, now)
+			if wrapped {
+				delay := 3 * time.Hour
+				m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, RetryAfter: &delay, CredentialScope: true, Error: &Error{HTTPStatus: 429}})
+			}
+			// A disk round trip omits runtime-only per-window provenance, including shadows.
+			data, errMarshal := json.Marshal(store.savedRecords())
+			if errMarshal != nil {
+				t.Fatal(errMarshal)
+			}
+			var records []CooldownStateRecord
+			if errUnmarshal := json.Unmarshal(data, &records); errUnmarshal != nil {
+				t.Fatal(errUnmarshal)
+			}
+			m.SetCooldownStateStore(&recordingCooldownStateStore{load: records})
+			if errRestore := m.RestoreCooldownStates(context.Background()); errRestore != nil {
+				t.Fatal(errRestore)
+			}
+			base, _ = m.GetByID(a)
+			m.applyClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+				"Fable": {Utilization: 0, ResetsAt: long},
+			}, now.Add(time.Second))
+			auth, _ := m.GetByID(a)
+			owned, _ := claudeQuotaHoldLayer(auth, auth.ModelStates[quotaFable], now)
+			if !isClaudeQuotaHold(owned) || !owned.NextRetryAfter.Equal(short) {
+				t.Fatalf("restore extended the remaining window: %+v", owned)
 			}
 		})
 	}
@@ -898,6 +1037,107 @@ func TestClaudeQuotaPollFailureDoesNotDisable(t *testing.T) {
 			t.Fatal("poll failure mutated seat")
 		}
 	})
+}
+
+func TestClaudeQuotaStalledReadReleasesSlotOnCredentialChange(t *testing.T) {
+	for _, mode := range []string{"refresh", "update", "register", "remove and register"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, a, b := newClaudeQuotaManager(t)
+				m.Remove(context.Background(), b)
+				old, _ := m.GetByID(a)
+				called := make(chan *Auth, 8)
+				contexts := make(chan context.Context, 8)
+				oldComplete := make(chan struct{})
+				defer close(oldComplete)
+				newComplete := make(chan struct{})
+				defer close(newComplete)
+				m.RegisterExecutor(&claudeQuotaTestPoller{poll: func(ctx context.Context, auth *Auth) (map[string]QuotaWindow, error) {
+					called <- auth
+					contexts <- ctx
+					if _, ok := ctx.Deadline(); ok {
+						t.Error("usage read has a deadline")
+					}
+					if auth.RegistrationEpoch == old.RegistrationEpoch && auth.CredentialVersion == old.CredentialVersion {
+						// Deliberately ignore cancellation to exercise a late completion.
+						<-oldComplete
+						return map[string]QuotaWindow{"Fable": {Utilization: 100, ResetsAt: time.Now().Add(time.Hour)}}, nil
+					}
+					select {
+					case <-newComplete:
+					case <-ctx.Done():
+					}
+					return nil, ctx.Err()
+				}})
+				m.StartQuotaPolling(context.Background())
+				t.Cleanup(m.StopQuotaPolling)
+				synctest.Wait()
+				if len(called) != 1 {
+					t.Fatal("initial read did not start")
+				}
+				<-called
+				oldContext := <-contexts
+				// An ordinary update must keep the same in-flight credential read.
+				ordinary := old.Clone()
+				ordinary.Attributes = map[string]string{"priority": "2"}
+				if _, errUpdate := m.Update(context.Background(), ordinary); errUpdate != nil {
+					t.Fatal(errUpdate)
+				}
+				synctest.Wait()
+				if oldContext.Err() != nil {
+					t.Fatal("ordinary update cancelled a current read")
+				}
+				replacement, _ := m.GetByID(a)
+				var errChange error
+				switch mode {
+				case "refresh", "update":
+					replacement.Metadata["access_token"] = "replacement-access"
+					if mode == "refresh" {
+						_, errChange = m.UpdateRefreshedAuth(context.Background(), old, replacement)
+					} else {
+						_, errChange = m.Update(context.Background(), replacement)
+					}
+				case "register":
+					_, errChange = m.Register(context.Background(), replacement)
+				case "remove and register":
+					m.Remove(context.Background(), a)
+					synctest.Wait()
+					if oldContext.Err() == nil {
+						t.Error("removal did not cancel the read")
+					}
+					_, errChange = m.Register(context.Background(), replacement)
+				}
+				if errChange != nil {
+					t.Fatal(errChange)
+				}
+				synctest.Wait()
+				if oldContext.Err() == nil {
+					t.Error("credential change did not cancel the read")
+				}
+				<-time.After(5 * time.Minute)
+				synctest.Wait()
+				if len(called) != 1 {
+					t.Fatal("next tick skipped the replacement behind a stalled read")
+				}
+				fresh := <-called
+				if fresh.RegistrationEpoch == old.RegistrationEpoch && fresh.CredentialVersion == old.CredentialVersion {
+					t.Fatal("next tick read the obsolete credential")
+				}
+				// Let the old result arrive while the replacement is still reading.
+				oldComplete <- struct{}{}
+				synctest.Wait()
+				current, _ := m.GetByID(a)
+				if len(current.Quota.Windows) != 0 || isClaudeQuotaHold(current.ModelStates[quotaFable]) {
+					t.Fatal("late obsolete completion applied usage")
+				}
+				<-time.After(5 * time.Minute)
+				synctest.Wait()
+				if len(called) != 0 {
+					t.Fatal("late obsolete completion cleared the replacement running slot")
+				}
+			})
+		})
+	}
 }
 
 func TestClaudeQuotaPollCadenceDoesNotOverlapStalledSeat(t *testing.T) {

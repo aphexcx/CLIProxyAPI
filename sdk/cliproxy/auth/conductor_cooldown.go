@@ -349,10 +349,11 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 		}
 	}
 	// A saved guard hold is meaningful only while its opt-in rule still exists.
+	// Retained usage is not a fresh observation and cannot re-arm a cleared hold.
 	// Upstream cooldowns remain independent of the guard configuration.
 	if cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config); cfg != nil {
 		for _, auth := range m.auths {
-			if m.reconcileClaudeQuotaHoldsLocked(auth, cfg, auth.Quota.Windows, now) {
+			if m.reconcileClaudeQuotaHoldsLocked(auth, cfg, nil, now) {
 				auth.Generation++
 				auth.UpdatedAt = now
 				snapshotsByID[auth.ID] = auth.Clone()
@@ -477,6 +478,16 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 		} else if liveShadow != nil {
 			state.credentialQuotaShadow = liveShadow
 		}
+	}
+	// Restoring the same or older aggregate hold must not discard live window
+	// ownership. Otherwise reconciliation gives every window the longest reset.
+	guard := state
+	if !isClaudeQuotaHold(guard) {
+		guard = state.credentialQuotaShadow
+	}
+	if isClaudeQuotaHold(guard) && isClaudeQuotaHold(liveShadow) &&
+		!guard.UpdatedAt.After(liveShadow.UpdatedAt) && guard.NextRetryAfter.Equal(liveShadow.NextRetryAfter) {
+		guard.Quota.guardWindows = liveShadow.Quota.guardWindows
 	}
 	auth.Generation++
 	auth.UpdatedAt = updatedAt

@@ -80,15 +80,26 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 	defer expiry.Stop()
 	// One outstanding read per seat. Per AGENTS.md, established upstream reads
 	// have no timeout; local expiry and other seats' polls proceed independently.
-	running := make(map[string]bool)
-	completed := make(chan string)
+	type read struct {
+		auth   *Auth
+		cancel context.CancelFunc
+	}
+	running := make(map[string]*read)
+	completed := make(chan *read)
 	poll := func() {
 		cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 		if ctx.Err() != nil || cfg == nil || !cfg.Claude.Quota.Enabled {
 			return
 		}
 		for _, auth := range m.List() {
-			if !claudeQuotaEligible(auth) || running[auth.ID] {
+			if previous := running[auth.ID]; previous != nil {
+				if sameClaudeQuotaCredential(auth, previous.auth) {
+					continue
+				}
+				previous.cancel()
+				delete(running, auth.ID)
+			}
+			if !claudeQuotaEligible(auth) {
 				continue
 			}
 			executor, ok := m.Executor(auth.Provider)
@@ -99,18 +110,14 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 			if !ok {
 				continue
 			}
-			running[auth.ID] = true
+			readCtx, cancel := context.WithCancel(ctx)
+			current := &read{auth: auth, cancel: cancel}
+			running[auth.ID] = current
 			go func() {
-				windows, errPoll := poller.PollQuota(ctx, auth)
-				if errPoll != nil {
-					// Transport errors may contain proxy credentials. Never log the error.
-					log.WithField("auth_file", claudeQuotaName(auth)).Debug("claude quota: usage read failed")
-					m.refreshClaudeQuotaRanks()
-				} else {
-					m.applyClaudeQuotaUsage(ctx, cfg, auth, windows, time.Now())
-				}
+				m.pollClaudeQuotaCredential(readCtx, cfg, auth, poller)
+				cancel()
 				select {
-				case completed <- auth.ID:
+				case completed <- current:
 				case <-ctx.Done():
 				}
 			}()
@@ -128,12 +135,68 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 			return
 		case <-expiryC:
 			m.expireClaudeQuotaState(ctx)
-		case id := <-completed:
-			delete(running, id)
+		case finished := <-completed:
+			if running[finished.auth.ID] == finished {
+				delete(running, finished.auth.ID)
+			}
 		case <-ticker.C:
 			poll()
 		}
 		expiry.Stop()
+	}
+}
+
+func sameClaudeQuotaCredential(current, base *Auth) bool {
+	return claudeQuotaEligible(current) && current.RegistrationEpoch == base.RegistrationEpoch &&
+		current.CredentialVersion == base.CredentialVersion && authAccessToken(current) == authAccessToken(base)
+}
+
+// Watch credential identity, not ordinary runtime generations. Cancellation is
+// tied to lifecycle changes, never a deadline on an established upstream read.
+func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalconfig.Config, base *Auth, poller QuotaPoller) {
+	changes, stopWatching := m.WatchAuthChanges(base.ID)
+	defer stopWatching()
+	current := func() bool {
+		m.mu.RLock()
+		defer m.mu.RUnlock()
+		return sameClaudeQuotaCredential(m.auths[base.ID], base)
+	}
+	// Subscribe before checking identity so a concurrent replacement cannot be missed.
+	if ctx.Err() != nil || !current() {
+		return
+	}
+	type result struct {
+		windows map[string]QuotaWindow
+		err     error
+	}
+	// A poller that finishes late after cancellation must neither retain its slot
+	// nor apply its result. The buffered delivery lets that obsolete read exit.
+	results := make(chan result, 1)
+	go func() {
+		windows, errPoll := poller.PollQuota(ctx, base)
+		results <- result{windows, errPoll}
+	}()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-changes:
+			if !current() {
+				return
+			}
+		case observed := <-results:
+			if ctx.Err() != nil || !current() {
+				return
+			}
+			if observed.err != nil {
+				// Transport errors may contain proxy credentials. Never log the error.
+				log.WithField("auth_file", claudeQuotaName(base)).Debug("claude quota: usage read failed")
+				m.refreshClaudeQuotaRanks()
+			} else {
+				m.applyClaudeQuotaUsage(ctx, cfg, base, observed.windows, time.Now())
+			}
+			return
+		}
 	}
 }
 
@@ -317,6 +380,11 @@ func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfi
 						// aggregate deadline until every mapped window is observed.
 						if owned.Quota.guardWindows == nil {
 							reset = owned.Quota.NextRecoverAt
+						}
+						// Retained usage may release an owned window under current
+						// caps, but cannot create, extend, or re-arm its deadline.
+						if retained, ok := auth.Quota.Windows[window]; ok && !retained.ResetsAt.IsZero() && retained.Utilization < quota.CapFor(window) {
+							reset = time.Time{}
 						}
 					}
 				}
