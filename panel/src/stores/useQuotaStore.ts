@@ -210,6 +210,7 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
           (quota.optionalMetadataSequence ?? 0) > confirmationSequence;
         const priorPoll = previous?.resetCreditsUpdatedForPoll;
         const incomingPoll = quota.resetCreditsUpdatedForPoll;
+        let waitForPoll = previous?.resetCreditsWaitForPoll ?? false;
         const protectedFallback =
           priorPoll !== undefined &&
           (priorPoll === incomingPoll ||
@@ -221,7 +222,22 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
           credits = previous;
         }
         let updatedForPoll = credits.resetCreditsUpdatedForPoll;
+        const completedPoll = candidate.serverCache?.polledAt;
+        if (
+          !newConfirmation &&
+          waitForPoll &&
+          previous &&
+          completedPoll &&
+          (!priorPoll || Date.parse(completedPoll) > Date.parse(priorPoll))
+        ) {
+          // The server serializes polls per seat. This first completion may
+          // have started before confirmation; only a later poll is safe.
+          credits = previous;
+          updatedForPoll = completedPoll;
+          waitForPoll = false;
+        }
         if (newConfirmation) {
+          waitForPoll = true;
           // Include polls that arrived after enrichment resolved but before its
           // result commits. Never move the protected observation backwards.
           let latest: string | null = null;
@@ -244,7 +260,8 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
         if (
           candidate !== credits ||
           newConfirmation ||
-          (candidate.resetCreditsConfirmationSequence ?? 0) !== confirmationSequence
+          (candidate.resetCreditsConfirmationSequence ?? 0) !== confirmationSequence ||
+          (candidate.resetCreditsWaitForPoll ?? false) !== waitForPoll
         ) {
           candidate = {
             ...candidate,
@@ -253,6 +270,7 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
               ? quota.optionalMetadataSequence
               : confirmationSequence,
             resetCreditsUpdatedForPoll: updatedForPoll,
+            resetCreditsWaitForPoll: waitForPoll,
             rateLimitResetCreditsAvailableCount: credits.rateLimitResetCreditsAvailableCount,
             rateLimitResetCreditsApplicableAvailableCount:
               credits.rateLimitResetCreditsApplicableAvailableCount,

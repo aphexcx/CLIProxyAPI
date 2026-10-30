@@ -311,6 +311,7 @@ export interface CodexQuotaState {
   resetCreditsUpdatedForPoll?: string | null;
   resetCreditsConfirmed?: boolean;
   resetCreditsConfirmationSequence?: number;
+  resetCreditsWaitForPoll?: boolean;
   windows: CodexQuotaWindow[];
   observedAt?: string | null;
   stale?: boolean;

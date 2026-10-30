@@ -285,6 +285,37 @@ describe('Codex cached usage', () => {
     }
   );
 
+  test.each([
+    { credits: [] },
+    {
+      credits: [
+        {
+          id: 'spent',
+          status: 'consumed',
+          reset_type: 'codex_rate_limits',
+          expires_at: '2030-01-01',
+        },
+      ],
+    },
+  ])('empty available-credit details confirm zero without a count: %j', async ({ credits }) => {
+    spyOn(apiClient, 'post').mockResolvedValue({
+      ...usage,
+      rate_limit_reset_credits: { available_count: 1 },
+    });
+    spyOn(apiCallApi, 'request').mockResolvedValue({
+      statusCode: 200,
+      header: {},
+      body: { credits },
+      bodyText: '',
+    });
+    const data = await CODEX_CONFIG.fetchQuota(seat, translations.t);
+    const quota = CODEX_CONFIG.buildSuccessState(
+      await CODEX_CONFIG.enrichQuota!(seat, data, translations.t)
+    );
+    expect(quota.rateLimitResetCreditsAvailableCount).toBe(0);
+    expect(CODEX_CONFIG.canResetQuota!(quota)).toBe(false);
+  });
+
   test.each(['details', 'cooldown'])(
     'successful consumption invalidates credits before a failed follow-up: %s',
     async (failure) => {
@@ -461,6 +492,19 @@ describe('Codex cached usage', () => {
       ...cachedUsage,
       polled_at: '2026-10-30T12:02:00Z',
       last_poll_at: '2026-10-30T12:02:00Z',
+      rate_limit_reset_credits: { available_count: 1, applicable_available_count: 1 },
+    };
+    await authFilesApi.list();
+    const inFlight = await CODEX_CONFIG.fetchQuota(seat, translations.t);
+    save(await CODEX_CONFIG.enrichQuota!(seat, inFlight, translations.t));
+    expect(state().rateLimitResetCreditsAvailableCount).toBe(0);
+    expect(CODEX_CONFIG.canResetQuota!(state())).toBe(false);
+    // Only the following serialized poll is guaranteed to have started after
+    // confirmation; the first completion could contain pre-redemption data.
+    cachedUsage = {
+      ...cachedUsage,
+      polled_at: '2026-10-30T12:03:00Z',
+      last_poll_at: '2026-10-30T12:03:00Z',
       rate_limit_reset_credits: { available_count: 2, applicable_available_count: 1 },
     };
     await authFilesApi.list();
