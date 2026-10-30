@@ -427,6 +427,13 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context, pagination authFilesPagi
 			emailValue := gjson.GetBytes(data, "email").String()
 			fileData["type"] = typeValue
 			fileData["email"] = emailValue
+			if identityField := authFileIdentityField(typeValue); c.GetBool(ConfigV8ContextKey) && identityField != "" {
+				if value := gjson.GetBytes(data, identityField); value.Type == gjson.String {
+					if trimmed := strings.TrimSpace(value.String()); trimmed != "" {
+						fileData[identityField] = trimmed
+					}
+				}
+			}
 			if projectID := strings.TrimSpace(gjson.GetBytes(data, "project_id").String()); projectID != "" {
 				fileData["project_id"] = projectID
 			}
@@ -684,6 +691,13 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 	entry["recent_requests"] = auth.RecentRequestsSnapshot(time.Now())
 	entry["quota"] = quotaObservationPayloadForProvider(auth.Provider, auth.Quota)
 	if quota.v8 {
+		// Only expose provider identity fields, never the credential metadata itself.
+		identityField := authFileIdentityField(auth.Provider)
+		if value, ok := auth.Metadata[identityField].(string); identityField != "" && ok {
+			if value = strings.TrimSpace(value); value != "" {
+				entry[identityField] = value
+			}
+		}
 		windows := auth.Quota.Clone().Windows
 		if windows == nil {
 			windows = map[string]coreauth.QuotaWindow{}
@@ -968,6 +982,17 @@ func extractCodexIDTokenClaims(auth *coreauth.Auth) gin.H {
 		return nil
 	}
 	return result
+}
+
+func authFileIdentityField(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "claude":
+		return "organization_name"
+	case "codex":
+		return "plan_type"
+	default:
+		return ""
+	}
 }
 
 func authEmail(auth *coreauth.Auth) string {

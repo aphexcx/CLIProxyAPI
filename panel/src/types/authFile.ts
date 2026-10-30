@@ -67,6 +67,10 @@ export interface AuthFileItem {
    * the API key itself through those fields.
    */
   email?: string;
+  /** Claude organization name supplied by v8 credential metadata. */
+  organization_name?: string;
+  /** Codex plan supplied by v8 credential metadata. */
+  plan_type?: string;
   /** GCP / Vertex project ID, used when account email is absent. */
   projectId?: string;
   size?: number;
