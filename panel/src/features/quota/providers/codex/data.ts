@@ -62,7 +62,7 @@ type CodexResetCreditsData = {
 
 export type CodexQuotaData = {
   optionalMetadataSequence?: number;
-  resetCreditsConfirmedForPoll?: string | null;
+  resetCreditsUpdatedForPoll?: string | null;
   usageResetCredits?: CodexUsagePayload['rate_limit_reset_credits'];
   observedAt?: string | null;
   stale?: boolean;
@@ -430,7 +430,11 @@ const fetchCodexResetCredits = async (
   }
 };
 
-const fetchManualCodexQuota = async (file: AuthFileItem, t: TFunction): Promise<CodexQuotaData> => {
+const fetchManualCodexQuota = async (
+  file: AuthFileItem,
+  t: TFunction,
+  consumedCredit: boolean
+): Promise<CodexQuotaData> => {
   const rawAuthIndex = file['auth_index'] ?? file.authIndex;
   const authIndex = normalizeAuthIndex(rawAuthIndex);
   if (!authIndex) {
@@ -472,7 +476,7 @@ const fetchManualCodexQuota = async (file: AuthFileItem, t: TFunction): Promise<
   const rateLimitResetCreditsAvailableCount =
     resetCreditsData.availableCount ??
     resetCreditsCountFromDetails ??
-    usageResetCreditsData.availableCount;
+    (consumedCredit ? null : usageResetCreditsData.availableCount);
   const rateLimitResetCreditsApplicableAvailableCount =
     usageResetCreditsData.applicableAvailableCount ??
     resetCreditsData.applicableAvailableCount ??
@@ -523,7 +527,7 @@ export const buildCachedCodexQuota = (
   const previous = useQuotaStore.getState().codexQuota[getQuotaCacheKey(file)];
   return {
     optionalMetadataSequence: previous?.optionalMetadataSequence,
-    resetCreditsConfirmedForPoll: previous?.resetCreditsConfirmedForPoll,
+    resetCreditsUpdatedForPoll: previous?.resetCreditsUpdatedForPoll,
     usageResetCredits: payload.rate_limit_reset_credits ?? payload.rateLimitResetCredits,
     windows,
     planType:
@@ -585,7 +589,8 @@ const usageReads = new Map<string, Promise<CodexQuotaData>>();
 const fetchCachedCodexQuota = async (
   file: AuthFileItem,
   t: TFunction,
-  refresh: boolean
+  refresh: boolean,
+  consumedCredit = false
 ): Promise<CodexQuotaData> => {
   const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
   if (!authIndex) throw new Error(t('codex_quota.missing_auth_index'));
@@ -598,6 +603,7 @@ const fetchCachedCodexQuota = async (
     getQuotaCacheKey(file),
     authIndex,
     refresh,
+    consumedCredit,
   ]);
   let request = usageReads.get(key);
   if (!request) {
@@ -617,7 +623,7 @@ const fetchCachedCodexQuota = async (
           apiClient.getConnectionRevision() === revision &&
           commitIfQuotaCacheCurrent(generation, () => {})
         )
-          return fetchManualCodexQuota(file, t);
+          return fetchManualCodexQuota(file, t, consumedCredit);
         throw error;
       });
     usageReads.set(key, request);
@@ -632,13 +638,15 @@ const fetchCachedCodexQuota = async (
 export const readCodexQuota = (file: AuthFileItem, t: TFunction) =>
   fetchCachedCodexQuota(file, t, false);
 
-const fetchCodexQuota = (file: AuthFileItem, t: TFunction) => fetchCachedCodexQuota(file, t, true);
+const fetchCodexQuota = (file: AuthFileItem, t: TFunction, consumedCredit = false) =>
+  fetchCachedCodexQuota(file, t, true, consumedCredit);
 
 // Optional subscription and reset-credit reads run only after an explicit action.
 const enrichCodexQuota = async (
   file: AuthFileItem,
   data: CodexQuotaData,
-  t: TFunction
+  t: TFunction,
+  consumedCredit = false
 ): Promise<CodexQuotaData> => {
   if (!data.serverCache) return data; // The manual compatibility path already enriched it.
   const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
@@ -653,36 +661,46 @@ const enrichCodexQuota = async (
   const detailsCount =
     credits.availableCount ?? (credits.credits.length > 0 ? credits.credits.length : null);
   const previous = useQuotaStore.getState().codexQuota[getQuotaCacheKey(file)];
-  const confirmedForPoll = previous?.resetCreditsConfirmedForPoll;
+  const updatedForPoll = previous?.resetCreditsUpdatedForPoll;
   const polledAt = data.serverCache.polledAt;
-  // A summary from the same or an older poll cannot undo confirmed credit details.
+  // An older summary cannot undo credit details or a successful redemption.
   // Compare server poll timestamps rather than relying on the browser's clock.
-  const preserveConfirmed =
+  const preserveUpdated =
     detailsCount === null &&
-    previous?.rateLimitResetCreditsAvailableCount != null &&
-    confirmedForPoll !== undefined &&
-    (confirmedForPoll === polledAt ||
-      (confirmedForPoll && polledAt && Date.parse(polledAt) <= Date.parse(confirmedForPoll)));
+    updatedForPoll !== undefined &&
+    (updatedForPoll === polledAt ||
+      (updatedForPoll && polledAt && Date.parse(polledAt) <= Date.parse(updatedForPoll)));
+  const suppressFallback = consumedCredit && detailsCount === null;
   const availableCount =
     detailsCount ??
-    (preserveConfirmed
-      ? previous.rateLimitResetCreditsAvailableCount!
-      : usageResetCredits.availableCount);
+    (suppressFallback
+      ? null
+      : preserveUpdated
+        ? (previous?.rateLimitResetCreditsAvailableCount ?? null)
+        : usageResetCredits.availableCount);
   return {
     ...data,
     optionalMetadataSequence,
-    resetCreditsConfirmedForPoll:
-      detailsCount !== null ? polledAt : preserveConfirmed ? confirmedForPoll : undefined,
+    resetCreditsUpdatedForPoll:
+      detailsCount !== null || suppressFallback
+        ? polledAt
+        : preserveUpdated
+          ? updatedForPoll
+          : undefined,
     subscriptionActiveUntil: subscription ?? data.subscriptionActiveUntil,
     rateLimitResetCreditsAvailableCount: availableCount,
-    rateLimitResetCreditsApplicableAvailableCount: preserveConfirmed
-      ? (previous.rateLimitResetCreditsApplicableAvailableCount ?? availableCount)
-      : (usageResetCredits.applicableAvailableCount ??
-        credits.applicableAvailableCount ??
-        availableCount),
-    rateLimitResetCredits: preserveConfirmed
-      ? (previous.rateLimitResetCredits ?? [])
-      : credits.credits,
+    rateLimitResetCreditsApplicableAvailableCount: suppressFallback
+      ? null
+      : preserveUpdated
+        ? (previous?.rateLimitResetCreditsApplicableAvailableCount ?? availableCount)
+        : (usageResetCredits.applicableAvailableCount ??
+          credits.applicableAvailableCount ??
+          availableCount),
+    rateLimitResetCredits: suppressFallback
+      ? []
+      : preserveUpdated
+        ? (previous?.rateLimitResetCredits ?? [])
+        : credits.credits,
     rateLimitResetCreditsError: credits.error,
   };
 };
@@ -733,10 +751,38 @@ const consumeCodexRateLimitResetCredit = async (
 
 const resetCodexQuota = async (file: AuthFileItem, t: TFunction): Promise<CodexQuotaData> => {
   const assertConnection = guardConfigConnection();
+  const generation = captureQuotaCacheGeneration(file.name);
   const authIndex = await consumeCodexRateLimitResetCredit(file, t);
   try {
     // Never clear a different connection's cooldown after awaiting redemption.
     assertConnection();
+    // Redemption succeeded even if cooldown clearing or the following read fails.
+    // Invalidate the old count now and fence earlier optional reads.
+    commitIfQuotaCacheCurrent(
+      generation,
+      () => {
+        const key = getQuotaCacheKey(file);
+        useQuotaStore.getState().setCodexQuota((quotas) => {
+          const previous = quotas[key];
+          if (!previous) return quotas;
+          return {
+            ...quotas,
+            [key]: {
+              ...previous,
+              optionalMetadataSequence: captureCodexQuotaRequest(),
+              resetCreditsUpdatedForPoll: previous.serverCache
+                ? previous.serverCache.polledAt
+                : (file.codex_usage?.polled_at ?? null),
+              rateLimitResetCreditsAvailableCount: null,
+              rateLimitResetCreditsApplicableAvailableCount: null,
+              rateLimitResetCredits: [],
+              rateLimitResetCreditsError: '',
+            },
+          };
+        });
+      },
+      file.name
+    );
     const result = await authFilesApi.resetCooldown(authIndex);
     assertConnection();
     if (result.status !== 'ok' || result.auth_index !== authIndex) {
@@ -746,8 +792,8 @@ const resetCodexQuota = async (file: AuthFileItem, t: TFunction): Promise<CodexQ
     // Redemption already succeeded: direct the operator to the existing clear action.
     throw new Error(t('codex_quota.reset_cooldown_failed'));
   }
-  const data = await fetchCodexQuota(file, t);
-  return enrichCodexQuota(file, data, t);
+  const data = await fetchCodexQuota(file, t, true);
+  return enrichCodexQuota(file, data, t, true);
 };
 
 export const CODEX_CONFIG: QuotaProviderData<CodexQuotaState, CodexQuotaData> = {
@@ -769,7 +815,7 @@ export const CODEX_CONFIG: QuotaProviderData<CodexQuotaState, CodexQuotaData> = 
   buildSuccessState: (data) => ({
     status: 'success',
     optionalMetadataSequence: data.optionalMetadataSequence,
-    resetCreditsConfirmedForPoll: data.resetCreditsConfirmedForPoll,
+    resetCreditsUpdatedForPoll: data.resetCreditsUpdatedForPoll,
     observedAt: data.observedAt,
     stale: data.stale,
     serverCache: data.serverCache,

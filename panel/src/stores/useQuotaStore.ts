@@ -194,7 +194,7 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
           candidate = {
             ...candidate,
             optionalMetadataSequence: optional.optionalMetadataSequence,
-            resetCreditsConfirmedForPoll: optional.resetCreditsConfirmedForPoll,
+            resetCreditsUpdatedForPoll: optional.resetCreditsUpdatedForPoll,
             subscriptionActiveUntil: optional.subscriptionActiveUntil,
             rateLimitResetCreditsAvailableCount: optional.rateLimitResetCreditsAvailableCount,
             rateLimitResetCreditsApplicableAvailableCount:

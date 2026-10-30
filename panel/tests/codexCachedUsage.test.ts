@@ -285,6 +285,54 @@ describe('Codex cached usage', () => {
     }
   );
 
+  test.each(['details', 'cooldown'])(
+    'successful consumption invalidates credits before a failed follow-up: %s',
+    async (failure) => {
+      const cachedUsage = {
+        ...usage,
+        rate_limit_reset_credits: { available_count: 1, applicable_available_count: 1 },
+      };
+      spyOn(apiClient, 'get').mockResolvedValue({ files: [{ ...seat, codex_usage: cachedUsage }] });
+      spyOn(apiClient, 'post').mockImplementation(async (url) => {
+        if (url === '/credentials/quota') return cachedUsage;
+        if (failure === 'cooldown') throw new Error('cooldown unavailable');
+        return { status: 'ok', auth_index: 'fixture', models: [] };
+      });
+      let consumed = false;
+      spyOn(apiCallApi, 'request').mockImplementation(async (request) => {
+        if (request.url.endsWith('/consume')) {
+          consumed = true;
+          return { statusCode: 200, header: {}, body: { code: 'reset' }, bodyText: '' };
+        }
+        return {
+          statusCode: consumed ? 503 : 200,
+          header: {},
+          body: { available_count: 1, credits: [] },
+          bodyText: '',
+        };
+      });
+      const save = (data: Awaited<ReturnType<typeof CODEX_CONFIG.fetchQuota>>) =>
+        useQuotaStore.getState().setCodexQuota({
+          [getQuotaCacheKey(seat)]: CODEX_CONFIG.buildSuccessState(data),
+        });
+      await authFilesApi.list();
+      const before = await CODEX_CONFIG.fetchQuota(seat, translations.t);
+      save(await CODEX_CONFIG.enrichQuota!(seat, before, translations.t));
+      expect(CODEX_CONFIG.canResetQuota!(state())).toBe(true);
+      if (failure === 'cooldown') {
+        await expect(CODEX_CONFIG.resetQuota!(seat, translations.t)).rejects.toThrow();
+      } else {
+        save(await CODEX_CONFIG.resetQuota!(seat, translations.t));
+      }
+      expect(state().rateLimitResetCreditsAvailableCount).toBeNull();
+      expect(CODEX_CONFIG.canResetQuota!(state())).toBe(false);
+      await authFilesApi.list();
+      const after = await CODEX_CONFIG.fetchQuota(seat, translations.t);
+      save(await CODEX_CONFIG.enrichQuota!(seat, after, translations.t));
+      expect(CODEX_CONFIG.canResetQuota!(state())).toBe(false);
+    }
+  );
+
   test('a failed details read cannot restore consumed credits from the same cached poll', async () => {
     let cachedUsage = {
       ...usage,
