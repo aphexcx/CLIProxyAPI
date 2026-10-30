@@ -47,7 +47,7 @@ func (m *Manager) RegisterExecutor(executor ProviderExecutor) {
 	m.mu.Lock()
 	replaced = m.executors[provider]
 	m.executors[provider] = executor
-	m.wakeClaudeQuotaPoll()
+	m.wakeClaudeQuotaPollLocked()
 	for id, auth := range m.auths {
 		if auth != nil && strings.EqualFold(executorKeyFromAuth(auth), provider) {
 			toReschedule = append(toReschedule, id)

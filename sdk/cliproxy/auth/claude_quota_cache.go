@@ -15,10 +15,18 @@ import (
 const claudeQuotaMinimumPollInterval = internalconfig.ClaudeQuotaMinimumPollInterval
 
 func (m *Manager) wakeClaudeQuotaPoll() {
-	select {
-	case m.quotaPollWake <- struct{}{}:
-	default:
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.wakeClaudeQuotaPollLocked()
+}
+
+// Broadcast to all loop generations: a retiring loop cannot consume the only
+// notification intended for its replacement. Callers hold m.mu.
+func (m *Manager) wakeClaudeQuotaPollLocked() {
+	if m.quotaPollWake != nil {
+		close(m.quotaPollWake)
 	}
+	m.quotaPollWake = make(chan struct{})
 }
 
 type claudeQuotaPollSeat struct {
@@ -143,10 +151,7 @@ func (m *Manager) RequestClaudeQuotaPoll(id string) bool {
 	// A click joins the existing scheduled slot; it cannot accelerate the budget.
 	seat.queued = true
 	m.mu.Unlock()
-	select {
-	case m.quotaPollWake <- struct{}{}:
-	default:
-	}
+	m.wakeClaudeQuotaPoll()
 	return true
 }
 

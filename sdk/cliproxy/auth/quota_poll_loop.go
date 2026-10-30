@@ -157,6 +157,11 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 		}
 	}
 	for {
+		// Subscribe before reading state so a change during timer calculation
+		// still wakes this generation, even if a retiring loop wakes too.
+		m.mu.RLock()
+		wake := m.quotaPollWake
+		m.mu.RUnlock()
 		poll()
 		var launchC <-chan time.Time
 		if next := m.nextClaudeQuotaPoll(); !next.IsZero() {
@@ -173,7 +178,7 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 			return
 		case <-expiryC:
 			m.expireClaudeQuotaState(ctx)
-		case <-m.quotaPollWake:
+		case <-wake:
 			// A response installed an earlier expiry or a refresh queued a poll.
 		case finished := <-completed:
 			if running[finished.auth.ID] == finished {

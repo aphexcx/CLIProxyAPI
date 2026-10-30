@@ -233,7 +233,7 @@ type Manager struct {
 	quotaPollParent context.Context
 	quotaPollCancel context.CancelFunc
 	quotaPollDone   chan struct{}
-	quotaPollWake   chan struct{}
+	quotaPollWake   chan struct{} // Broadcast channel protected by mu.
 	// Quota scheduling survives loop restarts. Protected by mu.
 	quotaPollSeats map[string]*claudeQuotaPollSeat
 	quotaNextStart time.Time
@@ -276,7 +276,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		homeSessionSelections: make(map[string]map[homeSessionSelectionKey]*HomeDispatchSelection),
 		providerOffsets:       make(map[string]int),
 		modelPoolOffsets:      make(map[string]int),
-		quotaPollWake:         make(chan struct{}, 1),
+		quotaPollWake:         make(chan struct{}),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})

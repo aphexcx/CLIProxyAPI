@@ -164,6 +164,75 @@ func TestClaudeQuotaFreshSeatPrecedesRecurringSeat(t *testing.T) {
 	})
 }
 
+func TestClaudeQuotaWakeSurvivesRetiringLoop(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	// Both loop generations have computed their timers before the last old
+	// read releases its slot. The retiring loop receives the notification first.
+	retiring, replacement := m.quotaPollWake, m.quotaPollWake
+	m.wakeClaudeQuotaPoll()
+	<-retiring
+	select {
+	case <-replacement:
+	default:
+		t.Fatal("retiring loop stole replacement loop's only wakeup")
+	}
+}
+
+func TestClaudeQuotaRejectedCredentialCancelsStalledRead(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, a, b := newClaudeQuotaManager(t)
+		m.Remove(context.Background(), b)
+		cancelled := make(chan struct{})
+		m.RegisterExecutor(&claudeQuotaTestPoller{poll: func(ctx context.Context, _ *Auth) (map[string]QuotaWindow, error) {
+			<-ctx.Done()
+			close(cancelled)
+			return nil, ctx.Err()
+		}})
+		m.StartQuotaPolling(context.Background())
+		t.Cleanup(m.StopQuotaPolling)
+		synctest.Wait()
+		m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaFable, Error: &Error{HTTPStatus: 401, Message: "unauthorized"}})
+		synctest.Wait()
+		select {
+		case <-cancelled:
+		default:
+			t.Fatal("rejected credential retained its established quota read")
+		}
+	})
+}
+
+func TestClaudeQuotaRestoredHoldRearmsSleepingLoop(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, a, b := newClaudeQuotaManager(t)
+		m.Remove(context.Background(), b)
+		m.RegisterExecutor(&claudeQuotaTestPoller{poll: func(ctx context.Context, _ *Auth) (map[string]QuotaWindow, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}})
+		m.StartQuotaPolling(context.Background())
+		t.Cleanup(m.StopQuotaPolling)
+		synctest.Wait() // No pending expiry; the sole poll is already stalled.
+		now := time.Now()
+		reset := now.Add(30 * time.Second)
+		store := &recordingCooldownStateStore{load: []CooldownStateRecord{{AuthID: a, Model: quotaFable, NextRetryAfter: reset, Reason: "quota_cap", Quota: QuotaState{Exceeded: true, Reason: "quota_cap", NextRecoverAt: reset}, UpdatedAt: now}}}
+		m.SetCooldownStateStore(store)
+		if errRestore := m.RestoreCooldownStates(context.Background()); errRestore != nil {
+			t.Fatal(errRestore)
+		}
+		auth, _ := m.GetByID(a)
+		if !isClaudeQuotaHold(auth.ModelStates[quotaFable]) {
+			t.Fatal("fixture did not restore a guard hold")
+		}
+		synctest.Wait()
+		<-time.After(30 * time.Second)
+		synctest.Wait()
+		auth, _ = m.GetByID(a)
+		if isClaudeQuotaHold(auth.ModelStates[quotaFable]) || len(store.savedRecords()) != 0 {
+			t.Fatal("restored hold expired without cleanup or persistence")
+		}
+	})
+}
+
 func TestClaudeQuotaIntervalReloadReschedulesExistingSlot(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m, _, b := newClaudeQuotaManager(t)
