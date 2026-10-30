@@ -519,6 +519,7 @@
     "balance_reset_unknown": "Not provided",
     "stale_snapshot": "Refresh failed. Showing last successful check: {{time}}",
     "cache_age": "{{seconds}} seconds old",
+    "cache_refresh_requested": "Usage refresh requested for {{name}}. Showing the current cache.",
     "cache_pending": "Waiting for the first usage poll",
     "cache_paused": "Polling paused",
     "cache_queued": "Refresh queued or in progress",

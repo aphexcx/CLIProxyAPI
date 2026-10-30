@@ -10,6 +10,8 @@ import { useQuotaStore } from '@/stores/useQuotaStore';
 import { getQuotaCacheKey } from '@/utils/quota/identity';
 import { CLAUDE_CONFIG, readClaudeQuota } from '@/features/quota/providers/claude/data';
 import { ClaudeQuotaBody } from '@/features/quota/providers/claude/ClaudeQuotaBody';
+import { enrichQuotaInBackground } from '@/features/quota/quotaEnrichment';
+import type { QuotaAdapter } from '@/features/quota/providers';
 import { QUOTA_CLASS_KEYS, bindQuotaClasses } from '@/features/quota/types';
 import type { AuthFileItem, AuthFilesResponse, ClaudeCachedUsage } from '@/types';
 
@@ -201,6 +203,37 @@ describe('Claude list ingestion and no-click rendering', () => {
       await authFilesApi.list();
       expect(state()).toBe(previous);
     }
+  });
+
+  test('a later explicit refresh can update an existing profile without losing usage', async () => {
+    spyOn(apiClient, 'get').mockResolvedValue({ files: [seat] });
+    spyOn(apiClient, 'post').mockResolvedValue(usage);
+    const profile = spyOn(apiCallApi, 'request').mockResolvedValue({
+      statusCode: 200,
+      header: {},
+      body: { account: { has_claude_pro: true } },
+      bodyText: '',
+    });
+    const adapter = { ...CLAUDE_CONFIG, Body: ClaudeQuotaBody } as unknown as QuotaAdapter;
+    await authFilesApi.list();
+    for (const plan of ['plan_pro', 'plan_max']) {
+      if (plan === 'plan_max')
+        profile.mockResolvedValue({
+          statusCode: 200,
+          header: {},
+          body: { account: { has_claude_max: true } },
+          bodyText: '',
+        });
+      const data = await CLAUDE_CONFIG.fetchQuota(seat, translations.t);
+      const success = CLAUDE_CONFIG.buildSuccessState(data);
+      useQuotaStore.getState().setClaudeQuota({ [getQuotaCacheKey(seat)]: success });
+      await enrichQuotaInBackground(adapter, seat, data, success, translations.t);
+      expect(state().planType).toBe(plan);
+      expect(state().observedAt).toBe(polledAt);
+      await authFilesApi.list();
+      expect(state().planType).toBe(plan);
+    }
+    expect(profile).toHaveBeenCalledTimes(2);
   });
 
   test('older list responses cannot overwrite a later successful poll', async () => {

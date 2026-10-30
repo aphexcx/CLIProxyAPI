@@ -81,10 +81,6 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
             continue;
           }
         }
-        if (previous?.planType && quota.status === 'success' && quota.planType === undefined) {
-          if (retained === next) retained = { ...next };
-          retained[key] = { ...quota, planType: previous.planType };
-        }
         if (
           previous &&
           quota !== previous &&

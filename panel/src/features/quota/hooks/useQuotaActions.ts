@@ -1,7 +1,6 @@
 /**
- * 单卡额度操作：刷新 + Codex 重置积分。
- * 流程 1:1 移植旧 QuotaSection（confirm modal、resetting 再入守卫、
- * generation-guarded commit、成功/失败通知），仅把 config 换成 adapter。
+ * Per-card quota refresh and Codex credit reset, with guarded commits,
+ * confirmation dialogs, reentry protection and result notifications.
  */
 
 import { useCallback, useState } from 'react';
@@ -49,7 +48,15 @@ export function useQuotaActions(disableControls: boolean) {
             [cacheKey]: successState,
           }));
           void enrichQuotaInBackground(adapter, file, data, successState, t);
-          showNotification(t('auth_files.quota_refresh_success', { name: file.name }), 'success');
+          showNotification(
+            t(
+              adapter.type === 'claude'
+                ? 'claude_quota.cache_refresh_requested'
+                : 'auth_files.quota_refresh_success',
+              { name: file.name }
+            ),
+            'success'
+          );
         });
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : t('common.unknown_error');

@@ -255,7 +255,10 @@ export const seedClaudeQuota = (
       () => {
         useQuotaStore.getState().setClaudeQuota((previous) => ({
           ...previous,
-          [getQuotaCacheKey(file)]: CLAUDE_CONFIG.buildSuccessState(data),
+          [getQuotaCacheKey(file)]: CLAUDE_CONFIG.buildSuccessState({
+            ...data,
+            planType: previous[getQuotaCacheKey(file)]?.planType,
+          }),
         }));
       },
       file.name
@@ -277,6 +280,7 @@ const fetchCachedClaudeQuota = async (
   }
 
   const generation = captureQuotaCacheGeneration(file.name);
+  const planType = useQuotaStore.getState().claudeQuota[getQuotaCacheKey(file)]?.planType;
   const key = JSON.stringify([
     apiClient.getConnectionRevision(),
     generation.cacheGeneration,
@@ -295,7 +299,7 @@ const fetchCachedClaudeQuota = async (
     usageReads.set(key, request);
   }
   try {
-    return buildCachedClaudeQuota(await request, t);
+    return { ...buildCachedClaudeQuota(await request, t), planType };
   } finally {
     if (usageReads.get(key) === request) usageReads.delete(key);
   }

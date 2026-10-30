@@ -519,6 +519,7 @@
     "balance_reset_unknown": "제공되지 않음",
     "stale_snapshot": "새로 고침에 실패했습니다. 마지막 성공 확인: {{time}}",
     "cache_age": "{{seconds}}초 전",
+    "cache_refresh_requested": "{{name}}의 사용량 새로 고침을 요청했습니다. 현재 캐시를 표시합니다.",
     "cache_pending": "첫 사용량 조회 대기 중",
     "cache_paused": "조회 일시 중지",
     "cache_queued": "새로 고침 대기 중 또는 진행 중",

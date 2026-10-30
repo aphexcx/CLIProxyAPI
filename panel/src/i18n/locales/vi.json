@@ -519,6 +519,7 @@
     "balance_reset_unknown": "Không được cung cấp",
     "stale_snapshot": "Làm mới thất bại. Hiển thị lần kiểm tra thành công gần nhất: {{time}}",
     "cache_age": "{{seconds}} giây trước",
+    "cache_refresh_requested": "Đã yêu cầu làm mới mức sử dụng cho {{name}}. Đang hiển thị dữ liệu lưu đệm hiện tại.",
     "cache_pending": "Đang chờ lần kiểm tra mức sử dụng đầu tiên",
     "cache_paused": "Đã tạm dừng kiểm tra",
     "cache_queued": "Đã xếp hàng hoặc đang làm mới",
