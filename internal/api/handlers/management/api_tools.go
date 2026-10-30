@@ -138,6 +138,9 @@ func (h *Handler) APICall(c *gin.Context) {
 	if method == http.MethodGet && urlStr == "https://api.anthropic.com/api/oauth/usage" && h.serveCachedClaudeAPICall(c, auth) {
 		return
 	}
+	if method == http.MethodGet && urlStr == "https://chatgpt.com/backend-api/wham/usage" && h.serveCachedCodexAPICall(c, auth) {
+		return
+	}
 
 	reqHeaders := body.Header
 	if reqHeaders == nil {

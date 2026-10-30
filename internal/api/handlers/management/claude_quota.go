@@ -63,7 +63,7 @@ func (h *Handler) cachedClaudeUsage(auth *coreauth.Auth, refresh bool) (coreauth
 	return h.authManager.ClaudeQuotaCached(auth.ID)
 }
 
-// GetClaudeCredentialQuota is a read of the native loop's cache, including for
+// GetClaudeCredentialQuota reads the native Claude or Codex cache, including
 // never-polled seats. POST queues the same loop; neither path calls upstream.
 func (h *Handler) GetClaudeCredentialQuota(c *gin.Context) {
 	index := strings.TrimSpace(c.Query("auth_index"))
@@ -82,7 +82,17 @@ func (h *Handler) GetClaudeCredentialQuota(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "auth_index is required"})
 		return
 	}
-	snapshot, ok := h.cachedClaudeUsage(h.authByIndex(index), refresh)
+	auth := h.authByIndex(index)
+	if auth != nil && strings.EqualFold(auth.Provider, "codex") {
+		if snapshot, ok := h.cachedCodexUsage(auth, refresh); ok {
+			c.Header("Cache-Control", "no-store")
+			c.JSON(http.StatusOK, codexUsagePayload(snapshot))
+			return
+		}
+		c.JSON(http.StatusNotFound, gin.H{"error": "native Codex quota unavailable"})
+		return
+	}
+	snapshot, ok := h.cachedClaudeUsage(auth, refresh)
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "native Claude quota unavailable"})
 		return

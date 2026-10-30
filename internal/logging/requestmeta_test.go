@@ -59,3 +59,35 @@ func TestResponseHeadersSnapshotKeepsReceiptTime(t *testing.T) {
 		}
 	})
 }
+
+func TestResponseHeaderObservationsKeepEventReceiptTimes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := WithFreshResponseHeadersHolder(context.Background())
+		first := time.Now()
+		SetResponseHeaders(ctx, http.Header{"X-Old": {"old"}})
+		<-time.After(time.Second)
+		second := time.Now()
+		MergeResponseHeaders(ctx, http.Header{"X-Event": {"event"}})
+		observations := GetResponseHeaderObservations(ctx)
+		if len(observations) != 2 {
+			t.Fatalf("observations: %+v", observations)
+		}
+		for _, observation := range observations {
+			if observation.Headers.Get("X-Old") != "" && !observation.ObservedAt.Equal(first) {
+				t.Fatal("old field re-dated")
+			}
+			if observation.Headers.Get("X-Event") != "" && !observation.ObservedAt.Equal(second) {
+				t.Fatal("event misdated")
+			}
+			observation.Headers.Set("X-Old", "mutated")
+		}
+		if GetResponseHeaders(ctx).Get("X-Old") != "old" {
+			t.Fatal("observation aliases holder")
+		}
+		reused := WithFreshResponseHeadersHolder(ctx)
+		MergeResponseHeaders(reused, http.Header{"X-Event": {"reused"}})
+		if events := GetResponseHeaderObservations(reused); len(events) != 1 || events[0].ObservedAt.IsZero() {
+			t.Fatalf("reused websocket event missing: %+v", events)
+		}
+	})
+}

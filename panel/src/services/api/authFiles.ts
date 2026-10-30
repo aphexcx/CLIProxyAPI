@@ -19,6 +19,7 @@ import { normalizeAuthFileCooldowns, normalizeCooldownTimestamp } from './authFi
 import i18n from '@/i18n';
 import { captureQuotaCacheGeneration } from '@/stores/useQuotaStore';
 import { captureClaudeQuotaRequest, seedClaudeQuota } from '@/features/quota/providers/claude/data';
+import { captureCodexQuotaRequest, seedCodexQuota } from '@/features/quota/providers/codex/data';
 
 type AuthFileStatusResponse = { status: string; disabled: boolean };
 export type AuthFileLookup = { name: string; authIndex?: string };
@@ -549,6 +550,7 @@ export const authFilesApi = {
   list: async (lookup?: AuthFileLookup) => {
     const generation = captureQuotaCacheGeneration();
     const sequence = captureClaudeQuotaRequest();
+    const codexSequence = captureCodexQuotaRequest();
     const connectionRevision = apiClient.getConnectionRevision();
     const response = normalizeAuthFilesResponse(
       await apiClient.get<AuthFilesResponse>(
@@ -558,6 +560,7 @@ export const authFilesApi = {
     );
     if (connectionRevision === apiClient.getConnectionRevision()) {
       seedClaudeQuota(response.files, generation, i18n.t, sequence);
+      seedCodexQuota(response.files, generation, i18n.t, codexSequence);
     }
     return response;
   },

@@ -307,7 +307,15 @@ export interface CodexQuotaWindow {
 
 export interface CodexQuotaState {
   status: 'idle' | 'loading' | 'success' | 'error';
+  optionalMetadataSequence?: number;
+  resetCreditsUpdatedForPoll?: string | null;
+  resetCreditsConfirmed?: boolean;
+  resetCreditsConfirmationSequence?: number;
+  resetCreditsWaitForPoll?: boolean;
   windows: CodexQuotaWindow[];
+  observedAt?: string | null;
+  stale?: boolean;
+  serverCache?: ClaudeQuotaState['serverCache'];
   planType?: string | null;
   subscriptionActiveUntil?: string | number | null;
   creditBalance?: string | null;

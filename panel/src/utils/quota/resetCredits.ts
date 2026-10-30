@@ -107,7 +107,9 @@ export const normalizeCodexResetCreditsPayload = (payload: unknown): CodexResetC
     : [];
 
   return {
-    availableCount: normalizeNumberValue(record.available_count ?? record.availableCount),
+    availableCount:
+      normalizeNumberValue(record.available_count ?? record.availableCount) ??
+      (Array.isArray(record.credits) ? credits.length : null),
     applicableAvailableCount: normalizeNumberValue(
       record.applicable_available_count ?? record.applicableAvailableCount
     ),
