@@ -50,7 +50,7 @@ export function useQuotaActions(disableControls: boolean) {
           void enrichQuotaInBackground(adapter, file, data, successState, t);
           showNotification(
             t(
-              adapter.type === 'claude'
+              adapter.type === 'claude' || adapter.type === 'codex'
                 ? 'claude_quota.cache_refresh_requested'
                 : 'auth_files.quota_refresh_success',
               { name: file.name }

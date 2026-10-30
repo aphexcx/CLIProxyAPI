@@ -1,11 +1,12 @@
 /**
- * Codex 额度数据层：用量窗口 + 套餐 + 重置积分（含消费流程）。
- * React-free / SCSS-free —— 由 tests/codexQuota.test.ts 直接消费。
+ * Codex quota data: usage windows, plan metadata and reset-credit operations.
+ * React-free and SCSS-free for fixture-based tests.
  */
 
 import type { TFunction } from 'i18next';
 import type {
   AuthFileItem,
+  CodexCachedUsage,
   CodexAccountCredits,
   CodexRateLimitInfo,
   CodexRateLimitResetCredit,
@@ -15,6 +16,13 @@ import type {
   CodexUsagePayload,
 } from '@/types';
 import { apiCallApi, authFilesApi, getApiCallErrorMessage } from '@/services/api';
+import { apiClient } from '@/services/api/client';
+import {
+  captureQuotaCacheGeneration,
+  commitIfQuotaCacheCurrent,
+  useQuotaStore,
+} from '@/stores/useQuotaStore';
+import { getQuotaCacheKey } from '@/utils/quota/identity';
 import { guardConfigConnection } from '@/services/api/configValue';
 import { isRecord } from '@/utils/helpers';
 import {
@@ -36,6 +44,7 @@ import {
   resolveCodexSubscriptionActiveUntil,
   formatCodexResetLabel,
   createStatusError,
+  getStatusFromError,
   isCodexFile,
   isDisabledAuthFile,
 } from '@/utils/quota';
@@ -52,6 +61,9 @@ type CodexResetCreditsData = {
 };
 
 export type CodexQuotaData = {
+  observedAt?: string | null;
+  stale?: boolean;
+  serverCache?: CodexQuotaState['serverCache'];
   planType: string | null;
   subscriptionActiveUntil: string | number | null;
   creditBalance: string | null;
@@ -415,7 +427,7 @@ const fetchCodexResetCredits = async (
   }
 };
 
-const fetchCodexQuota = async (file: AuthFileItem, t: TFunction): Promise<CodexQuotaData> => {
+const fetchManualCodexQuota = async (file: AuthFileItem, t: TFunction): Promise<CodexQuotaData> => {
   const rawAuthIndex = file['auth_index'] ?? file.authIndex;
   const authIndex = normalizeAuthIndex(rawAuthIndex);
   if (!authIndex) {
@@ -474,6 +486,167 @@ const fetchCodexQuota = async (file: AuthFileItem, t: TFunction): Promise<CodexQ
     rateLimitResetCredits: resetCreditsData.credits,
     rateLimitResetCreditsError: resetCreditsData.error,
     windows,
+  };
+};
+
+let requestSequence = 0;
+export const captureCodexQuotaRequest = () => ++requestSequence;
+
+export const hasCodexUsageData = (quota?: CodexQuotaState): boolean =>
+  Boolean(quota?.serverCache || quota?.observedAt || quota?.windows.length);
+
+export const buildCachedCodexQuota = (
+  payload: CodexCachedUsage,
+  file: AuthFileItem,
+  t: TFunction,
+  sequence = captureCodexQuotaRequest()
+): CodexQuotaData => {
+  if (
+    !payload ||
+    !['ok', 'not_polled_yet', 'polling_paused'].includes(payload.status) ||
+    typeof payload.stale !== 'boolean' ||
+    (payload.polled_at !== null &&
+      (typeof payload.polled_at !== 'string' || !Number.isFinite(Date.parse(payload.polled_at))))
+  ) {
+    throw new Error(t('codex_quota.empty_windows'));
+  }
+  const windows = buildCodexQuotaWindows(payload, t);
+  if (payload.polled_at && windows.length === 0) {
+    throw new Error(t('codex_quota.empty_windows'));
+  }
+  const credits = normalizeCodexAccountCredits(payload.credits);
+  const previous = useQuotaStore.getState().codexQuota[getQuotaCacheKey(file)];
+  return {
+    windows,
+    planType:
+      normalizePlanType(payload.plan_type ?? payload.planType) ?? resolveCodexPlanType(file),
+    subscriptionActiveUntil:
+      previous?.subscriptionActiveUntil ?? resolveCodexSubscriptionActiveUntil(file),
+    creditBalance: credits.balance,
+    creditsUnlimited: credits.unlimited,
+    rateLimitResetCreditsAvailableCount: previous?.rateLimitResetCreditsAvailableCount ?? null,
+    rateLimitResetCreditsApplicableAvailableCount:
+      previous?.rateLimitResetCreditsApplicableAvailableCount ?? null,
+    rateLimitResetCredits: previous?.rateLimitResetCredits ?? [],
+    rateLimitResetCreditsError: previous?.rateLimitResetCreditsError ?? '',
+    observedAt: payload.polled_at,
+    stale: payload.stale,
+    serverCache: {
+      status: payload.status,
+      polledAt: payload.polled_at,
+      ageSeconds: payload.age_seconds,
+      receivedAtMs: Date.now(),
+      requestSequence: sequence,
+      nextPollAt: payload.next_poll_at,
+      refreshing: payload.refreshing,
+      lastStatus: payload.last_status,
+      lastPollAt: payload.last_poll_at,
+    },
+  };
+};
+
+export const seedCodexQuota = (
+  files: AuthFileItem[],
+  generation: ReturnType<typeof captureQuotaCacheGeneration>,
+  t: TFunction,
+  sequence: number
+): void => {
+  for (const file of files) {
+    if (!isCodexFile(file) || !file.codex_usage) continue;
+    let data: CodexQuotaData;
+    try {
+      data = buildCachedCodexQuota(file.codex_usage, file, t, sequence);
+    } catch {
+      continue;
+    }
+    commitIfQuotaCacheCurrent(
+      generation,
+      () => {
+        useQuotaStore.getState().setCodexQuota((previous) => ({
+          ...previous,
+          [getQuotaCacheKey(file)]: CODEX_CONFIG.buildSuccessState(data),
+        }));
+      },
+      file.name
+    );
+  }
+};
+
+const usageReads = new Map<string, Promise<CodexQuotaData>>();
+
+const fetchCachedCodexQuota = async (
+  file: AuthFileItem,
+  t: TFunction,
+  refresh: boolean
+): Promise<CodexQuotaData> => {
+  const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
+  if (!authIndex) throw new Error(t('codex_quota.missing_auth_index'));
+  const generation = captureQuotaCacheGeneration(file.name);
+  const revision = apiClient.getConnectionRevision();
+  const key = JSON.stringify([
+    revision,
+    generation.cacheGeneration,
+    generation.fileGenerations[file.name] ?? 0,
+    getQuotaCacheKey(file),
+    authIndex,
+    refresh,
+  ]);
+  let request = usageReads.get(key);
+  if (!request) {
+    const sequence = captureCodexQuotaRequest();
+    const cached = refresh
+      ? apiClient.post<CodexCachedUsage>('/credentials/quota', { auth_index: authIndex })
+      : apiClient.get<CodexCachedUsage>('/credentials/quota', {
+          params: { auth_index: authIndex },
+        });
+    request = cached
+      .then((payload) => buildCachedCodexQuota(payload, file, t, sequence))
+      .catch((error: unknown) => {
+        if (
+          refresh &&
+          !file.codex_usage &&
+          getStatusFromError(error) === 404 &&
+          apiClient.getConnectionRevision() === revision &&
+          commitIfQuotaCacheCurrent(generation, () => {})
+        )
+          return fetchManualCodexQuota(file, t);
+        throw error;
+      });
+    usageReads.set(key, request);
+  }
+  try {
+    return await request;
+  } finally {
+    if (usageReads.get(key) === request) usageReads.delete(key);
+  }
+};
+
+export const readCodexQuota = (file: AuthFileItem, t: TFunction) =>
+  fetchCachedCodexQuota(file, t, false);
+
+const fetchCodexQuota = (file: AuthFileItem, t: TFunction) => fetchCachedCodexQuota(file, t, true);
+
+// Optional subscription and reset-credit reads run only after an explicit action.
+const enrichCodexQuota = async (
+  file: AuthFileItem,
+  data: CodexQuotaData,
+  t: TFunction
+): Promise<CodexQuotaData> => {
+  if (!data.serverCache) return data; // The manual compatibility path already enriched it.
+  const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
+  if (!authIndex) return data;
+  const headers = buildCodexRequestHeader(file);
+  const [subscription, credits] = await Promise.all([
+    fetchCodexSubscriptionActiveUntil(authIndex, resolveCodexChatgptAccountId(file), headers),
+    fetchCodexResetCredits(authIndex, headers, t),
+  ]);
+  return {
+    ...data,
+    subscriptionActiveUntil: subscription ?? data.subscriptionActiveUntil,
+    rateLimitResetCreditsAvailableCount: credits.availableCount,
+    rateLimitResetCreditsApplicableAvailableCount: credits.applicableAvailableCount,
+    rateLimitResetCredits: credits.credits,
+    rateLimitResetCreditsError: credits.error,
   };
 };
 
@@ -536,7 +709,8 @@ const resetCodexQuota = async (file: AuthFileItem, t: TFunction): Promise<CodexQ
     // Redemption already succeeded: direct the operator to the existing clear action.
     throw new Error(t('codex_quota.reset_cooldown_failed'));
   }
-  return fetchCodexQuota(file, t);
+  const data = await fetchCodexQuota(file, t);
+  return enrichCodexQuota(file, data, t);
 };
 
 export const CODEX_CONFIG: QuotaProviderData<CodexQuotaState, CodexQuotaData> = {
@@ -544,6 +718,7 @@ export const CODEX_CONFIG: QuotaProviderData<CodexQuotaState, CodexQuotaData> = 
   i18nPrefix: 'codex_quota',
   filterFn: (file) => isCodexFile(file) && !isDisabledAuthFile(file),
   fetchQuota: fetchCodexQuota,
+  enrichQuota: enrichCodexQuota,
   resetQuota: resetCodexQuota,
   canResetQuota: (quota) => (quota.rateLimitResetCreditsAvailableCount ?? 0) > 0,
   storeSelector: (state) => state.codexQuota,
@@ -556,6 +731,9 @@ export const CODEX_CONFIG: QuotaProviderData<CodexQuotaState, CodexQuotaData> = 
   }),
   buildSuccessState: (data) => ({
     status: 'success',
+    observedAt: data.observedAt,
+    stale: data.stale,
+    serverCache: data.serverCache,
     windows: data.windows,
     planType: data.planType,
     subscriptionActiveUntil: data.subscriptionActiveUntil,

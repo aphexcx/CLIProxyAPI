@@ -2,6 +2,7 @@ package helps
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -38,11 +39,23 @@ func ParseCodexQuotaEventHeaders(payload []byte) http.Header {
 	if eventKind == codexQuotaEventError {
 		return parseCodexQuotaHeadersObject(root.Get("headers"))
 	}
+	return parseCodexQuotaHeaders(root)
+}
 
+// ParseCodexUsageHeaders accepts the wham usage response without an event type.
+// Only the same bounded, allowlisted quota fields as stream observations survive.
+func ParseCodexUsageHeaders(payload []byte) http.Header {
+	if !gjson.ValidBytes(payload) {
+		return nil
+	}
+	return parseCodexQuotaHeaders(gjson.ParseBytes(payload))
+}
+
+func parseCodexQuotaHeaders(root gjson.Result) http.Header {
 	headers := make(http.Header)
 	hasQuotaData := false
 
-	baseRateLimits := firstCodexQuotaResult(root, "rate_limits", "rateLimit")
+	baseRateLimits := firstCodexQuotaResult(root, "rate_limits", "rate_limit", "rateLimit")
 	if addCodexQuotaRateLimitHeaders(headers, "X-Codex-", baseRateLimits) {
 		// The main rate-limit object has no user-facing name in the websocket
 		// payload, so its fields retain the HTTP response header names.
@@ -86,7 +99,7 @@ func ParseCodexQuotaEventHeaders(payload []byte) http.Header {
 		})
 	}
 
-	codeReview := firstCodexQuotaResult(root, "code_review_rate_limits", "codeReviewRateLimits")
+	codeReview := firstCodexQuotaResult(root, "code_review_rate_limits", "code_review_rate_limit", "codeReviewRateLimits", "codeReviewRateLimit")
 	if addCodexQuotaRateLimitHeaders(headers, "X-Codex-Code-Review-", codeReview) {
 		hasQuotaData = true
 	}
@@ -178,24 +191,28 @@ func addCodexQuotaRateLimitHeaders(headers http.Header, prefix string, rateInfo 
 		changed = true
 	}
 	for _, windowName := range []string{"primary", "secondary"} {
-		window := firstCodexQuotaResult(rateInfo, windowName)
+		window := firstCodexQuotaResult(rateInfo, windowName, windowName+"_window", windowName+"Window")
 		if !window.Exists() || !window.IsObject() {
 			continue
 		}
 		used := firstCodexQuotaResult(window, "used_percent", "usedPercent")
 		minutes := firstCodexQuotaResult(window, "window_minutes", "windowMinutes")
+		windowMinutes := minutes.Int()
+		if !minutes.Exists() {
+			windowMinutes = firstCodexQuotaResult(window, "limit_window_seconds", "limitWindowSeconds").Int() / 60
+		}
 		resetAfter := firstCodexQuotaResult(window, "reset_after_seconds", "resetAfterSeconds")
 		resetAt := firstCodexQuotaResult(window, "reset_at", "resetAt")
 		hasResetAfter := resetAfter.Exists() && resetAfter.Int() >= 0
 		hasResetAt := resetAt.Exists() && resetAt.Int() > 0
-		if !used.Exists() || !minutes.Exists() ||
-			used.Float() < 0 || used.Float() > 100 || minutes.Int() <= 0 ||
+		if !used.Exists() ||
+			used.Float() < 0 || used.Float() > 100 || windowMinutes <= 0 ||
 			(!hasResetAfter && !hasResetAt) {
 			continue
 		}
 		windowPrefix := prefix + strings.ToUpper(windowName[:1]) + windowName[1:] + "-"
 		setCodexQuotaScalarHeaderFromResult(headers, windowPrefix+"Used-Percent", window, "used_percent", "usedPercent")
-		setCodexQuotaScalarHeaderFromResult(headers, windowPrefix+"Window-Minutes", window, "window_minutes", "windowMinutes")
+		headers.Set(windowPrefix+"Window-Minutes", strconv.FormatInt(windowMinutes, 10))
 		if hasResetAfter {
 			setCodexQuotaScalarHeaderFromResult(headers, windowPrefix+"Reset-After-Seconds", window, "reset_after_seconds", "resetAfterSeconds")
 		}

@@ -308,6 +308,9 @@ export interface CodexQuotaWindow {
 export interface CodexQuotaState {
   status: 'idle' | 'loading' | 'success' | 'error';
   windows: CodexQuotaWindow[];
+  observedAt?: string | null;
+  stale?: boolean;
+  serverCache?: ClaudeQuotaState['serverCache'];
   planType?: string | null;
   subscriptionActiveUntil?: string | number | null;
   creditBalance?: string | null;

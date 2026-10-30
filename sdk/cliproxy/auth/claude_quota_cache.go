@@ -76,6 +76,15 @@ func (m *Manager) claudeQuotaPollSeatLocked(id string) *claudeQuotaPollSeat {
 
 // ClaudeQuotaCached returns a copy without performing or scheduling network I/O.
 func (m *Manager) ClaudeQuotaCached(id string) (ClaudeQuotaSnapshot, bool) {
+	return m.cachedQuota(id, "claude")
+}
+
+// CodexQuotaCached reads the observational cache without scheduling I/O.
+func (m *Manager) CodexQuotaCached(id string) (ClaudeQuotaSnapshot, bool) {
+	return m.cachedQuota(id, "codex")
+}
+
+func (m *Manager) cachedQuota(id, provider string) (ClaudeQuotaSnapshot, bool) {
 	if m == nil {
 		return ClaudeQuotaSnapshot{}, false
 	}
@@ -83,11 +92,14 @@ func (m *Manager) ClaudeQuotaCached(id string) (ClaudeQuotaSnapshot, bool) {
 	defer m.mu.RUnlock()
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 	auth := m.auths[id]
-	if cfg == nil || !cfg.Claude.Quota.Enabled || auth == nil || !strings.EqualFold(auth.Provider, "claude") || auth.AuthKind() != AuthKindOAuth {
+	if cfg == nil || !cfg.Claude.Quota.Enabled || auth == nil || !strings.EqualFold(auth.Provider, provider) || auth.AuthKind() != AuthKindOAuth {
 		return ClaudeQuotaSnapshot{}, false
 	}
 	now := time.Now()
 	snapshot := ClaudeQuotaSnapshot{Status: "not_polled_yet", Stale: true, Windows: auth.Quota.Clone().Windows, Holds: CooldownSnapshotForAuth(auth, now)}
+	if provider == "codex" {
+		snapshot.Holds = nil // Codex usage polling never creates holds.
+	}
 	if snapshot.Windows == nil {
 		snapshot.Windows = map[string]QuotaWindow{}
 	}
@@ -110,7 +122,7 @@ func (m *Manager) ClaudeQuotaCached(id string) (ClaudeQuotaSnapshot, bool) {
 		next = seat.nextPoll
 		snapshot.Refreshing = seat.running || seat.queued
 	}
-	if claudeQuotaEligible(auth) {
+	if quotaPollEligible(auth) {
 		if next.Before(now) {
 			next = now
 		}
@@ -128,6 +140,15 @@ func (m *Manager) ClaudeQuotaCached(id string) (ClaudeQuotaSnapshot, bool) {
 // RequestClaudeQuotaPoll only queues work on the service loop. Repeated clicks,
 // automatic polls and config reloads share the same per-seat minute budget.
 func (m *Manager) RequestClaudeQuotaPoll(id string) bool {
+	return m.requestQuotaPoll(id, "claude")
+}
+
+// RequestCodexQuotaPoll shares the loop and its per-seat minimum interval.
+func (m *Manager) RequestCodexQuotaPoll(id string) bool {
+	return m.requestQuotaPoll(id, "codex")
+}
+
+func (m *Manager) requestQuotaPoll(id, provider string) bool {
 	if m == nil {
 		return false
 	}
@@ -138,7 +159,7 @@ func (m *Manager) RequestClaudeQuotaPoll(id string) bool {
 	}
 	m.mu.Lock()
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
-	if cfg == nil || !cfg.Claude.Quota.Enabled || !claudeQuotaEligible(m.auths[id]) {
+	if cfg == nil || !cfg.Claude.Quota.Enabled || !quotaPollEligible(m.auths[id]) || !strings.EqualFold(m.auths[id].Provider, provider) {
 		m.mu.Unlock()
 		return false
 	}
@@ -183,7 +204,7 @@ func (m *Manager) reserveClaudeQuotaPoll(ctx context.Context, cfg *internalconfi
 	// Spread a fleet's reads instead of bursting all seats on the minute.
 	count := 0
 	for _, candidate := range m.auths {
-		if claudeQuotaEligible(candidate) {
+		if quotaPollEligible(candidate) {
 			count++
 		}
 	}
@@ -206,7 +227,7 @@ func (m *Manager) recordClaudeQuotaPoll(base *Auth, started time.Time, errPoll e
 			status = statusError.StatusCode()
 		}
 	}
-	log.WithFields(log.Fields{"auth_file": claudeQuotaName(base), "http_status": status, "latency_ms": time.Since(started).Milliseconds(), "success": errPoll == nil}).Info("claude quota: usage poll")
+	log.WithFields(log.Fields{"auth_file": claudeQuotaName(base), "http_status": status, "latency_ms": time.Since(started).Milliseconds(), "success": errPoll == nil}).Info(strings.ToLower(base.Provider) + " quota: usage poll")
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if seat := m.quotaPollSeats[base.ID]; seat != nil && seat.epoch == base.RegistrationEpoch && !seat.lastAttempt.After(started) && sameClaudeQuotaCredential(m.auths[base.ID], base) {

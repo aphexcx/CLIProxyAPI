@@ -127,7 +127,7 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 				previous.cancel()
 				delete(running, auth.ID)
 			}
-			if !claudeQuotaEligible(auth) {
+			if !quotaPollEligible(auth) {
 				continue
 			}
 			executor, ok := m.Executor(auth.Provider)
@@ -201,7 +201,7 @@ func (m *Manager) nextClaudeQuotaPoll() time.Time {
 	defer m.mu.RUnlock()
 	var next time.Time
 	for _, auth := range m.auths {
-		if !claudeQuotaEligible(auth) {
+		if !quotaPollEligible(auth) {
 			continue
 		}
 		executor, _ := m.executorLocked(auth.Provider)
@@ -229,8 +229,9 @@ func (m *Manager) nextClaudeQuotaPoll() time.Time {
 }
 
 func sameClaudeQuotaCredential(current, base *Auth) bool {
-	return claudeQuotaEligible(current) && current.RegistrationEpoch == base.RegistrationEpoch &&
-		current.CredentialVersion == base.CredentialVersion && authAccessToken(current) == authAccessToken(base)
+	return quotaPollEligible(current) && base != nil && strings.EqualFold(current.Provider, base.Provider) && current.RegistrationEpoch == base.RegistrationEpoch &&
+		current.CredentialVersion == base.CredentialVersion && quotaPollToken(current) == quotaPollToken(base) &&
+		(!strings.EqualFold(base.Provider, "codex") || codexQuotaAccountID(current) == codexQuotaAccountID(base))
 }
 
 // Watch credential identity, not ordinary runtime generations. Cancellation is
@@ -286,8 +287,12 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 			}
 			if observed.err != nil {
 				// Transport errors may contain proxy credentials. Never log the error.
-				log.WithField("auth_file", claudeQuotaName(base)).Debug("claude quota: usage read failed")
-				m.refreshClaudeQuotaRanks()
+				log.WithField("auth_file", claudeQuotaName(base)).Debug(strings.ToLower(base.Provider) + " quota: usage read failed")
+				if strings.EqualFold(base.Provider, "claude") {
+					m.refreshClaudeQuotaRanks()
+				}
+			} else if strings.EqualFold(base.Provider, "codex") {
+				m.applyCodexQuotaUsageSnapshot(ctx, cfg, base, observed.windows, observed.usage, time.Now())
 			} else {
 				m.applyClaudeQuotaUsageSnapshot(ctx, cfg, base, observed.windows, observed.usage, time.Now())
 			}
@@ -369,8 +374,30 @@ func (m *Manager) expireClaudeQuotaState(ctx context.Context) {
 }
 
 func claudeQuotaEligible(auth *Auth) bool {
-	if auth == nil || !strings.EqualFold(auth.Provider, "claude") || auth.Disabled || auth.Status == StatusDisabled || auth.AuthKind() != AuthKindOAuth || authAccessToken(auth) == "" {
+	return auth != nil && strings.EqualFold(auth.Provider, "claude") && quotaPollEligible(auth)
+}
+
+func quotaPollToken(auth *Auth) string {
+	if auth != nil && strings.EqualFold(auth.Provider, "codex") {
+		token, _ := auth.Metadata["access_token"].(string)
+		return strings.TrimSpace(token)
+	}
+	return authAccessToken(auth)
+}
+
+func codexQuotaAccountID(auth *Auth) string {
+	accountID, _ := auth.Metadata["account_id"].(string)
+	return strings.TrimSpace(accountID)
+}
+
+func quotaPollEligible(auth *Auth) bool {
+	if auth == nil || (!strings.EqualFold(auth.Provider, "claude") && !strings.EqualFold(auth.Provider, "codex")) || auth.Disabled || auth.Status == StatusDisabled || auth.AuthKind() != AuthKindOAuth || quotaPollToken(auth) == "" {
 		return false
+	}
+	if strings.EqualFold(auth.Provider, "codex") {
+		if codexQuotaAccountID(auth) == "" {
+			return false
+		}
 	}
 	if auth.LastError != nil && (isUnauthorizedError(auth.LastError) || isInvalidGrantResultError(auth.LastError)) {
 		return false

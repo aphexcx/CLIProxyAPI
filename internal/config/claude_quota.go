@@ -10,8 +10,9 @@ import (
 // ClaudeQuotaMinimumPollInterval is shared by validation and the poll scheduler.
 const ClaudeQuotaMinimumPollInterval = time.Minute
 
-// ClaudeQuotaConfig governs proactive OAuth usage reads. Account-wide windows
-// remain observational: only upstream failures may cool the whole credential.
+// ClaudeQuotaConfig enables and schedules Claude and Codex OAuth usage reads.
+// Caps, model windows and reset priority apply only to Claude. Codex usage and
+// account-wide Claude windows remain observational.
 type ClaudeQuotaConfig struct {
 	Enabled         bool                `yaml:"enabled" json:"enabled"`
 	PollInterval    string              `yaml:"poll-interval" json:"poll-interval"` // Default and minimum 1m.

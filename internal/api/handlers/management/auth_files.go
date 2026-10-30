@@ -693,6 +693,9 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 		if snapshot, ok := h.cachedClaudeUsage(auth, false); ok {
 			entry["claude_usage"] = claudeUsagePayload(snapshot)
 		}
+		if snapshot, ok := h.cachedCodexUsage(auth, false); ok {
+			entry["codex_usage"] = codexUsagePayload(snapshot)
+		}
 	}
 	if modelQuotas := modelQuotaObservationPayload(auth.Provider, auth.ModelStates); len(modelQuotas) > 0 {
 		entry["model_quotas"] = modelQuotas

@@ -20,6 +20,11 @@ afterEach(() => {
 
 function setup(body: unknown, statusCode = 200) {
   const calls: string[] = [];
+  mocks.push(
+    spyOn(apiClient, 'post').mockRejectedValue(
+      Object.assign(new Error('cache disabled'), { status: 404 })
+    )
+  );
   const request = spyOn(apiCallApi, 'request').mockImplementation(async (payload) => {
     if (payload.url === CODEX_RATE_LIMIT_RESET_CREDITS_CONSUME_URL) {
       calls.push('consume');

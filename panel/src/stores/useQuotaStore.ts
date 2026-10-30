@@ -138,9 +138,55 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
       return { claudeQuota: retained };
     }),
   setCodexQuota: (updater) =>
-    set((state) => ({
-      codexQuota: resolveUpdater(updater, state.codexQuota),
-    })),
+    set((state) => {
+      const next = resolveUpdater(updater, state.codexQuota);
+      let retained = next;
+      for (const [key, quota] of Object.entries(next)) {
+        const previous = state.codexQuota[key];
+        if (previous?.serverCache && quota.serverCache) {
+          const prior = previous.serverCache;
+          const incoming = quota.serverCache;
+          if (
+            incoming.requestSequence < prior.requestSequence ||
+            Date.parse(incoming.lastPollAt ?? incoming.polledAt ?? '') <
+              Date.parse(prior.lastPollAt ?? prior.polledAt ?? '') ||
+            Date.parse(incoming.polledAt ?? '') < Date.parse(prior.polledAt ?? '')
+          ) {
+            if (retained === next) retained = { ...next };
+            retained[key] =
+              previous.status === 'loading' && quota.status === 'success'
+                ? { ...previous, status: 'success', error: undefined, errorStatus: undefined }
+                : previous;
+            continue;
+          }
+        }
+        if (
+          previous &&
+          quota !== previous &&
+          !quota.observedAt &&
+          (quota.status === 'loading' ||
+            quota.status === 'error' ||
+            quota.serverCache?.polledAt === null) &&
+          (previous.serverCache || previous.observedAt || previous.windows.length)
+        ) {
+          if (retained === next) retained = { ...next };
+          retained[key] = {
+            ...previous,
+            ...quota,
+            windows: quota.windows.length ? quota.windows : previous.windows,
+            observedAt: previous.observedAt,
+            serverCache: quota.serverCache ?? previous.serverCache,
+            planType: quota.planType ?? previous.planType,
+            subscriptionActiveUntil:
+              quota.subscriptionActiveUntil ?? previous.subscriptionActiveUntil,
+            creditBalance: quota.creditBalance ?? previous.creditBalance,
+            stale:
+              quota.serverCache?.polledAt === null || quota.status === 'error' || previous.stale,
+          };
+        }
+      }
+      return { codexQuota: retained };
+    }),
   setDevinQuota: (updater) =>
     set((state) => ({
       devinQuota: resolveUpdater(updater, state.devinQuota),

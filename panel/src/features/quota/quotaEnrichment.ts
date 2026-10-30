@@ -24,7 +24,9 @@ export async function enrichQuotaInBackground(
     // Claude may retain display windows while accepting this exact server
     // snapshot. Keep identity checks against the merged state during enrichment.
     const expectedCache =
-      adapter.type === 'claude' ? (expectedState as ClaudeQuotaState).serverCache : undefined;
+      adapter.type === 'claude' || adapter.type === 'codex'
+        ? (expectedState as ClaudeQuotaState).serverCache
+        : undefined;
     if (
       !expectedCache ||
       (acceptedState as ClaudeQuotaState | undefined)?.serverCache !== expectedCache
