@@ -270,16 +270,15 @@ func (h *Handler) fetchQuotaForPlugin(c *gin.Context, pluginID, authIndex string
 		c.JSON(http.StatusNotFound, gin.H{"error": "auth not found"})
 		return
 	}
-	if h.serveCachedClaudePluginQuota(c, auth) {
-		return
-	}
-
 	h.mu.Lock()
 	host := h.pluginHost
 	h.mu.Unlock()
 
 	if host == nil || !host.HasQuotaProviderForPlugin(pluginID) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "quota provider not found for plugin"})
+		return
+	}
+	if c.GetBool(ConfigV8ContextKey) && host.QuotaProviderPluginIDs(c.Request.Context())[strings.ToLower(strings.TrimSpace(auth.Provider))] == pluginID && h.serveCachedClaudePluginQuota(c, auth) {
 		return
 	}
 

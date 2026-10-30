@@ -60,11 +60,14 @@ func TestFetchOAuthUsageCurrentTokenOnly(t *testing.T) {
 		if _, ok := req.Context().Deadline(); ok {
 			t.Fatal("usage read added a deadline")
 		}
-		return jsonResponse(req, `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`), nil
+		return jsonResponse(req, `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":100,"resets_at":"2026-11-02T02:59:00Z"}],"extra_usage":{"used_credits":12},"iguana_necktie":{"remaining_dollars":37}}`), nil
 	})}}
-	windows, errFetch := auth.FetchOAuthUsage(context.Background(), "test-access")
+	windows, usage, errFetch := auth.FetchOAuthUsageSnapshot(context.Background(), "test-access")
 	if errFetch != nil || calls != 1 || windows["Fable"].Utilization != 100 {
 		t.Fatalf("calls=%d windows=%v err=%v", calls, windows, errFetch)
+	}
+	if !strings.Contains(string(usage), `"used_credits":12`) || !strings.Contains(string(usage), `"remaining_dollars":37`) {
+		t.Fatal("usage snapshot discarded optional balances")
 	}
 }
 

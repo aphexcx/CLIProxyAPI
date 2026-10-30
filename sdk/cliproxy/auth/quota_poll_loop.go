@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"sort"
 	"strings"
@@ -17,6 +18,12 @@ import (
 // receipt times remain older than all timestamped observations, never completion time.
 type QuotaPoller interface {
 	PollQuota(context.Context, *Auth) (map[string]QuotaWindow, error)
+}
+
+// QuotaUsagePoller additionally retains the complete usage response for existing
+// management renderers, including optional plan and dollar-denominated windows.
+type QuotaUsagePoller interface {
+	PollQuotaUsage(context.Context, *Auth) (map[string]QuotaWindow, json.RawMessage, error)
 }
 
 // StartQuotaPolling binds the optional poller to the service lifetime. Disabled
@@ -94,7 +101,23 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 			return
 		}
 		seats := m.List()
-		sort.Slice(seats, func(i, j int) bool { return seats[i].ID < seats[j].ID })
+		// Oldest due slot first: a recurring early-sorting seat must not starve
+		// a fresh seat when jitter pushes a fleet rotation beyond a minute.
+		m.mu.RLock()
+		sort.Slice(seats, func(i, j int) bool {
+			var left, right time.Time
+			if seat := m.quotaPollSeats[seats[i].ID]; seat != nil {
+				left = seat.nextPoll
+			}
+			if seat := m.quotaPollSeats[seats[j].ID]; seat != nil {
+				right = seat.nextPoll
+			}
+			if left.Equal(right) {
+				return seats[i].ID < seats[j].ID
+			}
+			return left.Before(right)
+		})
+		m.mu.RUnlock()
 		for _, auth := range seats {
 			if previous := running[auth.ID]; previous != nil {
 				if sameClaudeQuotaCredential(auth, previous.auth) {
@@ -179,6 +202,7 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 	}
 	type result struct {
 		windows map[string]QuotaWindow
+		usage   json.RawMessage
 		err     error
 	}
 	// A poller that finishes late after cancellation must neither retain its slot
@@ -186,13 +210,20 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 	results := make(chan result, 1)
 	go func() {
 		started := time.Now()
-		windows, errPoll := poller.PollQuota(ctx, base)
+		var windows map[string]QuotaWindow
+		var usage json.RawMessage
+		var errPoll error
+		if full, ok := poller.(QuotaUsagePoller); ok {
+			windows, usage, errPoll = full.PollQuotaUsage(ctx, base)
+		} else {
+			windows, errPoll = poller.PollQuota(ctx, base)
+		}
 		m.recordClaudeQuotaPoll(base, started, errPoll)
 		snapshot := make(map[string]QuotaWindow, len(windows))
 		for name, window := range windows {
 			snapshot[name] = window
 		}
-		results <- result{snapshot, errPoll}
+		results <- result{snapshot, append(json.RawMessage(nil), usage...), errPoll}
 	}()
 	for {
 		select {
@@ -211,7 +242,7 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 				log.WithField("auth_file", claudeQuotaName(base)).Debug("claude quota: usage read failed")
 				m.refreshClaudeQuotaRanks()
 			} else {
-				m.applyClaudeQuotaUsage(ctx, cfg, base, observed.windows, time.Now())
+				m.applyClaudeQuotaUsageSnapshot(ctx, cfg, base, observed.windows, observed.usage, time.Now())
 			}
 			return
 		}
@@ -312,6 +343,10 @@ func claudeQuotaName(auth *Auth) string {
 }
 
 func (m *Manager) applyClaudeQuotaUsage(ctx context.Context, cfg *internalconfig.Config, base *Auth, windows map[string]QuotaWindow, now time.Time) {
+	m.applyClaudeQuotaUsageSnapshot(ctx, cfg, base, windows, nil, now)
+}
+
+func (m *Manager) applyClaudeQuotaUsageSnapshot(ctx context.Context, cfg *internalconfig.Config, base *Auth, windows map[string]QuotaWindow, usage json.RawMessage, now time.Time) {
 	// Fence reloads and credential replacement. Network I/O happens before these locks.
 	release, errLock := m.lockAuthMutationContext(ctx, base.ID)
 	if errLock != nil {
@@ -333,6 +368,7 @@ func (m *Manager) applyClaudeQuotaUsage(ctx context.Context, cfg *internalconfig
 	fresh := mergeClaudeQuotaWindows(auth, windows)
 	seat := m.claudeQuotaPollSeatLocked(auth.ID)
 	seat.polledAt, seat.epoch = now, auth.RegistrationEpoch
+	seat.usage = append(json.RawMessage(nil), usage...)
 	changed := m.reconcileClaudeQuotaHoldsLocked(auth, cfg, fresh, nil, now)
 	auth.Generation++
 	auth.UpdatedAt = now
@@ -723,6 +759,7 @@ func (m *Manager) updateClaudeQuotaConfig(previous, cfg *internalconfig.Config) 
 			auth.Quota.Windows = nil
 			if seat := m.quotaPollSeats[auth.ID]; seat != nil {
 				seat.polledAt, seat.queued = time.Time{}, false
+				seat.usage = nil
 			}
 		}
 	}

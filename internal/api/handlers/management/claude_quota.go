@@ -17,10 +17,19 @@ import (
 // It adds freshness and diagnostics, without inventing absent plan/billing data.
 func claudeUsagePayload(snapshot coreauth.ClaudeQuotaSnapshot) gin.H {
 	payload := gin.H{
-		"status": snapshot.Status, "polled_at": snapshot.PolledAt, "age_seconds": snapshot.AgeSeconds,
+		"status": snapshot.Status, "stale": snapshot.Stale, "polled_at": snapshot.PolledAt, "age_seconds": snapshot.AgeSeconds,
 		"next_poll_at": snapshot.NextPollAt, "refreshing": snapshot.Refreshing, "holds": snapshot.Holds,
 		"windows": snapshot.Windows, "polls": snapshot.Polls, "rate_limits": snapshot.RateLimits,
 		"last_status": snapshot.LastStatus, "last_poll_at": snapshot.LastPollAt,
+	}
+	if len(snapshot.Usage) > 0 {
+		var full gin.H
+		if errDecode := json.Unmarshal(snapshot.Usage, &full); errDecode == nil && full != nil {
+			for key, value := range payload {
+				full[key] = value
+			}
+			return full
+		}
 	}
 	limits := make([]gin.H, 0)
 	names := make([]string, 0, len(snapshot.Windows))
@@ -86,13 +95,21 @@ func (h *Handler) serveCachedClaudeAPICall(c *gin.Context, auth *coreauth.Auth) 
 	if !ok {
 		return false
 	}
-	body, errMarshal := json.Marshal(claudeUsagePayload(snapshot))
+	payload := claudeUsagePayload(snapshot)
+	status := http.StatusOK
+	if snapshot.Stale {
+		// The existing panel stamps successful API calls as freshly observed,
+		// ignoring cache timestamps. Do not report stale usage as a new success.
+		status = http.StatusServiceUnavailable
+		payload["error"] = gin.H{"message": "Cached Claude usage is stale or not polled yet; open /claude-seats.html to view retained usage and its poll age."}
+	}
+	body, errMarshal := json.Marshal(payload)
 	if errMarshal != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot encode cached Claude usage"})
 		return true
 	}
 	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, apiCallResponse{StatusCode: http.StatusOK, Header: map[string][]string{"Content-Type": {"application/json"}}, Body: string(body)})
+	c.JSON(http.StatusOK, apiCallResponse{StatusCode: status, Header: map[string][]string{"Content-Type": {"application/json"}}, Body: string(body)})
 	return true
 }
 

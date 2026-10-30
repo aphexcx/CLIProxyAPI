@@ -167,8 +167,8 @@ func TestClaudeQuotaConfigApplyPreservesLiveWindowDeadlines(t *testing.T) {
 		manager.RegisterExecutor(poller)
 		manager.StartQuotaPolling(ctx)
 		synctest.Wait()
-		// Restarting shares the previous attempt's minute budget and jitter.
-		<-time.After(70 * time.Second)
+		// Restarting uses the new two-minute interval and preserves jitter.
+		<-time.After(130 * time.Second)
 		synctest.Wait()
 		auth, _ := manager.GetByID("quota-overlap")
 		cooldowns := coreauth.CooldownSnapshotForAuth(auth, time.Now())

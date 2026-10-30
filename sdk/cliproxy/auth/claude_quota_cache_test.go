@@ -79,53 +79,112 @@ func TestClaudeQuotaCacheRefreshSharesMinuteBudgetAndRetainsFailures(t *testing.
 }
 
 func TestClaudeQuotaFleetPollsAreStaggeredAndClicksDoNotAddCalls(t *testing.T) {
+	for _, size := range []int{11, 300} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m := NewManager(nil, nil, nil)
+				cfg := &config.Config{RequestRetry: 3}
+				cfg.Claude.Quota.Enabled = true
+				cfg.Claude.Quota.PollInterval = "15s" // Old configs still obey the one-minute floor.
+				m.SetConfig(cfg)
+				for i := range size {
+					if _, errRegister := m.Register(context.Background(), &Auth{ID: fmt.Sprintf("seat-%02d", i), Provider: "claude", Status: StatusActive, Metadata: map[string]any{"access_token": "test"}}); errRegister != nil {
+						t.Fatal(errRegister)
+					}
+				}
+				var mu sync.Mutex
+				var starts []time.Time
+				bySeat := map[string][]time.Time{}
+				m.RegisterExecutor(&claudeQuotaTestPoller{poll: func(ctx context.Context, auth *Auth) (map[string]QuotaWindow, error) {
+					mu.Lock()
+					defer mu.Unlock()
+					starts = append(starts, time.Now())
+					bySeat[auth.ID] = append(bySeat[auth.ID], time.Now())
+					return nil, nil
+				}})
+				m.StartQuotaPolling(context.Background())
+				t.Cleanup(m.StopQuotaPolling)
+				for range 130 {
+					synctest.Wait()
+					for _, auth := range m.List() {
+						m.RequestClaudeQuotaPoll(auth.ID)
+					}
+					<-time.After(time.Second)
+				}
+				synctest.Wait()
+				mu.Lock()
+				defer mu.Unlock()
+				if len(bySeat) != size {
+					t.Fatalf("polled %d seats, want %d", len(bySeat), size)
+				}
+				for i := 1; i < len(starts); i++ {
+					if starts[i].Sub(starts[i-1]) < time.Minute/time.Duration(size) {
+						t.Fatal("fleet polls burst together")
+					}
+				}
+				for id, times := range bySeat {
+					for i := 1; i < len(times); i++ {
+						if times[i].Sub(times[i-1]) < time.Minute {
+							t.Fatalf("%s polled twice in a minute", id)
+						}
+					}
+				}
+			})
+		})
+	}
+}
+
+func TestClaudeQuotaFreshSeatPrecedesRecurringSeat(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		m := NewManager(nil, nil, nil)
-		cfg := &config.Config{RequestRetry: 3}
-		cfg.Claude.Quota.Enabled = true
-		cfg.Claude.Quota.PollInterval = "15s" // Old configs still obey the one-minute floor.
-		m.SetConfig(cfg)
-		for i := range 11 {
-			if _, errRegister := m.Register(context.Background(), &Auth{ID: fmt.Sprintf("seat-%02d", i), Provider: "claude", Status: StatusActive, Metadata: map[string]any{"access_token": "test"}}); errRegister != nil {
-				t.Fatal(errRegister)
-			}
-		}
-		var mu sync.Mutex
-		var starts []time.Time
-		bySeat := map[string][]time.Time{}
+		m, a, b := newClaudeQuotaManager(t)
+		// The first seat is due again, while the later-sorting seat has never
+		// received a slot. Simulate a fleet rotation extended by jitter.
+		m.mu.Lock()
+		seat := m.claudeQuotaPollSeatLocked(a)
+		seat.lastAttempt = time.Now().Add(-2 * time.Minute)
+		seat.nextPoll = time.Now().Add(-time.Second)
+		m.mu.Unlock()
+		started := make(chan string, 2)
 		m.RegisterExecutor(&claudeQuotaTestPoller{poll: func(ctx context.Context, auth *Auth) (map[string]QuotaWindow, error) {
-			mu.Lock()
-			defer mu.Unlock()
-			starts = append(starts, time.Now())
-			bySeat[auth.ID] = append(bySeat[auth.ID], time.Now())
+			started <- auth.ID
 			return nil, nil
 		}})
 		m.StartQuotaPolling(context.Background())
 		t.Cleanup(m.StopQuotaPolling)
-		for range 130 {
-			synctest.Wait()
-			for _, auth := range m.List() {
-				m.RequestClaudeQuotaPoll(auth.ID)
-			}
-			<-time.After(time.Second)
-		}
 		synctest.Wait()
-		mu.Lock()
-		defer mu.Unlock()
-		if len(bySeat) != 11 {
-			t.Fatalf("polled %d seats, want 11", len(bySeat))
+		if len(started) != 1 || <-started != b {
+			t.Fatal("recurring seat displaced a never-polled seat")
 		}
-		for i := 1; i < len(starts); i++ {
-			if starts[i].Sub(starts[i-1]) < time.Minute/11 {
-				t.Fatal("fleet polls burst together")
-			}
+	})
+}
+
+func TestClaudeQuotaIntervalReloadReschedulesExistingSlot(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, _, b := newClaudeQuotaManager(t)
+		m.Remove(context.Background(), b)
+		cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+		cfg.Claude.Quota.PollInterval = "5m"
+		m.SetConfig(cfg)
+		var calls atomic.Int64
+		m.RegisterExecutor(&claudeQuotaTestPoller{poll: func(context.Context, *Auth) (map[string]QuotaWindow, error) { calls.Add(1); return nil, nil }})
+		m.StartQuotaPolling(context.Background())
+		t.Cleanup(m.StopQuotaPolling)
+		synctest.Wait()
+		<-time.After(70 * time.Second)
+		cfg = cfg.CloneForRuntime()
+		cfg.Claude.Quota.PollInterval = "1m"
+		m.SetConfig(cfg)
+		synctest.Wait()
+		if calls.Load() != 2 {
+			t.Fatal("shorter interval retained the old five-minute slot")
 		}
-		for id, times := range bySeat {
-			for i := 1; i < len(times); i++ {
-				if times[i].Sub(times[i-1]) < time.Minute {
-					t.Fatalf("%s polled twice in a minute", id)
-				}
-			}
+		cfg = cfg.CloneForRuntime()
+		cfg.Claude.Quota.PollInterval = "10m"
+		m.SetConfig(cfg)
+		<-time.After(2 * time.Minute)
+		synctest.Wait()
+		if calls.Load() != 2 {
+			t.Fatal("longer interval retained the old one-minute slot")
 		}
 	})
 }

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math/rand/v2"
 	"strings"
@@ -23,13 +24,19 @@ type claudeQuotaPollSeat struct {
 	polls       uint64
 	rateLimits  uint64
 	lastStatus  int
+	interval    time.Duration
+	jitter      time.Duration
+	usage       json.RawMessage
+	lastFailed  bool
 }
 
 // ClaudeQuotaSnapshot contains only runtime usage, never credential material.
 // Windows may include newer response headers; PolledAt is the last successful
 // usage poll completion, not the time at which a management request read it.
 type ClaudeQuotaSnapshot struct {
+	Usage      json.RawMessage        `json:"-"`
 	Status     string                 `json:"status"`
+	Stale      bool                   `json:"stale"`
 	Windows    map[string]QuotaWindow `json:"windows"`
 	PolledAt   *time.Time             `json:"polled_at"`
 	AgeSeconds *int64                 `json:"age_seconds"`
@@ -65,7 +72,7 @@ func (m *Manager) ClaudeQuotaCached(id string) (ClaudeQuotaSnapshot, bool) {
 		return ClaudeQuotaSnapshot{}, false
 	}
 	now := time.Now()
-	snapshot := ClaudeQuotaSnapshot{Status: "not_polled_yet", Windows: auth.Quota.Clone().Windows, Holds: CooldownSnapshotForAuth(auth, now)}
+	snapshot := ClaudeQuotaSnapshot{Status: "not_polled_yet", Stale: true, Windows: auth.Quota.Clone().Windows, Holds: CooldownSnapshotForAuth(auth, now)}
 	if snapshot.Windows == nil {
 		snapshot.Windows = map[string]QuotaWindow{}
 	}
@@ -77,9 +84,13 @@ func (m *Manager) ClaudeQuotaCached(id string) (ClaudeQuotaSnapshot, bool) {
 			snapshot.LastPollAt = &at
 		}
 		if seat.epoch == auth.RegistrationEpoch && !seat.polledAt.IsZero() {
+			snapshot.Usage = append(json.RawMessage(nil), seat.usage...)
 			at := seat.polledAt
 			age := max(int64(0), int64(now.Sub(at)/time.Second))
 			snapshot.PolledAt, snapshot.AgeSeconds, snapshot.Status = &at, &age, "ok"
+			// Allow the normal staggered round to finish, but bound legacy clients
+			// that cannot display cache age when a read stalls indefinitely.
+			snapshot.Stale = seat.lastFailed || now.Sub(at) > max(seat.interval, claudeQuotaMinimumPollInterval)+time.Minute
 		}
 		next = seat.nextPoll
 		snapshot.Refreshing = seat.running || seat.queued
@@ -94,6 +105,7 @@ func (m *Manager) ClaudeQuotaCached(id string) (ClaudeQuotaSnapshot, bool) {
 		snapshot.NextPollAt = &next
 	} else {
 		snapshot.Status = "polling_paused"
+		snapshot.Stale = true
 	}
 	return snapshot, true
 }
@@ -138,16 +150,24 @@ func (m *Manager) reserveClaudeQuotaPoll(ctx context.Context, cfg *internalconfi
 		return nil, false
 	}
 	seat := m.claudeQuotaPollSeatLocked(auth.ID)
+	interval = max(interval, claudeQuotaMinimumPollInterval)
+	if seat.interval != interval && !seat.lastAttempt.IsZero() {
+		// Apply reloads to the next slot without discarding the attempt budget.
+		seat.nextPoll = seat.lastAttempt.Add(interval + seat.jitter)
+	}
+	seat.interval = interval
 	if seat.running || now.Before(seat.nextPoll) || now.Before(seat.lastAttempt.Add(claudeQuotaMinimumPollInterval)) || now.Before(m.quotaNextStart) {
 		return nil, false
 	}
 	if seat.epoch != auth.RegistrationEpoch {
 		seat.polledAt = time.Time{}
+		seat.usage = nil
 		seat.epoch = auth.RegistrationEpoch
 	}
 	seat.lastAttempt, seat.running, seat.queued = now, true, false
 	seat.polls++
-	seat.nextPoll = now.Add(max(interval, claudeQuotaMinimumPollInterval) + time.Duration(rand.Int64N(int64(5*time.Second))))
+	seat.jitter = time.Duration(rand.Int64N(int64(5 * time.Second)))
+	seat.nextPoll = now.Add(interval + seat.jitter)
 	// Spread a fleet's reads instead of bursting all seats on the minute.
 	count := 0
 	for _, candidate := range m.auths {
@@ -178,6 +198,7 @@ func (m *Manager) recordClaudeQuotaPoll(base *Auth, started time.Time, errPoll e
 	defer m.mu.Unlock()
 	if seat := m.quotaPollSeats[base.ID]; seat != nil && seat.epoch == base.RegistrationEpoch && !seat.lastAttempt.After(started) && sameClaudeQuotaCredential(m.auths[base.ID], base) {
 		seat.lastStatus = status
+		seat.lastFailed = errPoll != nil
 		if status == 429 {
 			seat.rateLimits++
 		}

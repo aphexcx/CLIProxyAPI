@@ -285,19 +285,26 @@ func (o *ClaudeAuth) FetchOAuthProfile(ctx context.Context, accessToken string) 
 // FetchOAuthUsage observes usage with the current access token; it never refreshes
 // credentials. Errors deliberately omit the upstream body and credentials.
 func (o *ClaudeAuth) FetchOAuthUsage(ctx context.Context, accessToken string) (map[string]OAuthUsageWindow, error) {
+	windows, _, errFetch := o.FetchOAuthUsageSnapshot(ctx, accessToken)
+	return windows, errFetch
+}
+
+// FetchOAuthUsageSnapshot preserves optional usage fields for management clients
+// while parsing the canonical windows used by the routing guard.
+func (o *ClaudeAuth) FetchOAuthUsageSnapshot(ctx context.Context, accessToken string) (map[string]OAuthUsageWindow, json.RawMessage, error) {
 	body, observedAt, errFetch := o.fetchOAuthControlPlaneJSON(ctx, UsageURL, accessToken, "usage")
 	if errFetch != nil {
-		return nil, errFetch
+		return nil, nil, errFetch
 	}
 	windows, errParse := parseOAuthUsage(body)
 	if errParse != nil {
-		return nil, &controlPlaneHTTPError{http.StatusOK, errParse}
+		return nil, nil, &controlPlaneHTTPError{http.StatusOK, errParse}
 	}
 	for name, window := range windows {
 		window.ObservedAt = observedAt
 		windows[name] = window
 	}
-	return windows, nil
+	return windows, json.RawMessage(body), nil
 }
 
 // FetchOAuthRoles performs the claude_cli roles lookup the native client issues
