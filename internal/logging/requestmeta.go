@@ -34,6 +34,7 @@ type responseHeadersHolder struct {
 	mu         sync.RWMutex
 	headers    http.Header
 	observedAt time.Time
+	mergedAt   map[string]time.Time
 }
 
 func WithEndpoint(ctx context.Context, endpoint string) context.Context {
@@ -126,6 +127,7 @@ func SetResponseHeaders(ctx context.Context, headers http.Header) {
 	defer holder.mu.Unlock()
 	holder.headers = cloneHTTPHeader(headers)
 	holder.observedAt = time.Now()
+	holder.mergedAt = nil
 }
 
 // MergeResponseHeaders adds headers observed after the initial HTTP response,
@@ -143,13 +145,56 @@ func MergeResponseHeaders(ctx context.Context, headers http.Header) {
 	if holder.headers == nil {
 		holder.headers = make(http.Header, len(headers))
 	}
+	if holder.mergedAt == nil {
+		holder.mergedAt = make(map[string]time.Time)
+	}
+	observedAt := time.Now()
 	for key, values := range headers {
 		canonicalKey := http.CanonicalHeaderKey(key)
 		if canonicalKey == "" {
 			continue
 		}
 		holder.headers[canonicalKey] = append([]string(nil), values...)
+		holder.mergedAt[canonicalKey] = observedAt
 	}
+}
+
+// ResponseHeaderObservation contains fields received together. Event updates do
+// not re-date untouched HTTP fields or fields from an earlier websocket event.
+type ResponseHeaderObservation struct {
+	Headers    http.Header
+	ObservedAt time.Time
+}
+
+func GetResponseHeaderObservations(ctx context.Context) []ResponseHeaderObservation {
+	if ctx == nil {
+		return nil
+	}
+	holder, _ := ctx.Value(responseHeadersKey{}).(*responseHeadersHolder)
+	if holder == nil {
+		return nil
+	}
+	holder.mu.RLock()
+	defer holder.mu.RUnlock()
+	groups := make(map[time.Time]http.Header)
+	for key, values := range holder.headers {
+		at, merged := holder.mergedAt[key]
+		if !merged {
+			at = holder.observedAt
+		}
+		if at.IsZero() {
+			continue
+		}
+		if groups[at] == nil {
+			groups[at] = make(http.Header)
+		}
+		groups[at][key] = append([]string(nil), values...)
+	}
+	observations := make([]ResponseHeaderObservation, 0, len(groups))
+	for at, headers := range groups {
+		observations = append(observations, ResponseHeaderObservation{Headers: headers, ObservedAt: at})
+	}
+	return observations
 }
 
 func GetResponseStatus(ctx context.Context) int {

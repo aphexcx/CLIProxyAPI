@@ -140,3 +140,61 @@ func TestCodexQuotaDelayedPollRetainsNewerResponseInCache(t *testing.T) {
 		}
 	})
 }
+
+func TestCodexQuotaWebsocketReceiptAfterPoll(t *testing.T) {
+	for _, handshake := range []bool{false, true} {
+		t.Run(map[bool]string{false: "reused-connection", true: "fresh-connection"}[handshake], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m := NewManager(nil, nil, nil)
+				cfg := &config.Config{RequestRetry: 3}
+				cfg.Claude.Quota.Enabled = true
+				m.SetConfig(cfg)
+				base, errRegister := m.Register(context.Background(), &Auth{ID: "seat", Provider: "codex", Status: StatusActive, Metadata: map[string]any{"access_token": "fixture", "account_id": "account"}})
+				if errRegister != nil {
+					t.Fatal(errRegister)
+				}
+				ctx := internallogging.WithFreshResponseHeadersHolder(context.Background())
+				if handshake {
+					internallogging.SetResponseHeaders(ctx, http.Header{
+						"X-Codex-Secondary-Used-Percent": {"30"}, "X-Codex-Secondary-Window-Minutes": {"10080"}, "X-Codex-Secondary-Reset-After-Seconds": {"300"},
+					})
+				}
+				<-time.After(time.Second)
+				m.applyCodexQuotaUsageSnapshot(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+					"five_hour": {Utilization: 40, ResetsAt: time.Now().Add(time.Hour), ObservedAt: time.Now()},
+					"seven_day": {Utilization: 50, ResetsAt: time.Now().Add(time.Hour), ObservedAt: time.Now()},
+				}, nil, time.Now())
+				if polled, _ := m.CodexQuotaCached(base.ID); polled.PolledAt == nil || polled.Windows["seven_day"].Utilization != 50 {
+					t.Fatal("poll fixture was not applied")
+				}
+				<-time.After(time.Second)
+				eventAt := time.Now()
+				internallogging.MergeResponseHeaders(ctx, http.Header{
+					"X-Codex-Primary-Used-Percent": {"80"}, "X-Codex-Primary-Window-Minutes": {"300"}, "X-Codex-Primary-Reset-After-Seconds": {"300"},
+				})
+				<-time.After(time.Second)
+				m.MarkResult(ctx, Result{AuthID: base.ID, Provider: "codex", Model: "fixture", Success: true})
+				snapshot, _ := m.CodexQuotaCached(base.ID)
+				if snapshot.Windows["five_hour"].Utilization != 80 || !snapshot.Windows["five_hour"].ObservedAt.Equal(eventAt) || snapshot.Windows["seven_day"].Utilization != 50 {
+					t.Fatalf("websocket ordering: %+v", snapshot.Windows)
+				}
+			})
+		})
+	}
+}
+
+func TestCodexQuotaAdditionalIdentityMatchesHTTPAndPoll(t *testing.T) {
+	base := time.Unix(1800000000, 0)
+	auth := &Auth{}
+	for i, prefix := range []string{"X-Codex-Bengalfox-", "X-Codex-Additional-Gpt-5.3-Codex-Spark-", "X-Codex-Bengalfox-"} {
+		headers := make(http.Header)
+		headers.Set(prefix+"Limit-Name", "GPT-5.3-Codex-Spark")
+		headers.Set(prefix+"Primary-Used-Percent", []string{"10", "20", "30"}[i])
+		headers.Set(prefix+"Primary-Window-Minutes", "300")
+		headers.Set(prefix+"Primary-Reset-After-Seconds", "300")
+		mergeCodexQuotaWindows(auth, CodexQuotaWindows(headers, base.Add(time.Duration(i)*time.Second)))
+	}
+	if len(auth.Quota.Windows) != 1 || auth.Quota.Windows["additional/gpt-5.3-codex-spark/five_hour"].Utilization != 30 {
+		t.Fatalf("duplicate identities: %+v", auth.Quota.Windows)
+	}
+}

@@ -1493,8 +1493,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 		if !result.SkipQuotaObservation {
 			auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
-			if strings.EqualFold(result.Provider, "codex") && !headersObservedAt.IsZero() {
-				mergeCodexQuotaWindows(auth, CodexQuotaWindows(responseHeaders, headersObservedAt))
+			if strings.EqualFold(result.Provider, "codex") {
+				for _, observation := range internallogging.GetResponseHeaderObservations(ctx) {
+					mergeCodexQuotaWindows(auth, CodexQuotaWindows(observation.Headers, observation.ObservedAt))
+				}
 			}
 			if modelState != nil {
 				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)

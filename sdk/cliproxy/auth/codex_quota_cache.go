@@ -64,8 +64,10 @@ func CodexQuotaWindows(headers http.Header, observedAt time.Time) map[string]Quo
 		if namespace == "Code-Review-" {
 			name = "code_review/" + name
 		} else if namespace != "" {
-			namespace = strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(namespace, "Additional-"), "-"))
-			if len(namespace) > 128 || (!additional[namespace] && len(additional) >= 8) {
+			// HTTP uses a short namespace (bengalfox); polls/events use a
+			// display-name namespace. Limit-Name is their shared identity.
+			namespace = codexQuotaLimitIdentity(headers.Get("X-Codex-" + namespace + "Limit-Name"))
+			if namespace == "" || (!additional[namespace] && len(additional) >= 8) {
 				continue
 			}
 			additional[namespace] = true
@@ -74,6 +76,19 @@ func CodexQuotaWindows(headers http.Header, observedAt time.Time) map[string]Quo
 		windows[name] = QuotaWindow{Utilization: used, ResetsAt: reset, ObservedAt: observedAt}
 	}
 	return windows
+}
+
+func codexQuotaLimitIdentity(name string) string {
+	if len(name) > 128 || !validQuotaSignalValue(name) {
+		return ""
+	}
+	name = strings.Map(func(char rune) rune {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '.' || char == '_' || char == '-' {
+			return char
+		}
+		return '-'
+	}, strings.TrimSpace(name))
+	return strings.ToLower(strings.Trim(name, "-"))
 }
 
 // Retain newer response windows even when an earlier poll body arrives later.
