@@ -15,6 +15,16 @@ type OAuthUsageWindow struct {
 	ObservedAt  time.Time // Response header receipt; zero for a body parsed in isolation.
 }
 
+// controlPlaneHTTPError exposes an HTTP status without leaking response bodies.
+type controlPlaneHTTPError struct {
+	status int
+	err    error
+}
+
+func (e *controlPlaneHTTPError) Error() string   { return e.err.Error() }
+func (e *controlPlaneHTTPError) Unwrap() error   { return e.err }
+func (e *controlPlaneHTTPError) StatusCode() int { return e.status }
+
 func parseOAuthUsage(body []byte) (map[string]OAuthUsageWindow, error) {
 	type usageWindow struct {
 		Utilization *float64 `json:"utilization"`

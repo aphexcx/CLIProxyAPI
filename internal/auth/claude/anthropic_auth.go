@@ -258,10 +258,10 @@ func (o *ClaudeAuth) fetchOAuthControlPlaneJSON(ctx context.Context, endpoint, a
 	}()
 	body, errRead := readClaudeOAuthResponseBody(resp)
 	if errRead != nil {
-		return nil, time.Time{}, fmt.Errorf("read Claude OAuth %s response: %w", label, errRead)
+		return nil, time.Time{}, &controlPlaneHTTPError{resp.StatusCode, fmt.Errorf("read Claude OAuth %s response: %w", label, errRead)}
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, time.Time{}, fmt.Errorf("fetch Claude OAuth %s failed with status %d", label, resp.StatusCode)
+		return nil, time.Time{}, &controlPlaneHTTPError{resp.StatusCode, fmt.Errorf("fetch Claude OAuth %s failed with status %d", label, resp.StatusCode)}
 	}
 	return body, observedAt, nil
 }
@@ -291,7 +291,7 @@ func (o *ClaudeAuth) FetchOAuthUsage(ctx context.Context, accessToken string) (m
 	}
 	windows, errParse := parseOAuthUsage(body)
 	if errParse != nil {
-		return nil, errParse
+		return nil, &controlPlaneHTTPError{http.StatusOK, errParse}
 	}
 	for name, window := range windows {
 		window.ObservedAt = observedAt

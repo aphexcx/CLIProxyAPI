@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude seats</title>
+<style>
+:root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
+body { max-width: 1100px; margin: 3rem auto; padding: 0 1.25rem; }
+h1 { margin-bottom: .25rem; } p { margin-top: .4rem; }
+button, input { font: inherit; padding: .5rem .8rem; border: 1px solid #888; border-radius: .4rem; }
+button { cursor: pointer; } input { max-width: 100%; box-sizing: border-box; }
+#seats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 310px), 1fr)); gap: 1rem; }
+article { border: 1px solid #888; border-radius: .6rem; padding: 1rem; overflow-wrap: anywhere; }
+h2 { font-size: 1rem; margin-top: 0; } progress { width: 100%; accent-color: #388c77; }
+.muted, small { opacity: .75; } .window { margin-bottom: 1rem; }
+#status { min-height: 1.5em; } .hold { color: light-dark(#923800, #ffbc84); }
+</style>
+<h1>Claude seats</h1>
+<p class="muted">Usage from the hub’s latest observations. Updates every 60 seconds.</p>
+<form id="login">
+<label for="key">Management key</label>
+<input id="key" type="password" autocomplete="off" required>
+<button>Show seats</button>
+</form>
+<button id="logout" hidden>Lock view</button>
+<p id="status" role="status" aria-live="polite"></p>
+<main id="seats"></main>
+<script>
+'use strict';
+const login = document.getElementById('login');
+const keyInput = document.getElementById('key');
+const logout = document.getElementById('logout');
+const seats = document.getElementById('seats');
+const status = document.getElementById('status');
+let key = '', timer, revision = 0, loading = false;
+const node = (tag, text, parent, className) => {
+  const element = document.createElement(tag);
+  if (text !== undefined) element.textContent = text;
+  if (className) element.className = className;
+  parent.append(element);
+  return element;
+};
+const date = value => value ? new Date(value).toLocaleString() : 'unknown';
+async function request(path, body) {
+  const response = await fetch('/v8/management/' + path, {
+    method: body ? 'POST' : 'GET', cache: 'no-store', credentials: 'omit',
+    headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
+    ...(body ? { body: JSON.stringify(body) } : {})
+  });
+  if (!response.ok) throw new Error('Management request failed (' + response.status + ').');
+  return response.json();
+}
+function render(files) {
+  seats.replaceChildren();
+  for (const file of files.filter(file => file.provider === 'claude')) {
+    const card = node('article', undefined, seats);
+    node('h2', file.label || file.name, card);
+    const usage = file.claude_usage;
+    if (!usage) { node('p', 'Cached usage is unavailable for this credential.', card); continue; }
+    node('p', usage.polled_at ? 'Last successful poll: ' + date(usage.polled_at) + ' · ' + usage.age_seconds + 's ago' : 'Not polled yet', card, 'muted');
+    if (usage.status === 'polling_paused') node('p', 'Polling paused for this seat.', card);
+    if (file.disabled) node('p', 'Seat disabled', card);
+    for (const [name, window] of Object.entries(usage.windows || {})) {
+      const row = node('div', undefined, card, 'window');
+      const label = ({ five_hour: '5 hour', seven_day: '7 day' })[name] || name;
+      node('div', label + ' · ' + window.utilization + '% used', row);
+      const meter = node('progress', undefined, row);
+      meter.max = 100; meter.value = window.utilization; meter.setAttribute('aria-label', label + ' usage');
+      node('small', 'Resets ' + date(window.resets_at) + (Date.parse(window.resets_at) <= Date.now() ? ' · awaiting a new observation' : ''), row);
+    }
+    for (const hold of usage.holds || []) node('p', (hold.model_key || 'Account') + ' paused until ' + date(hold.retry_at), card, 'hold');
+    if (usage.next_poll_at) node('p', 'Next poll eligible: ' + date(usage.next_poll_at), card, 'muted');
+    if (usage.last_status && usage.last_status !== 200) node('p', 'Last poll returned HTTP ' + usage.last_status + '. Retaining cached usage.', card);
+    const refresh = node('button', usage.refreshing ? 'Refresh pending' : 'Request refresh', card);
+    refresh.disabled = usage.refreshing || usage.status === 'polling_paused';
+    refresh.onclick = async () => {
+      const current = revision;
+      refresh.disabled = true;
+      try {
+        await request('credentials/quota', { auth_index: file.auth_index });
+        if (current !== revision) return;
+        await load();
+        if (current === revision) status.textContent = 'Refresh shares this seat’s next poll slot. Showing cached usage until then.';
+      } catch (error) { if (current === revision) { status.textContent = error.message; refresh.disabled = false; } }
+    };
+  }
+  if (!seats.children.length) node('p', 'No Claude seats found.', seats);
+}
+async function load() {
+  if (!key || loading) return;
+  const current = revision;
+  loading = true;
+  try {
+    const data = await request('credentials');
+    if (current !== revision) return;
+    render(data.files || []);
+    login.hidden = true; logout.hidden = false;
+    status.textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (error) { if (current === revision) status.textContent = error.message + ' Displayed values may be stale.'; }
+  finally { loading = false; }
+}
+login.onsubmit = event => {
+  event.preventDefault(); revision++; key = keyInput.value; keyInput.value = '';
+  clearInterval(timer); void load(); timer = setInterval(load, 60000);
+};
+logout.onclick = () => {
+  revision++; key = ''; clearInterval(timer); seats.replaceChildren(); status.textContent = '';
+  login.hidden = false; logout.hidden = true; keyInput.focus();
+};
+</script>
+</html>

@@ -270,6 +270,9 @@ func (h *Handler) fetchQuotaForPlugin(c *gin.Context, pluginID, authIndex string
 		c.JSON(http.StatusNotFound, gin.H{"error": "auth not found"})
 		return
 	}
+	if h.serveCachedClaudePluginQuota(c, auth) {
+		return
+	}
 
 	h.mu.Lock()
 	host := h.pluginHost

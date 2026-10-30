@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -64,6 +65,22 @@ func TestFetchOAuthUsageCurrentTokenOnly(t *testing.T) {
 	windows, errFetch := auth.FetchOAuthUsage(context.Background(), "test-access")
 	if errFetch != nil || calls != 1 || windows["Fable"].Utilization != 100 {
 		t.Fatalf("calls=%d windows=%v err=%v", calls, windows, errFetch)
+	}
+}
+
+func TestFetchOAuthUsageRetainsHTTPStatusWithoutBody(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		body   string
+	}{{429, "secret-response"}, {200, "invalid-json-secret"}} {
+		auth := &ClaudeAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: tc.status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(tc.body)), Request: req}, nil
+		})}}
+		_, errFetch := auth.FetchOAuthUsage(context.Background(), "test-access")
+		var statusError interface{ StatusCode() int }
+		if !errors.As(errFetch, &statusError) || statusError.StatusCode() != tc.status || strings.Contains(errFetch.Error(), "secret") {
+			t.Fatalf("status not safely retained: %v", errFetch)
+		}
 	}
 }
 

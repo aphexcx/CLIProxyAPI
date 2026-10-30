@@ -234,6 +234,9 @@ type Manager struct {
 	quotaPollCancel context.CancelFunc
 	quotaPollDone   chan struct{}
 	quotaPollWake   chan struct{}
+	// Quota scheduling survives loop restarts. Protected by mu.
+	quotaPollSeats map[string]*claudeQuotaPollSeat
+	quotaNextStart time.Time
 	// refreshJobs retains queued and running jobs across loop restarts under m.mu.
 	refreshJobs map[string]*authRefreshJob
 

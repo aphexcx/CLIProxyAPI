@@ -1271,8 +1271,8 @@ func TestClaudeQuotaExpiryPublishesWhilePollsFail(t *testing.T) {
 		synctest.Wait()
 		<-time.After(45 * time.Second)
 		synctest.Wait()
-		if polls < 4 {
-			t.Fatal("test did not exercise repeated failed usage reads")
+		if polls != 1 {
+			t.Fatal("failed usage read bypassed the shared minute budget")
 		}
 		auth, _ := m.GetByID(a)
 		if blocked, _, _ := isAuthBlockedForModel(auth, quotaFable, time.Now()); blocked {
@@ -1546,46 +1546,50 @@ func (p *claudeQuotaTestPoller) PollQuota(ctx context.Context, auth *Auth) (map[
 }
 
 func TestClaudeQuotaDisabledStartsNoLoopAndReloadCancelsReads(t *testing.T) {
-	m, a, b := newClaudeQuotaManager(t)
-	cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
-	cfg.Claude.Quota.Enabled = false
-	m.SetConfig(cfg)
-	started := make(chan string, 2)
-	cancelled := make(chan string, 2)
-	m.RegisterExecutor(&claudeQuotaTestPoller{poll: func(ctx context.Context, auth *Auth) (map[string]QuotaWindow, error) {
-		started <- auth.ID
-		<-ctx.Done()
-		cancelled <- auth.ID
-		return nil, ctx.Err()
-	}})
-	m.StartQuotaPolling(context.Background())
-	t.Cleanup(m.StopQuotaPolling)
-	if m.quotaPollCancel != nil || m.quotaPollDone != nil {
-		t.Fatal("disabled feature started a loop")
-	}
-	cfg.Claude.Quota.Enabled = true
-	m.SetConfig(cfg)
-	receive := func(ch <-chan string) string {
-		t.Helper()
-		select {
-		case id := <-ch:
-			return id
-		case <-time.After(5 * time.Second):
-			t.Fatal("poll synchronization timed out")
-			return ""
+	synctest.Test(t, func(t *testing.T) {
+		m, a, b := newClaudeQuotaManager(t)
+		cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+		cfg.Claude.Quota.Enabled = false
+		m.SetConfig(cfg)
+		started := make(chan string, 2)
+		cancelled := make(chan string, 2)
+		m.RegisterExecutor(&claudeQuotaTestPoller{poll: func(ctx context.Context, auth *Auth) (map[string]QuotaWindow, error) {
+			started <- auth.ID
+			<-ctx.Done()
+			cancelled <- auth.ID
+			return nil, ctx.Err()
+		}})
+		m.StartQuotaPolling(context.Background())
+		t.Cleanup(m.StopQuotaPolling)
+		if m.quotaPollCancel != nil || m.quotaPollDone != nil {
+			t.Fatal("disabled feature started a loop")
 		}
-	}
-	seen := map[string]bool{receive(started): true, receive(started): true}
-	if !seen[a] || !seen[b] {
-		t.Fatal("stalled seat prevented another seat from polling")
-	}
-	cfg.Claude.Quota.Enabled = false
-	m.SetConfig(cfg)
-	_ = receive(cancelled)
-	_ = receive(cancelled)
-	if m.quotaPollCancel != nil {
-		t.Fatal("reload left poller running")
-	}
+		cfg.Claude.Quota.Enabled = true
+		m.SetConfig(cfg)
+		<-time.After(40 * time.Second)
+		synctest.Wait()
+		receive := func(ch <-chan string) string {
+			t.Helper()
+			select {
+			case id := <-ch:
+				return id
+			case <-time.After(5 * time.Second):
+				t.Fatal("poll synchronization timed out")
+				return ""
+			}
+		}
+		seen := map[string]bool{receive(started): true, receive(started): true}
+		if !seen[a] || !seen[b] {
+			t.Fatal("stalled seat prevented another seat from polling")
+		}
+		cfg.Claude.Quota.Enabled = false
+		m.SetConfig(cfg)
+		_ = receive(cancelled)
+		_ = receive(cancelled)
+		if m.quotaPollCancel != nil {
+			t.Fatal("reload left poller running")
+		}
+	})
 }
 
 func TestClaudeQuotaRankSurvivesThreeWayMerge(t *testing.T) {
@@ -1778,6 +1782,9 @@ func TestClaudeQuotaPollCadenceDoesNotOverlapStalledSeat(t *testing.T) {
 		m.StartQuotaPolling(context.Background())
 		t.Cleanup(m.StopQuotaPolling)
 		synctest.Wait()
+		// Both seats get their own launch slot within the first minute.
+		<-time.After(40 * time.Second)
+		synctest.Wait()
 		if len(called) != 2 {
 			t.Fatal("initial poll did not visit both seats")
 		}
@@ -1811,7 +1818,7 @@ func TestClaudeQuotaPollCadenceDoesNotOverlapStalledSeat(t *testing.T) {
 		}
 		close(complete)
 		synctest.Wait()
-		<-time.After(5 * time.Minute)
+		<-time.After(5*time.Minute + 10*time.Second)
 		synctest.Wait()
 		if len(called) != 2 {
 			t.Fatal("completed seat was not retried on the next tick")

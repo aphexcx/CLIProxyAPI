@@ -93,7 +93,7 @@ func TestClaudeQuotaConfigApplyDoesNotRearmClearedHold(t *testing.T) {
 					manager.MarkResult(ctx, coreauth.Result{AuthID: auth.ID, Provider: "claude", Model: model, Success: true})
 				}
 				poller.windows = map[string]coreauth.QuotaWindow{}
-				<-time.After(time.Minute)
+				<-time.After(70 * time.Second)
 				synctest.Wait()
 				if poller.calls != 2 {
 					t.Fatal("partial poll did not complete")
@@ -166,6 +166,9 @@ func TestClaudeQuotaConfigApplyPreservesLiveWindowDeadlines(t *testing.T) {
 		poller.windows = map[string]coreauth.QuotaWindow{"Fable": {Utilization: 0, ResetsAt: long, ObservedAt: time.Now()}}
 		manager.RegisterExecutor(poller)
 		manager.StartQuotaPolling(ctx)
+		synctest.Wait()
+		// Restarting shares the previous attempt's minute budget and jitter.
+		<-time.After(70 * time.Second)
 		synctest.Wait()
 		auth, _ := manager.GetByID("quota-overlap")
 		cooldowns := coreauth.CooldownSnapshotForAuth(auth, time.Now())
