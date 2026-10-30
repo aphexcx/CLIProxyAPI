@@ -2,7 +2,9 @@ package claude
 
 import (
 	"context"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"reflect"
@@ -59,11 +61,80 @@ func TestFetchOAuthUsageCurrentTokenOnly(t *testing.T) {
 		if _, ok := req.Context().Deadline(); ok {
 			t.Fatal("usage read added a deadline")
 		}
-		return jsonResponse(req, `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`), nil
+		return jsonResponse(req, `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":100,"resets_at":"2026-11-02T02:59:00Z"}],"extra_usage":{"used_credits":12},"iguana_necktie":{"remaining_dollars":37}}`), nil
 	})}}
-	windows, errFetch := auth.FetchOAuthUsage(context.Background(), "test-access")
+	windows, usage, errFetch := auth.FetchOAuthUsageSnapshot(context.Background(), "test-access")
 	if errFetch != nil || calls != 1 || windows["Fable"].Utilization != 100 {
 		t.Fatalf("calls=%d windows=%v err=%v", calls, windows, errFetch)
+	}
+	if !strings.Contains(string(usage), `"used_credits":12`) || !strings.Contains(string(usage), `"remaining_dollars":37`) {
+		t.Fatal("usage snapshot discarded optional balances")
+	}
+}
+
+type neverAnsweringUsageDialer struct{ t *testing.T }
+
+func (d neverAnsweringUsageDialer) Dial(_, _ string) (net.Conn, error) {
+	client, server := net.Pipe()
+	// Consume the TLS ClientHello, but never send a ServerHello. Closing the
+	// client on handshake cancellation releases the simulated server too.
+	go func() {
+		defer func() {
+			if errClose := server.Close(); errClose != nil {
+				d.t.Errorf("close simulated server: %v", errClose)
+			}
+		}()
+		_, _ = io.Copy(io.Discard, server)
+	}()
+	return client, nil
+}
+
+func TestClaudeQuotaStalledHandshakeReleasesNextPollSlot(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		transport := newUtlsRoundTripper(nil)
+		transport.dialer = neverAnsweringUsageDialer{t: t}
+		t.Cleanup(transport.CloseIdleConnections)
+		client := &ClaudeAuth{httpClient: &http.Client{Transport: transport}}
+		m := coreauth.NewManager(nil, nil, nil)
+		cfg := &config.Config{RequestRetry: 3}
+		cfg.Claude.Quota.Enabled = true
+		m.SetConfig(cfg)
+		seat, errRegister := m.Register(context.Background(), &coreauth.Auth{ID: "stalled", Provider: "claude", Status: coreauth.StatusActive, Metadata: map[string]any{"access_token": "fixture"}})
+		if errRegister != nil {
+			t.Fatal(errRegister)
+		}
+		m.RegisterExecutor(&delayedBodyQuotaPoller{auth: client})
+		m.StartQuotaPolling(context.Background())
+		t.Cleanup(m.StopQuotaPolling)
+		synctest.Wait()
+		<-time.After(claudeUsageConnectTimeout + time.Second)
+		synctest.Wait()
+		first, _ := m.ClaudeQuotaCached(seat.ID)
+		if first.Polls != 1 || first.Refreshing || first.PolledAt != nil {
+			t.Fatalf("stuck handshake retained first slot: %+v", first)
+		}
+		<-time.After(time.Minute + 5*time.Second)
+		synctest.Wait()
+		next, _ := m.ClaudeQuotaCached(seat.ID)
+		if next.Polls != 2 || next.Refreshing || next.PolledAt != nil {
+			t.Fatalf("next slot not reached after handshake failure: %+v", next)
+		}
+	})
+}
+
+func TestFetchOAuthUsageRetainsHTTPStatusWithoutBody(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		body   string
+	}{{429, "secret-response"}, {200, "invalid-json-secret"}} {
+		auth := &ClaudeAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: tc.status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(tc.body)), Request: req}, nil
+		})}}
+		_, errFetch := auth.FetchOAuthUsage(context.Background(), "test-access")
+		var statusError interface{ StatusCode() int }
+		if !errors.As(errFetch, &statusError) || statusError.StatusCode() != tc.status || strings.Contains(errFetch.Error(), "secret") {
+			t.Fatalf("status not safely retained: %v", errFetch)
+		}
 	}
 }
 

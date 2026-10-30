@@ -9,6 +9,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
+// Preserve a caller-supplied quota client across an RPC plugin's host callbacks.
+// The context is local to this fetch and cannot alter another plugin operation.
+type quotaHTTPClientContextKey struct{}
+
 // RegisterPluginForTest registers a plugin directly on the host for testing.
 func (h *Host) RegisterPluginForTest(id string, plugin pluginapi.Plugin) {
 	if h == nil {
@@ -399,6 +403,8 @@ func (h *Host) callQuotaFetch(ctx context.Context, record capabilityRecord, prov
 	}
 	if req.HTTPClient == nil {
 		req.HTTPClient = h.newHTTPClient(authRecord, req.Provider)
+	} else {
+		ctx = context.WithValue(ctx, quotaHTTPClientContextKey{}, req.HTTPClient)
 	}
 	req.Host = h.hostConfigSummary()
 	defer func() {

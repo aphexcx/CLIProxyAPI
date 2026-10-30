@@ -1031,6 +1031,7 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 					current.StatusMessage = "unauthorized (refresh token invalid)"
 				}
 				m.auths[id] = current
+				m.notifyAuthChangeLocked(id)
 				if m.scheduler != nil {
 					m.scheduler.upsertAuth(current.Clone())
 				}
@@ -1113,6 +1114,7 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 				}
 			}
 			m.auths[id] = current
+			m.notifyAuthChangeLocked(id)
 			if m.scheduler != nil {
 				m.scheduler.upsertAuth(current.Clone())
 			}

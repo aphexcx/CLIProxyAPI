@@ -95,6 +95,7 @@ func TestClaudeQuotaScopedUsagePollV8Credentials(t *testing.T) {
 		}
 		var mu sync.Mutex
 		calls := make(map[string]int)
+		receipts := make(map[string]time.Time)
 		client := claude.NewClaudeAuthForTest(&http.Client{Transport: usageRoundTripper(func(req *http.Request) (*http.Response, error) {
 			if req.Method != http.MethodGet || req.URL.String() != claude.UsageURL || req.Header.Get("Anthropic-Beta") != "oauth-2025-04-20" {
 				t.Error("unexpected usage request")
@@ -102,6 +103,7 @@ func TestClaudeQuotaScopedUsagePollV8Credentials(t *testing.T) {
 			id := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
 			mu.Lock()
 			calls[id]++
+			receipts[id] = time.Now()
 			mu.Unlock()
 			body, ok := bodies[id]
 			if !ok {
@@ -119,6 +121,9 @@ func TestClaudeQuotaScopedUsagePollV8Credentials(t *testing.T) {
 		}
 		m.StartQuotaPolling(context.Background())
 		defer m.StopQuotaPolling()
+		synctest.Wait()
+		// Four seats launch in distinct slots, all within the first minute.
+		<-time.After(55 * time.Second)
 		synctest.Wait()
 		mu.Lock()
 		for id := range bodies {
@@ -179,7 +184,7 @@ func TestClaudeQuotaScopedUsagePollV8Credentials(t *testing.T) {
 				if entry.ID == "later" {
 					wantReset = reset.Add(time.Hour)
 				}
-				if !hasFable || window.Utilization != wantPercent || !window.ResetsAt.Equal(wantReset) || !window.ObservedAt.Equal(now) {
+				if !hasFable || window.Utilization != wantPercent || !window.ResetsAt.Equal(wantReset) || !window.ObservedAt.Equal(receipts[entry.ID]) {
 					t.Errorf("seat %s: incorrect Fable window %+v", entry.ID, window)
 				}
 			}

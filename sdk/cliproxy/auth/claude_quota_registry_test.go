@@ -83,7 +83,7 @@ func TestClaudeQuotaSoleSeatModelsStayListedAndReleaseProjection(t *testing.T) {
 		assertListed("Sonnet succeeded under Fable hold")
 		<-time.After(time.Second)
 		poller.windows <- map[string]coreauth.QuotaWindow{"Fable": {Utilization: 0, ResetsAt: reset, ObservedAt: time.Now()}}
-		<-time.After(time.Minute)
+		<-time.After(70 * time.Second)
 		synctest.Wait()
 		assertListed("hold released")
 		if reg.GetModelCount(fable) != 1 {

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	tls "github.com/refraction-networking/utls"
@@ -20,6 +21,34 @@ import (
 
 type claudeTestDialer struct {
 	conn net.Conn
+}
+
+type stalledUsageContextDialer struct{}
+
+func (stalledUsageContextDialer) Dial(string, string) (net.Conn, error) {
+	return nil, errors.New("context dial required")
+}
+
+func (stalledUsageContextDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestUtlsUsageConnectionAcquisitionDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		transport := &utlsRoundTripper{dialer: stalledUsageContextDialer{}}
+		ctx := context.WithValue(context.Background(), claudeUsageConnectTimeoutContextKey{}, claudeUsageConnectTimeout)
+		started := time.Now()
+		if _, errDial := transport.dialTLSContext(ctx, "tcp", "fixture.invalid:443"); !errors.Is(errDial, context.DeadlineExceeded) {
+			t.Fatalf("connection acquisition did not expire: %v", errDial)
+		}
+		if elapsed := time.Since(started); elapsed != claudeUsageConnectTimeout {
+			t.Fatalf("dial elapsed=%v", elapsed)
+		}
+		if _, deadline := ctx.Deadline(); deadline || ctx.Err() != nil {
+			t.Fatal("dial deadline escaped into request context")
+		}
+	})
 }
 
 func (d claudeTestDialer) Dial(_, _ string) (net.Conn, error) {

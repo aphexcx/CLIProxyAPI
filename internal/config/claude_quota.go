@@ -7,11 +7,14 @@ import (
 	"time"
 )
 
+// ClaudeQuotaMinimumPollInterval is shared by validation and the poll scheduler.
+const ClaudeQuotaMinimumPollInterval = time.Minute
+
 // ClaudeQuotaConfig governs proactive OAuth usage reads. Account-wide windows
 // remain observational: only upstream failures may cool the whole credential.
 type ClaudeQuotaConfig struct {
 	Enabled         bool                `yaml:"enabled" json:"enabled"`
-	PollInterval    string              `yaml:"poll-interval" json:"poll-interval"` // Default 1m; minimum 15s.
+	PollInterval    string              `yaml:"poll-interval" json:"poll-interval"` // Default and minimum 1m.
 	CapPercent      *float64            `yaml:"cap-percent" json:"cap-percent"`
 	WindowCaps      map[string]float64  `yaml:"window-caps" json:"window-caps"`
 	ModelWindows    map[string][]string `yaml:"model-windows" json:"model-windows"`
@@ -54,8 +57,8 @@ func (q ClaudeQuotaConfig) Validate() error {
 	if errParse != nil || interval <= 0 {
 		return fmt.Errorf("upstream.claude.quota.poll-interval must be a positive duration")
 	}
-	if interval < 15*time.Second {
-		return fmt.Errorf("upstream.claude.quota.poll-interval must be at least 15s")
+	if interval < ClaudeQuotaMinimumPollInterval {
+		return fmt.Errorf("upstream.claude.quota.poll-interval must be at least 1m")
 	}
 	validCap := func(capPercent float64) bool {
 		return !math.IsNaN(capPercent) && !math.IsInf(capPercent, 0) && capPercent > 0 && capPercent <= 100

@@ -446,7 +446,8 @@ upstream:
     quota:
       # Enable OAuth usage reads and per-model holds; default off.
       enabled: false
-      # Poll each enabled Claude OAuth seat without rotating its refresh token; minimum 15s.
+      # Poll each enabled Claude OAuth seat without rotating its refresh token.
+      # The shared scheduler enforces at least 1m per seat, with jitter and staggered launches.
       poll-interval: "1m"
       # Hold governed models at this utilization percentage (greater than 0, at most 100).
       cap-percent: 100

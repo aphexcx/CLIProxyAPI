@@ -379,6 +379,9 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 			m.scheduler.upsertAuth(snapshot)
 		}
 	}
+	if len(snapshotsByID) > 0 {
+		m.wakeClaudeQuotaPoll()
+	}
 	m.persistCooldownStates(context.Background())
 	return nil
 }
@@ -628,6 +631,7 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 		m.mu.Unlock()
 		return nil, nil, nil
 	}
+	quotaWasEligible := claudeQuotaEligible(auth)
 
 	var cooldownRecordsBefore []CooldownStateRecord
 	trackCooldownState := m.cooldownStore != nil
@@ -667,6 +671,9 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 	auth.Generation++
 	auth.UpdatedAt = now
 	snapshot = auth.Clone()
+	if quotaWasEligible != claudeQuotaEligible(auth) {
+		m.notifyAuthChangeLocked(auth.ID)
+	}
 	if trackCooldownState {
 		cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
 		cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
@@ -998,6 +1005,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			m.publishErrorEvent(result, nil)
 			return
 		}
+		quotaWasEligible := claudeQuotaEligible(auth)
 		if modelKey == "" && strings.TrimSpace(result.RouteModel) != "" {
 			if m != nil {
 				modelKey = m.selectionModelKeyForAuth(auth, result.RouteModel)
@@ -1504,6 +1512,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 
+		if quotaWasEligible != claudeQuotaEligible(auth) {
+			m.notifyAuthChangeLocked(auth.ID)
+		}
 		_ = m.persistLocked(ctx, auth)
 		authSnapshot = auth.Clone()
 		if trackCooldownState {
@@ -1526,10 +1537,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	}
 	m.publishClaudeQuotaSnapshots(quotaSnapshots)
 	if quotaObserved {
-		select {
-		case m.quotaPollWake <- struct{}{}:
-		default:
-		}
+		m.wakeClaudeQuotaPoll()
 	}
 	if authSnapshot != nil && cooldownStateChanged {
 		m.persistCooldownStates(context.Background())

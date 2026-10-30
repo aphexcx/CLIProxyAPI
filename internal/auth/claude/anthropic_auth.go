@@ -244,6 +244,7 @@ func (o *ClaudeAuth) fetchOAuthControlPlaneJSON(ctx context.Context, endpoint, a
 	req.Header.Set("Cache-Control", "no-cache")
 	if endpoint == UsageURL {
 		req.Header.Set("Anthropic-Beta", "oauth-2025-04-20")
+		req = req.WithContext(context.WithValue(req.Context(), claudeUsageConnectTimeoutContextKey{}, claudeUsageConnectTimeout))
 	}
 
 	resp, errDo := o.httpClient.Do(req)
@@ -258,10 +259,10 @@ func (o *ClaudeAuth) fetchOAuthControlPlaneJSON(ctx context.Context, endpoint, a
 	}()
 	body, errRead := readClaudeOAuthResponseBody(resp)
 	if errRead != nil {
-		return nil, time.Time{}, fmt.Errorf("read Claude OAuth %s response: %w", label, errRead)
+		return nil, time.Time{}, &controlPlaneHTTPError{resp.StatusCode, fmt.Errorf("read Claude OAuth %s response: %w", label, errRead)}
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, time.Time{}, fmt.Errorf("fetch Claude OAuth %s failed with status %d", label, resp.StatusCode)
+		return nil, time.Time{}, &controlPlaneHTTPError{resp.StatusCode, fmt.Errorf("fetch Claude OAuth %s failed with status %d", label, resp.StatusCode)}
 	}
 	return body, observedAt, nil
 }
@@ -285,19 +286,26 @@ func (o *ClaudeAuth) FetchOAuthProfile(ctx context.Context, accessToken string) 
 // FetchOAuthUsage observes usage with the current access token; it never refreshes
 // credentials. Errors deliberately omit the upstream body and credentials.
 func (o *ClaudeAuth) FetchOAuthUsage(ctx context.Context, accessToken string) (map[string]OAuthUsageWindow, error) {
+	windows, _, errFetch := o.FetchOAuthUsageSnapshot(ctx, accessToken)
+	return windows, errFetch
+}
+
+// FetchOAuthUsageSnapshot preserves optional usage fields for management clients
+// while parsing the canonical windows used by the routing guard.
+func (o *ClaudeAuth) FetchOAuthUsageSnapshot(ctx context.Context, accessToken string) (map[string]OAuthUsageWindow, json.RawMessage, error) {
 	body, observedAt, errFetch := o.fetchOAuthControlPlaneJSON(ctx, UsageURL, accessToken, "usage")
 	if errFetch != nil {
-		return nil, errFetch
+		return nil, nil, errFetch
 	}
 	windows, errParse := parseOAuthUsage(body)
 	if errParse != nil {
-		return nil, errParse
+		return nil, nil, &controlPlaneHTTPError{http.StatusOK, errParse}
 	}
 	for name, window := range windows {
 		window.ObservedAt = observedAt
 		windows[name] = window
 	}
-	return windows, nil
+	return windows, json.RawMessage(body), nil
 }
 
 // FetchOAuthRoles performs the claude_cli roles lookup the native client issues

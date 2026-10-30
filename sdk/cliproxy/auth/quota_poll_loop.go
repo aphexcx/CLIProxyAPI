@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"sort"
 	"strings"
@@ -17,6 +18,12 @@ import (
 // receipt times remain older than all timestamped observations, never completion time.
 type QuotaPoller interface {
 	PollQuota(context.Context, *Auth) (map[string]QuotaWindow, error)
+}
+
+// QuotaUsagePoller additionally retains the complete usage response for existing
+// management renderers, including optional plan and dollar-denominated windows.
+type QuotaUsagePoller interface {
+	PollQuotaUsage(context.Context, *Auth) (map[string]QuotaWindow, json.RawMessage, error)
 }
 
 // StartQuotaPolling binds the optional poller to the service lifetime. Disabled
@@ -75,8 +82,9 @@ func (m *Manager) restartQuotaPollingLocked() {
 }
 
 func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	launch := time.NewTimer(time.Hour)
+	launch.Stop()
+	defer launch.Stop()
 	expiry := time.NewTimer(time.Hour)
 	expiry.Stop()
 	defer expiry.Stop()
@@ -93,7 +101,25 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 		if ctx.Err() != nil || cfg == nil || !cfg.Claude.Quota.Enabled {
 			return
 		}
-		for _, auth := range m.List() {
+		seats := m.List()
+		// Oldest due slot first: a recurring early-sorting seat must not starve
+		// a fresh seat when jitter pushes a fleet rotation beyond a minute.
+		m.mu.RLock()
+		sort.Slice(seats, func(i, j int) bool {
+			var left, right time.Time
+			if seat := m.quotaPollSeats[seats[i].ID]; seat != nil {
+				left = seat.nextPoll
+			}
+			if seat := m.quotaPollSeats[seats[j].ID]; seat != nil {
+				right = seat.nextPoll
+			}
+			if left.Equal(right) {
+				return seats[i].ID < seats[j].ID
+			}
+			return left.Before(right)
+		})
+		m.mu.RUnlock()
+		for _, auth := range seats {
 			if previous := running[auth.ID]; previous != nil {
 				if sameClaudeQuotaCredential(auth, previous.auth) {
 					continue
@@ -112,12 +138,17 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 			if !ok {
 				continue
 			}
+			finish, reserved := m.reserveClaudeQuotaPoll(ctx, cfg, auth, interval, time.Now())
+			if !reserved {
+				continue
+			}
 			readCtx, cancel := context.WithCancel(ctx)
 			current := &read{auth: auth, cancel: cancel}
 			running[auth.ID] = current
 			go func() {
 				m.pollClaudeQuotaCredential(readCtx, cfg, auth, poller)
 				cancel()
+				finish()
 				select {
 				case completed <- current:
 				case <-ctx.Done():
@@ -125,8 +156,20 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 			}()
 		}
 	}
-	poll()
 	for {
+		// Subscribe before reading state so a change during timer calculation
+		// still wakes this generation, even if a retiring loop wakes too.
+		m.mu.RLock()
+		wake := m.quotaPollWake
+		m.mu.RUnlock()
+		poll()
+		nextLaunch := m.nextClaudeQuotaPoll()
+		if nextLaunch.IsZero() {
+			// Bound recovery from a missed eligibility notification even when
+			// every seat is paused or has an outstanding read and no expiry.
+			nextLaunch = time.Now().Add(claudeQuotaMinimumPollInterval)
+		}
+		launch.Reset(time.Until(nextLaunch))
 		var expiryC <-chan time.Time
 		if next := m.nextClaudeQuotaExpiry(); !next.IsZero() {
 			expiry.Reset(time.Until(next))
@@ -137,17 +180,52 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 			return
 		case <-expiryC:
 			m.expireClaudeQuotaState(ctx)
-		case <-m.quotaPollWake:
-			// A response installed an earlier local expiry while a poll was pending.
+		case <-wake:
+			// A response installed an earlier expiry or a refresh queued a poll.
 		case finished := <-completed:
 			if running[finished.auth.ID] == finished {
 				delete(running, finished.auth.ID)
 			}
-		case <-ticker.C:
-			poll()
+		case <-launch.C:
 		}
+		launch.Stop()
 		expiry.Stop()
 	}
+}
+
+// Wake at the earliest eligible launch, including sub-250ms fleet spacing.
+// With N seats the launch rate scales to N/minute, plus at most 10% jitter;
+// a healthy rotation therefore fits inside the cache's extra minute of grace.
+func (m *Manager) nextClaudeQuotaPoll() time.Time {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var next time.Time
+	for _, auth := range m.auths {
+		if !claudeQuotaEligible(auth) {
+			continue
+		}
+		executor, _ := m.executorLocked(auth.Provider)
+		if _, ok := executor.(QuotaPoller); !ok {
+			continue
+		}
+		due := time.Now()
+		if seat := m.quotaPollSeats[auth.ID]; seat != nil {
+			if seat.running {
+				continue
+			}
+			due = seat.nextPoll
+			if floor := seat.lastAttempt.Add(claudeQuotaMinimumPollInterval); due.Before(floor) {
+				due = floor
+			}
+		}
+		if due.Before(m.quotaNextStart) {
+			due = m.quotaNextStart
+		}
+		if next.IsZero() || due.Before(next) {
+			next = due
+		}
+	}
+	return next
 }
 
 func sameClaudeQuotaCredential(current, base *Auth) bool {
@@ -171,18 +249,28 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 	}
 	type result struct {
 		windows map[string]QuotaWindow
+		usage   json.RawMessage
 		err     error
 	}
 	// A poller that finishes late after cancellation must neither retain its slot
 	// nor apply its result. The buffered delivery lets that obsolete read exit.
 	results := make(chan result, 1)
 	go func() {
-		windows, errPoll := poller.PollQuota(ctx, base)
+		started := time.Now()
+		var windows map[string]QuotaWindow
+		var usage json.RawMessage
+		var errPoll error
+		if full, ok := poller.(QuotaUsagePoller); ok {
+			windows, usage, errPoll = full.PollQuotaUsage(ctx, base)
+		} else {
+			windows, errPoll = poller.PollQuota(ctx, base)
+		}
+		m.recordClaudeQuotaPoll(base, started, errPoll)
 		snapshot := make(map[string]QuotaWindow, len(windows))
 		for name, window := range windows {
 			snapshot[name] = window
 		}
-		results <- result{snapshot, errPoll}
+		results <- result{snapshot, append(json.RawMessage(nil), usage...), errPoll}
 	}()
 	for {
 		select {
@@ -201,7 +289,7 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 				log.WithField("auth_file", claudeQuotaName(base)).Debug("claude quota: usage read failed")
 				m.refreshClaudeQuotaRanks()
 			} else {
-				m.applyClaudeQuotaUsage(ctx, cfg, base, observed.windows, time.Now())
+				m.applyClaudeQuotaUsageSnapshot(ctx, cfg, base, observed.windows, observed.usage, time.Now())
 			}
 			return
 		}
@@ -302,6 +390,10 @@ func claudeQuotaName(auth *Auth) string {
 }
 
 func (m *Manager) applyClaudeQuotaUsage(ctx context.Context, cfg *internalconfig.Config, base *Auth, windows map[string]QuotaWindow, now time.Time) {
+	m.applyClaudeQuotaUsageSnapshot(ctx, cfg, base, windows, nil, now)
+}
+
+func (m *Manager) applyClaudeQuotaUsageSnapshot(ctx context.Context, cfg *internalconfig.Config, base *Auth, windows map[string]QuotaWindow, usage json.RawMessage, now time.Time) {
 	// Fence reloads and credential replacement. Network I/O happens before these locks.
 	release, errLock := m.lockAuthMutationContext(ctx, base.ID)
 	if errLock != nil {
@@ -321,6 +413,9 @@ func (m *Manager) applyClaudeQuotaUsage(ctx context.Context, cfg *internalconfig
 		return
 	}
 	fresh := mergeClaudeQuotaWindows(auth, windows)
+	seat := m.claudeQuotaPollSeatLocked(auth.ID)
+	seat.polledAt, seat.epoch = now, auth.RegistrationEpoch
+	seat.usage = append(json.RawMessage(nil), usage...)
 	changed := m.reconcileClaudeQuotaHoldsLocked(auth, cfg, fresh, nil, now)
 	auth.Generation++
 	auth.UpdatedAt = now
@@ -709,6 +804,10 @@ func (m *Manager) updateClaudeQuotaConfig(previous, cfg *internalconfig.Config) 
 		}
 		if !cfg.Claude.Quota.Enabled {
 			auth.Quota.Windows = nil
+			if seat := m.quotaPollSeats[auth.ID]; seat != nil {
+				seat.polledAt, seat.queued = time.Time{}, false
+				seat.usage = nil
+			}
 		}
 	}
 	snapshots = append(snapshots, m.recomputeClaudeQuotaRanksLocked(cfg, now)...)

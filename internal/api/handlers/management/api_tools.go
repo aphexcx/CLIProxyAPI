@@ -135,6 +135,9 @@ func (h *Handler) APICall(c *gin.Context) {
 
 	authIndex := firstNonEmptyString(body.AuthIndexSnake, body.AuthIndexCamel, body.AuthIndexPascal)
 	auth := h.authByIndex(authIndex)
+	if method == http.MethodGet && urlStr == "https://api.anthropic.com/api/oauth/usage" && h.serveCachedClaudeAPICall(c, auth) {
+		return
+	}
 
 	reqHeaders := body.Header
 	if reqHeaders == nil {

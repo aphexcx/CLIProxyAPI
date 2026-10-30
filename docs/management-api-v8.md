@@ -90,7 +90,7 @@ upstream:
   claude:
     quota:
       enabled: false # Enable usage reads and per-model holds.
-      poll-interval: "1m" # Read each enabled OAuth seat at this cadence; minimum 15s.
+      poll-interval: "1m" # Minimum 1m per enabled OAuth seat, with jitter and staggered launches.
       cap-percent: 100 # Default utilization threshold for governed model windows.
       window-caps: {} # Optional display-name caps, for example Fable: 99.
       model-windows: # Map usage display names to upstream model IDs.

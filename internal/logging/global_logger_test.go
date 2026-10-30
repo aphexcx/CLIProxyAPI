@@ -42,6 +42,25 @@ func TestLogFormatterPrintsVersionField(t *testing.T) {
 	}
 }
 
+func TestLogFormatterPrintsClaudeQuotaFields(t *testing.T) {
+	entry := log.NewEntry(log.New())
+	entry.Level = log.InfoLevel
+	entry.Message = "claude quota: usage poll"
+	entry.Data = log.Fields{"auth_file": "seat\nname.json", "http_status": 429, "latency_ms": int64(37), "success": false, "window": "Fable", "resets_at": "2026-11-01T00:00:00Z", "quota_rank": true}
+	formatted, errFormat := (&LogFormatter{}).Format(entry)
+	if errFormat != nil {
+		t.Fatal(errFormat)
+	}
+	for _, want := range []string{`auth_file="seat\nname.json"`, "http_status=429", "latency_ms=37", "success=false", `window="Fable"`, "resets_at=2026-11-01T00:00:00Z", "quota_rank=true"} {
+		if !strings.Contains(string(formatted), want) {
+			t.Errorf("missing %s in %s", want, formatted)
+		}
+	}
+	if strings.Count(string(formatted), "\n") != 1 {
+		t.Fatal("filename injected a log line")
+	}
+}
+
 func TestLogFormatterPrintsMediaForwardingFields(t *testing.T) {
 	entry := log.NewEntry(log.New())
 	entry.Time = time.Date(2026, 7, 25, 7, 36, 4, 0, time.Local)

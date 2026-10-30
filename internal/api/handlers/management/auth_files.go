@@ -690,6 +690,9 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 		}
 		entry["quota"].(gin.H)["windows"] = windows
 		entry["quota_rank"] = auth.QuotaRank(time.Now())
+		if snapshot, ok := h.cachedClaudeUsage(auth, false); ok {
+			entry["claude_usage"] = claudeUsagePayload(snapshot)
+		}
 	}
 	if modelQuotas := modelQuotaObservationPayload(auth.Provider, auth.ModelStates); len(modelQuotas) > 0 {
 		entry["model_quotas"] = modelQuotas

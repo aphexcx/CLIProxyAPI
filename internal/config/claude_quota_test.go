@@ -127,14 +127,14 @@ func TestClaudeQuotaPollInterval(t *testing.T) {
 	if errDuration != nil || interval != time.Minute {
 		t.Errorf("default interval=%v err=%v", interval, errDuration)
 	}
-	for _, interval := range []string{"10s", "14.999s", "15s", "1m"} {
+	for _, interval := range []string{"10s", "15s", "59.999s", "1m", "2m"} {
 		t.Run(interval, func(t *testing.T) {
 			data := []byte("upstream: {claude: {quota: {poll-interval: " + interval + "}}}")
 			_, errParse := ParseConfigBytes(data)
 			errValidate := ValidateV8Config(data)
 			for _, err := range []error{errParse, errValidate} {
-				if interval == "10s" || interval == "14.999s" {
-					if err == nil || !strings.Contains(err.Error(), "at least 15s") {
+				if interval == "10s" || interval == "15s" || interval == "59.999s" {
+					if err == nil || !strings.Contains(err.Error(), "at least 1m") {
 						t.Fatalf("interval %s must explain the minimum: %v", interval, err)
 					}
 				} else if err != nil {
