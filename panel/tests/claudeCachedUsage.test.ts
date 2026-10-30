@@ -257,6 +257,42 @@ describe('Claude list ingestion and no-click rendering', () => {
     expect(state().windows[0].usedPercent).toBe(60);
   });
 
+  test('reversed list delivery within one poll attempt preserves the completed observation', async () => {
+    const inFlight = Promise.withResolvers<AuthFilesResponse>();
+    const get = spyOn(apiClient, 'get').mockReturnValueOnce(inFlight.promise);
+    const old = authFilesApi.list();
+    get.mockResolvedValue({
+      files: [
+        {
+          ...seat,
+          claude_usage: {
+            ...usage,
+            polled_at: '2026-10-30T12:01:03Z',
+            last_poll_at: '2026-10-30T12:01:00Z',
+            five_hour: { ...usage.five_hour, utilization: 60 },
+          },
+        },
+      ],
+    });
+    await authFilesApi.list();
+    inFlight.resolve({
+      files: [
+        {
+          ...seat,
+          claude_usage: {
+            ...usage,
+            last_poll_at: '2026-10-30T12:01:00Z',
+            refreshing: true,
+          },
+        },
+      ],
+    });
+    await old;
+    expect(state().observedAt).toBe('2026-10-30T12:01:03Z');
+    expect(state().windows[0].usedPercent).toBe(60);
+    expect(state().serverCache?.refreshing).toBe(false);
+  });
+
   test.each(['cache', 'connection', 'file'] as const)(
     'rejects list ingestion after %s invalidation',
     async (kind) => {
@@ -321,4 +357,86 @@ describe('Claude coalescing isolation', () => {
     );
     expect(CLAUDE_CONFIG.buildSuccessState(data).windows).toHaveLength(2);
   });
+});
+
+describe('explicit Claude refresh without native polling', () => {
+  const manualSeat = { ...seat, claude_usage: undefined };
+  const unavailable = Object.assign(new Error('native quota unavailable'), { status: 404 });
+
+  test('list ingestion without a native cache stays idle and makes no upstream requests', async () => {
+    const get = spyOn(apiClient, 'get').mockResolvedValue({ files: [manualSeat] });
+    const call = spyOn(apiCallApi, 'request');
+    await authFilesApi.list();
+    expect(state()).toBeUndefined();
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  test('only an explicit refresh falls back to one coalesced manual usage call', async () => {
+    const post = spyOn(apiClient, 'post').mockRejectedValue(unavailable);
+    const call = spyOn(apiCallApi, 'request').mockResolvedValue({
+      statusCode: 200,
+      header: {},
+      body: usage,
+      bodyText: '',
+    });
+    const data = await Promise.all(
+      Array.from({ length: 8 }, () => CLAUDE_CONFIG.fetchQuota(manualSeat, translations.t))
+    );
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'GET',
+        url: 'https://api.anthropic.com/api/oauth/usage',
+      })
+    );
+    expect(data[0].windows).toHaveLength(2);
+    expect(data[0].serverCache).toBeUndefined();
+    expect(data[0].stale).toBe(false);
+  });
+
+  test('pure reads, known native seats and transient failures never fall back upstream', async () => {
+    spyOn(apiClient, 'get').mockRejectedValue(unavailable);
+    const post = spyOn(apiClient, 'post').mockRejectedValue(unavailable);
+    const call = spyOn(apiCallApi, 'request');
+    await expect(readClaudeQuota(manualSeat, translations.t)).rejects.toThrow();
+    await expect(CLAUDE_CONFIG.fetchQuota(seat, translations.t)).rejects.toThrow();
+    post.mockRejectedValue(Object.assign(new Error('unavailable'), { status: 503 }));
+    await expect(CLAUDE_CONFIG.fetchQuota(manualSeat, translations.t)).rejects.toThrow();
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  test.each(['connection', 'cache', 'file'] as const)(
+    'does not issue fallback after %s invalidation',
+    async (kind) => {
+      const deferred = Promise.withResolvers<never>();
+      spyOn(apiClient, 'post').mockReturnValue(deferred.promise);
+      const call = spyOn(apiCallApi, 'request');
+      let revision = 1;
+      spyOn(apiClient, 'getConnectionRevision').mockImplementation(() => revision);
+      const request = CLAUDE_CONFIG.fetchQuota(manualSeat, translations.t);
+      if (kind === 'connection') revision += 1;
+      else useQuotaStore.getState().clearQuotaCache(kind === 'file' ? [seat.name] : undefined);
+      deferred.reject(unavailable);
+      await expect(request).rejects.toThrow();
+      expect(call).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each([401, 429, 500])(
+    'manual upstream failure %s does not produce a successful snapshot',
+    async (status) => {
+      spyOn(apiClient, 'post').mockRejectedValue(unavailable);
+      spyOn(apiCallApi, 'request').mockResolvedValue({
+        statusCode: status,
+        header: {},
+        body: usage,
+        bodyText: '',
+      });
+      await expect(CLAUDE_CONFIG.fetchQuota(manualSeat, translations.t)).rejects.toMatchObject({
+        status,
+      });
+    }
+  );
 });

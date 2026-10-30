@@ -24,7 +24,6 @@ export function useClaudeResetGrants(
   file: AuthFileItem,
   enabled: boolean,
   disabled: boolean,
-  refreshToken: unknown,
   onRefresh: () => void
 ) {
   const { t } = useTranslation();
@@ -39,14 +38,21 @@ export function useClaudeResetGrants(
   const key = JSON.stringify([file.name, authIndex]);
   const [status, setStatus] = useState<AnthropicResetGrantStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const [reading, setReading] = useState(false);
   const [message, setMessage] = useState('');
   const [reload, setReload] = useState(0);
+  const consumedRead = useRef(0);
   const lock = useRef(false);
   const generation = useRef(0);
   useEffect(() => {
     const version = ++generation.current;
     setStatus(null);
-    if (!enabled || disabled || !sessionActive || !authIndex) return;
+    setReading(false);
+    // Cached usage makes the card visible, but never authorizes an upstream grant read.
+    if (reload === consumedRead.current || !enabled || disabled || !sessionActive || !authIndex)
+      return;
+    consumedRead.current = reload;
+    setReading(true);
     let cancelled = false;
     const current = () =>
       !cancelled && version === generation.current && session === apiClient.getConnectionRevision();
@@ -56,10 +62,12 @@ export function useClaudeResetGrants(
           if (current()) {
             setStatus(result);
             setMessage('');
+            setReading(false);
           }
         },
         (error: unknown) => {
           if (current()) {
+            setReading(false);
             setMessage(
               error instanceof AnthropicResetGrantError && error.code === 'rate_limited'
                 ? 'rate_limited'
@@ -74,7 +82,7 @@ export function useClaudeResetGrants(
       cancelRead();
       generation.current += 1;
     };
-  }, [authIndex, key, enabled, disabled, sessionActive, session, refreshToken, reload]);
+  }, [authIndex, key, enabled, disabled, sessionActive, session, reload]);
 
   const operation = resetGrantOperations.inspect(key);
   const pending = operation && !operation.code ? operation : undefined;
@@ -136,6 +144,9 @@ export function useClaudeResetGrants(
     count: status?.grants.reduce((sum, grant) => sum + grant.resetsLeft, 0) ?? null,
     grants: status?.grants ?? [],
     busy,
+    reading,
+    readBlocked: disabled || !sessionActive || !authIndex || busy || reading,
+    refresh: () => setReload((value) => value + 1),
     blocked,
     confirm,
     message: pending ? (expired ? 'expired' : 'unknown') : message,

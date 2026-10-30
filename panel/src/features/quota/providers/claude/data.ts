@@ -26,14 +26,17 @@ import {
 import { getQuotaCacheKey } from '@/utils/quota/identity';
 import {
   CLAUDE_PROFILE_URL,
+  CLAUDE_USAGE_URL,
   CLAUDE_REQUEST_HEADERS,
   CLAUDE_USAGE_WINDOW_KEYS,
   claudePeriodHours,
   normalizeNumberValue,
   normalizeStringValue,
+  parseClaudeUsagePayload,
   formatQuotaResetTime,
   resolveResetMs,
   createStatusError,
+  getStatusFromError,
   isClaudeFile,
   isDisabledAuthFile,
 } from '@/utils/quota';
@@ -47,7 +50,7 @@ export type ClaudeQuotaData = {
   dollarWindows: ClaudeDollarWindow[];
   observedAt: string | null;
   stale: boolean;
-  serverCache: NonNullable<ClaudeQuotaState['serverCache']>;
+  serverCache?: NonNullable<ClaudeQuotaState['serverCache']>;
 };
 
 export const hasClaudeUsageData = (quota?: ClaudeQuotaState): boolean =>
@@ -266,7 +269,37 @@ export const seedClaudeQuota = (
   }
 };
 
-const usageReads = new Map<string, Promise<ClaudeCachedUsage>>();
+/** Explicit compatibility path for servers with the native poll loop disabled. */
+const fetchManualClaudeQuota = async (
+  authIndex: string,
+  t: TFunction
+): Promise<ClaudeQuotaData> => {
+  const result = await apiCallApi.request({
+    authIndex,
+    method: 'GET',
+    url: CLAUDE_USAGE_URL,
+    header: { ...CLAUDE_REQUEST_HEADERS, Accept: 'application/json' },
+  });
+  if (result.statusCode < 200 || result.statusCode >= 300) {
+    throw createStatusError(getApiCallErrorMessage(result), result.statusCode);
+  }
+  const payload = parseClaudeUsagePayload(result.body ?? result.bodyText);
+  const snapshot = normalizeClaudeUsageSnapshot(payload);
+  if (!payload || !snapshot) throw new Error(t('claude_quota.empty_windows'));
+  return {
+    windows: buildClaudeQuotaWindows(payload, t).filter(
+      (window) =>
+        window.id !== 'cloud-session-credits' ||
+        !snapshot.dollarWindows.some((balance) => balance.key === 'iguana_necktie')
+    ),
+    extraUsage: snapshot.extraUsage,
+    dollarWindows: snapshot.dollarWindows,
+    observedAt: new Date().toISOString(),
+    stale: false,
+  };
+};
+
+const usageReads = new Map<string, Promise<ClaudeQuotaData>>();
 
 const fetchCachedClaudeQuota = async (
   file: AuthFileItem,
@@ -280,9 +313,10 @@ const fetchCachedClaudeQuota = async (
   }
 
   const generation = captureQuotaCacheGeneration(file.name);
+  const connectionRevision = apiClient.getConnectionRevision();
   const planType = useQuotaStore.getState().claudeQuota[getQuotaCacheKey(file)]?.planType;
   const key = JSON.stringify([
-    apiClient.getConnectionRevision(),
+    connectionRevision,
     generation.cacheGeneration,
     generation.fileGenerations[file.name] ?? 0,
     getQuotaCacheKey(file),
@@ -291,15 +325,30 @@ const fetchCachedClaudeQuota = async (
   ]);
   let request = usageReads.get(key);
   if (!request) {
-    request = refresh
+    const cached = refresh
       ? apiClient.post<ClaudeCachedUsage>('/credentials/quota', { auth_index: authIndex })
       : apiClient.get<ClaudeCachedUsage>('/credentials/quota', {
           params: { auth_index: authIndex },
         });
+    request = cached
+      .then((payload) => buildCachedClaudeQuota(payload, t))
+      .catch((error: unknown) => {
+        // Pure reads and native-cache failures must never become upstream calls.
+        if (
+          refresh &&
+          !file.claude_usage &&
+          getStatusFromError(error) === 404 &&
+          apiClient.getConnectionRevision() === connectionRevision &&
+          commitIfQuotaCacheCurrent(generation, () => {})
+        ) {
+          return fetchManualClaudeQuota(authIndex, t);
+        }
+        throw error;
+      });
     usageReads.set(key, request);
   }
   try {
-    return { ...buildCachedClaudeQuota(await request, t), planType };
+    return { ...(await request), planType };
   } finally {
     if (usageReads.get(key) === request) usageReads.delete(key);
   }

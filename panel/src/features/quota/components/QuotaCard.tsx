@@ -70,7 +70,6 @@ export function QuotaCard(props: QuotaCardProps) {
     file,
     entry.type === 'claude' && status !== 'idle',
     !canRefresh || loading || resetting,
-    quota,
     onRefresh
   );
   const providerType =
@@ -188,6 +187,20 @@ export function QuotaCard(props: QuotaCardProps) {
 
       {status !== 'idle' && (
         <footer className={styles.actionRow}>
+          {entry.type === 'claude' && (
+            <button
+              type="button"
+              className={styles.actionPill}
+              disabled={claudeReset.readBlocked}
+              onClick={claudeReset.refresh}
+            >
+              <IconRefreshCw
+                size={13}
+                className={claudeReset.reading ? styles.spinning : undefined}
+              />
+              {t('claude_quota.cache_check_grants')}
+            </button>
+          )}
           {entry.type === 'claude' && (
             <button
               type="button"

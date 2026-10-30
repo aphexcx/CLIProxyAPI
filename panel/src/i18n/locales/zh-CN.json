@@ -505,6 +505,7 @@
     "stale_snapshot": "刷新失败。显示上次成功检查的结果：{{time}}",
     "cache_age": "{{seconds}} 秒前",
     "cache_refresh_requested": "已请求刷新 {{name}} 的用量。当前显示缓存数据。",
+    "cache_check_grants": "检查重置额度",
     "cache_pending": "等待首次用量轮询",
     "cache_paused": "轮询已暂停",
     "cache_queued": "刷新已排队或正在进行",

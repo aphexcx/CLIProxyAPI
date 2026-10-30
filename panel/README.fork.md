@@ -30,6 +30,13 @@ age, next eligible slot, queued state and retained failure state remain visible.
 Profile metadata is optional enrichment after an explicit refresh and cannot
 delay or replace usage from a newer poll.
 
+When native polling is disabled, the server omits `claude_usage` and returns
+404 for the cache endpoint. Only an explicit refresh may then fall back to the
+existing manual OAuth usage request. Ordinary reads and failures for a known
+native-cache seat never trigger that fallback. Reset-grant reads on the quota
+page require the separate **Check reset grants** action; cached quota appearing
+on screen does not start an upstream grant request.
+
 Publishing the release asset, changing `management.panel-github-repository`,
 and deploying the hub are separate rollout operations. Periodic panel updates
 run every three hours unless `management.disable-auto-update-panel` is true;
