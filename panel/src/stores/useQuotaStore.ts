@@ -114,7 +114,15 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
           if (retained === next) retained = { ...next };
           retained[key] = {
             ...quota,
-            windows: quota.windows.length ? quota.windows : previous.windows,
+            windows: quota.windows.length
+              ? [
+                  ...quota.windows,
+                  ...previous.windows.filter(
+                    (retainedWindow) =>
+                      !quota.windows.some((window) => window.id === retainedWindow.id)
+                  ),
+                ]
+              : previous.windows,
             extraUsage: quota.extraUsage ?? previous.extraUsage,
             dollarWindows: quota.dollarWindows?.length
               ? quota.dollarWindows

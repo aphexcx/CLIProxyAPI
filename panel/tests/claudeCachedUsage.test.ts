@@ -295,6 +295,8 @@ describe('Claude list ingestion and no-click rendering', () => {
         });
         await authFilesApi.list();
         expect(state().windows[0].usedPercent).toBe(utilization);
+        expect(state().windows).toHaveLength(initial === usage ? 2 : 1);
+        if (initial === usage) expect(render()).toContain('75%');
         expect(state().serverCache?.polledAt).toBeNull();
         expect(state().stale).toBe(true);
         expect(render()).toContain(`${100 - utilization}%`);
