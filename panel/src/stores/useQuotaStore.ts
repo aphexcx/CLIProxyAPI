@@ -86,7 +86,13 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
               quota.serverCache.requestSequence < previous.serverCache.requestSequence)
           ) {
             if (retained === next) retained = { ...next };
-            retained[key] = previous;
+            // A coalesced request can finish after a newer list snapshot was
+            // retained by the loading state. Complete the local operation
+            // without replacing that newer server observation.
+            retained[key] =
+              previous.status === 'loading' && quota.status === 'success'
+                ? { ...previous, status: 'success', error: undefined, errorStatus: undefined }
+                : previous;
             continue;
           }
         }

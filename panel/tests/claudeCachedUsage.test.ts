@@ -260,6 +260,48 @@ describe('Claude list ingestion and no-click rendering', () => {
     expect(profile).toHaveBeenCalledTimes(2);
   });
 
+  test.each([false, true])(
+    'a coalesced refresh finishes loading after a newer list snapshot (new poll: %s)',
+    async (newPoll) => {
+      const get = spyOn(apiClient, 'get').mockResolvedValue({ files: [seat] });
+      await authFilesApi.list();
+      const deferred = Promise.withResolvers<ClaudeCachedUsage>();
+      const post = spyOn(apiClient, 'post').mockReturnValue(deferred.promise);
+      const setQuota = useQuotaStore.getState().setClaudeQuota;
+      const key = getQuotaCacheKey(seat);
+      setQuota({ [key]: CLAUDE_CONFIG.buildLoadingState() });
+      const first = CLAUDE_CONFIG.fetchQuota(seat, translations.t);
+      get.mockResolvedValue({
+        files: [
+          {
+            ...seat,
+            claude_usage: {
+              ...usage,
+              last_poll_at: newPoll ? '2026-10-30T12:01:00Z' : usage.last_poll_at,
+              last_status: 429,
+              stale: true,
+            },
+          },
+        ],
+      });
+      await authFilesApi.list();
+      const newer = state();
+      setQuota({ [key]: CLAUDE_CONFIG.buildLoadingState() });
+      const second = CLAUDE_CONFIG.fetchQuota(seat, translations.t);
+      expect(state().status).toBe('loading');
+      deferred.resolve(usage);
+      for (const data of await Promise.all([first, second])) {
+        setQuota({ [key]: CLAUDE_CONFIG.buildSuccessState(data) });
+        expect(state().status).toBe('success');
+        expect(state().serverCache).toBe(newer.serverCache);
+        expect(state().windows).toBe(newer.windows);
+        expect(state().stale).toBe(true);
+        expect(render()).toContain('Last poll failed (429)');
+      }
+      expect(post).toHaveBeenCalledTimes(1);
+    }
+  );
+
   test('older list responses cannot overwrite a later successful poll', async () => {
     const get = spyOn(apiClient, 'get').mockResolvedValue({
       files: [
