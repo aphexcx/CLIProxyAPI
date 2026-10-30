@@ -62,6 +62,7 @@ type CodexResetCreditsData = {
 
 export type CodexQuotaData = {
   optionalMetadataSequence?: number;
+  usageResetCredits?: CodexUsagePayload['rate_limit_reset_credits'];
   observedAt?: string | null;
   stale?: boolean;
   serverCache?: CodexQuotaState['serverCache'];
@@ -439,6 +440,7 @@ const fetchManualCodexQuota = async (file: AuthFileItem, t: TFunction): Promise<
   const subscriptionActiveUntilFromFile = resolveCodexSubscriptionActiveUntil(file);
   const accountId = resolveCodexChatgptAccountId(file);
   const requestHeader = buildCodexRequestHeader(file);
+  const optionalMetadataSequence = captureCodexQuotaRequest();
 
   const [result, liveSubscriptionActiveUntil] = await Promise.all([
     apiCallApi.request({
@@ -478,6 +480,7 @@ const fetchManualCodexQuota = async (file: AuthFileItem, t: TFunction): Promise<
   const subscriptionActiveUntil = liveSubscriptionActiveUntil ?? subscriptionActiveUntilFromFile;
   const windows = buildCodexQuotaWindows(payload, t);
   return {
+    optionalMetadataSequence,
     planType,
     subscriptionActiveUntil,
     creditBalance: accountCredits.balance,
@@ -519,6 +522,7 @@ export const buildCachedCodexQuota = (
   const previous = useQuotaStore.getState().codexQuota[getQuotaCacheKey(file)];
   return {
     optionalMetadataSequence: previous?.optionalMetadataSequence,
+    usageResetCredits: payload.rate_limit_reset_credits ?? payload.rateLimitResetCredits,
     windows,
     planType:
       normalizePlanType(payload.plan_type ?? payload.planType) ?? resolveCodexPlanType(file),
@@ -643,13 +647,20 @@ const enrichCodexQuota = async (
     fetchCodexSubscriptionActiveUntil(authIndex, resolveCodexChatgptAccountId(file), headers),
     fetchCodexResetCredits(authIndex, headers, t),
   ]);
+  const usageResetCredits = normalizeCodexResetCreditsPayload(data.usageResetCredits);
+  const availableCount =
+    credits.availableCount ??
+    (credits.credits.length > 0 ? credits.credits.length : null) ??
+    usageResetCredits.availableCount;
   return {
     ...data,
     optionalMetadataSequence,
     subscriptionActiveUntil: subscription ?? data.subscriptionActiveUntil,
-    rateLimitResetCreditsAvailableCount:
-      credits.availableCount ?? (credits.credits.length > 0 ? credits.credits.length : null),
-    rateLimitResetCreditsApplicableAvailableCount: credits.applicableAvailableCount,
+    rateLimitResetCreditsAvailableCount: availableCount,
+    rateLimitResetCreditsApplicableAvailableCount:
+      usageResetCredits.applicableAvailableCount ??
+      credits.applicableAvailableCount ??
+      availableCount,
     rateLimitResetCredits: credits.credits,
     rateLimitResetCreditsError: credits.error,
   };

@@ -259,6 +259,78 @@ describe('Codex cached usage', () => {
     }
   );
 
+  test.each(['http', 'network', 'invalid', 'zero'])(
+    'native reset-credit summary survives optional details failure: %s',
+    async (failure) => {
+      spyOn(apiClient, 'post').mockResolvedValue({
+        ...usage,
+        rate_limit_reset_credits: { available_count: 2, applicable_available_count: 0 },
+      });
+      spyOn(apiCallApi, 'request').mockImplementation(async () => {
+        if (failure === 'network') throw new Error('offline');
+        return {
+          statusCode: failure === 'http' ? 503 : 200,
+          header: {},
+          body: failure === 'zero' ? { available_count: 0, credits: [] } : {},
+          bodyText: '',
+        };
+      });
+      const data = await CODEX_CONFIG.fetchQuota(seat, translations.t);
+      const enriched = await CODEX_CONFIG.enrichQuota!(seat, data, translations.t);
+      const quota = CODEX_CONFIG.buildSuccessState(enriched);
+      expect(quota.rateLimitResetCreditsAvailableCount).toBe(failure === 'zero' ? 0 : 2);
+      expect(quota.rateLimitResetCreditsApplicableAvailableCount).toBe(0);
+      expect(CODEX_CONFIG.canResetQuota!(quota)).toBe(failure !== 'zero');
+      expect(Boolean(quota.rateLimitResetCreditsError)).toBe(failure !== 'zero');
+    }
+  );
+
+  test('manual refresh replaces native metadata and consuming the final credit removes reset', async () => {
+    const get = spyOn(apiClient, 'get').mockResolvedValue({ files: [seat] });
+    await authFilesApi.list();
+    const post = spyOn(apiClient, 'post').mockResolvedValue(usage);
+    let available = 2;
+    spyOn(apiCallApi, 'request').mockImplementation(async (request) => {
+      if (request.url.endsWith('/consume')) {
+        available = 0;
+        return { statusCode: 200, header: {}, body: { code: 'reset' }, bodyText: '' };
+      }
+      const body = request.url.endsWith('/wham/usage')
+        ? usage
+        : { available_count: available, credits: [] };
+      return { statusCode: 200, header: {}, body, bodyText: '' };
+    });
+    const save = (data: Awaited<ReturnType<typeof CODEX_CONFIG.fetchQuota>>) =>
+      useQuotaStore.getState().setCodexQuota({
+        [getQuotaCacheKey(seat)]: CODEX_CONFIG.buildSuccessState(data),
+      });
+    const cached = await CODEX_CONFIG.fetchQuota(seat, translations.t);
+    save(await CODEX_CONFIG.enrichQuota!(seat, cached, translations.t));
+    expect(state().rateLimitResetCreditsAvailableCount).toBe(2);
+    const nativeSequence = state().optionalMetadataSequence!;
+    expect(nativeSequence).toBeGreaterThan(0);
+
+    const manualSeat = { ...seat, codex_usage: undefined };
+    get.mockResolvedValue({ files: [manualSeat] });
+    await authFilesApi.list();
+    post.mockImplementation(async (url) => {
+      if (url === '/credentials/quota') {
+        throw Object.assign(new Error('polling disabled'), { status: 404 });
+      }
+      return { status: 'ok', auth_index: 'fixture', models: [] };
+    });
+    available = 1;
+    save(await CODEX_CONFIG.fetchQuota(manualSeat, translations.t));
+    expect(state().rateLimitResetCreditsAvailableCount).toBe(1);
+    expect(state().optionalMetadataSequence).toBeGreaterThan(nativeSequence);
+    expect(CODEX_CONFIG.canResetQuota!(state())).toBe(true);
+
+    save(await CODEX_CONFIG.resetQuota!(manualSeat, translations.t));
+    expect(state().rateLimitResetCreditsAvailableCount).toBe(0);
+    expect(state().rateLimitResetCredits).toEqual([]);
+    expect(CODEX_CONFIG.canResetQuota!(state())).toBe(false);
+  });
+
   test('a later explicit metadata read wins over an older enrichment', async () => {
     spyOn(apiClient, 'get').mockResolvedValue({ files: [seat] });
     await authFilesApi.list();

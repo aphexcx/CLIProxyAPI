@@ -27,7 +27,15 @@ func codexUsagePayload(snapshot coreauth.ClaudeQuotaSnapshot) gin.H {
 	payload["rate_limits"], payload["last_status"] = snapshot.RateLimits, snapshot.LastStatus
 	payload["last_poll_at"] = snapshot.LastPollAt
 	groups := map[string]gin.H{}
-	for name, window := range snapshot.Windows {
+	selected := map[string]coreauth.QuotaWindow{}
+	windowNames := make([]string, 0, len(snapshot.Windows))
+	for name := range snapshot.Windows {
+		windowNames = append(windowNames, name)
+	}
+	// Canonical name order breaks ties between observations with equal timestamps.
+	sort.Strings(windowNames)
+	for _, name := range windowNames {
+		window := snapshot.Windows[name]
 		parts := strings.Split(name, "/")
 		period := parts[len(parts)-1]
 		group := strings.TrimSuffix(name, period)
@@ -41,6 +49,11 @@ func codexUsagePayload(snapshot coreauth.ClaudeQuotaSnapshot) gin.H {
 		default:
 			continue
 		}
+		key := group + slot
+		if previous, exists := selected[key]; exists && !window.ObservedAt.After(previous.ObservedAt) {
+			continue
+		}
+		selected[key] = window
 		if groups[group] == nil {
 			groups[group] = gin.H{}
 		}

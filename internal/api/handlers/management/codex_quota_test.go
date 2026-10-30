@@ -96,3 +96,46 @@ func TestCodexCachedUsageRoutesAndList(t *testing.T) {
 		}
 	})
 }
+
+func TestCodexUsagePayloadSelectsNewestSecondaryWindow(t *testing.T) {
+	observed := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name, newest string
+		equal        bool
+	}{
+		{"weekly_to_monthly", "monthly", false},
+		{"monthly_to_weekly", "seven_day", false},
+		{"equal_observations", "monthly", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			windows := map[string]coreauth.QuotaWindow{}
+			for _, group := range []string{"", "code_review/", "additional/spark/"} {
+				for _, period := range []string{"seven_day", "monthly"} {
+					window := coreauth.QuotaWindow{ObservedAt: observed, Utilization: 80, ResetsAt: observed.Add(time.Hour)}
+					if period == tc.newest {
+						window.Utilization, window.ResetsAt = 12, observed.Add(24*time.Hour)
+						if !tc.equal {
+							window.ObservedAt = observed.Add(time.Minute)
+						}
+					}
+					windows[group+period] = window
+				}
+			}
+			seconds := 604800
+			if tc.newest == "monthly" {
+				seconds = 30 * 24 * 60 * 60
+			}
+			// Exercise repeated map traversals with the same retained observations.
+			for range 64 {
+				payload := codexUsagePayload(coreauth.ClaudeQuotaSnapshot{Windows: windows})
+				additional := payload["additional_rate_limits"].([]gin.H)
+				for _, group := range []gin.H{payload["rate_limit"].(gin.H), payload["code_review_rate_limit"].(gin.H), additional[0]["rate_limit"].(gin.H)} {
+					window := group["secondary_window"].(gin.H)
+					if window["used_percent"] != float64(12) || window["reset_at"] != observed.Add(24*time.Hour).Unix() || window["limit_window_seconds"] != seconds {
+						t.Fatalf("selected obsolete or inconsistent secondary window: %+v", window)
+					}
+				}
+			}
+		})
+	}
+}

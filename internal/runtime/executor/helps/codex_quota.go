@@ -1,6 +1,7 @@
 package helps
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -49,6 +50,33 @@ func ParseCodexUsageHeaders(payload []byte) http.Header {
 		return nil
 	}
 	return parseCodexQuotaHeaders(gjson.ParseBytes(payload))
+}
+
+// ParseCodexResetCreditSummary retains only nonnegative, integer credit counts.
+// Credit details and arbitrary upstream metadata must not enter the usage cache.
+func ParseCodexResetCreditSummary(payload []byte) map[string]float64 {
+	if !gjson.ValidBytes(payload) {
+		return nil
+	}
+	credits := firstCodexQuotaResult(gjson.ParseBytes(payload), "rate_limit_reset_credits", "rateLimitResetCredits")
+	if !credits.IsObject() {
+		return nil
+	}
+	summary := make(map[string]float64)
+	for _, field := range []struct{ key, alias string }{
+		{"available_count", "availableCount"},
+		{"applicable_available_count", "applicableAvailableCount"},
+	} {
+		raw := firstCodexQuotaResult(credits, field.key, field.alias)
+		if raw.Type != gjson.Number && raw.Type != gjson.String {
+			continue
+		}
+		value, errParse := strconv.ParseFloat(strings.TrimSpace(raw.String()), 64)
+		if errParse == nil && !math.IsNaN(value) && value >= 0 && value <= 1<<53-1 && math.Trunc(value) == value {
+			summary[field.key] = value
+		}
+	}
+	return summary
 }
 
 func parseCodexQuotaHeaders(root gjson.Result) http.Header {

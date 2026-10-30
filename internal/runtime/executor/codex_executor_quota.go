@@ -88,6 +88,9 @@ func (e *CodexExecutor) PollQuotaUsage(ctx context.Context, auth *cliproxyauth.A
 	if len(credits) > 0 {
 		usage["credits"] = credits
 	}
+	if resetCredits := helps.ParseCodexResetCreditSummary(body); len(resetCredits) > 0 {
+		usage["rate_limit_reset_credits"] = resetCredits
+	}
 	encoded, errEncode := json.Marshal(usage)
 	if errEncode != nil {
 		return nil, nil, fmt.Errorf("codex quota: cannot encode usage")

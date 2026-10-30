@@ -2,8 +2,10 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -62,6 +64,57 @@ func TestCodexQuotaPollErrorsDoNotRetainUpstreamBody(t *testing.T) {
 			windows, usage, errPoll := NewCodexExecutor(&config.Config{}).PollQuotaUsage(ctx, auth)
 			if errPoll == nil || strings.Contains(errPoll.Error(), "fixture-secret") || len(windows) != 0 || len(usage) != 0 || calls != 1 {
 				t.Fatalf("invalid error handling: %v calls=%d", errPoll, calls)
+			}
+		})
+	}
+}
+
+func TestCodexQuotaPollRetainsSanitizedResetCreditSummary(t *testing.T) {
+	for _, tc := range []struct {
+		name, summary, want string
+	}{
+		{"counts", `"rate_limit_reset_credits":{"available_count":2,"applicable_available_count":0,"access_token":"secret","credits":[{"id":"private"}]}`, `{"available_count":2,"applicable_available_count":0}`},
+		{"aliases", `"rateLimitResetCredits":{"availableCount":"1","applicableAvailableCount":"0"}`, `{"available_count":1,"applicable_available_count":0}`},
+		{"zero", `"rate_limit_reset_credits":{"available_count":0}`, `{"available_count":0}`},
+		{"invalid", `"rate_limit_reset_credits":{"available_count":-1,"applicable_available_count":true}`, `null`},
+		{"fractional", `"rate_limit_reset_credits":{"available_count":1.5,"applicable_available_count":"NaN"}`, `null`},
+		{"nonfinite", `"rate_limit_reset_credits":{"available_count":"Infinity","applicable_available_count":{}}`, `null`},
+		{"array", `"rate_limit_reset_credits":[{"available_count":1}]`, `null`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := `{"rate_limit":{"primary_window":{"used_percent":42,"limit_window_seconds":18000,"reset_at":1893456000}},` + tc.summary + `}`
+			rt := codexQuotaFixtureTransport(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(fixture))}, nil
+			})
+			ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", rt)
+			auth := &cliproxyauth.Auth{Provider: "codex", Metadata: map[string]any{"access_token": "fixture", "account_id": "account"}}
+			_, usage, errPoll := NewCodexExecutor(&config.Config{}).PollQuotaUsage(ctx, auth)
+			if errPoll != nil {
+				t.Fatal(errPoll)
+			}
+			var payload map[string]json.RawMessage
+			if errDecode := json.Unmarshal(usage, &payload); errDecode != nil {
+				t.Fatal(errDecode)
+			}
+			got := payload["rate_limit_reset_credits"]
+			if tc.want == "null" {
+				if len(got) != 0 {
+					t.Fatalf("retained invalid summary: %s", got)
+				}
+			} else {
+				var gotCounts, wantCounts map[string]float64
+				if errDecode := json.Unmarshal(got, &gotCounts); errDecode != nil {
+					t.Fatalf("missing or invalid reset credit summary: %s (%v)", got, errDecode)
+				}
+				if errDecode := json.Unmarshal([]byte(tc.want), &wantCounts); errDecode != nil {
+					t.Fatal(errDecode)
+				}
+				if !reflect.DeepEqual(gotCounts, wantCounts) {
+					t.Fatalf("reset credit summary = %s, want %s", got, tc.want)
+				}
+			}
+			if strings.Contains(string(usage), "secret") || strings.Contains(string(usage), "private") || strings.Contains(string(usage), "access_token") {
+				t.Fatalf("retained arbitrary credit metadata: %s", usage)
 			}
 		})
 	}
