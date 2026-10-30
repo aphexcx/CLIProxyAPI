@@ -94,23 +94,37 @@ func codexQuotaLimitIdentity(name string) string {
 // Retain newer response windows even when an earlier poll body arrives later.
 func mergeCodexQuotaWindows(auth *Auth, windows map[string]QuotaWindow) {
 	mergeClaudeQuotaWindows(auth, windows)
-	// Upstream limit names can change. Bound retained historical windows too.
-	if len(auth.Quota.Windows) <= maxCodexQuotaWindows {
-		return
-	}
+	// Bound groups across observations too; rotating additional names must not
+	// evict the main or code-review windows, even when those are older.
 	names := make([]string, 0, len(auth.Quota.Windows))
 	for name := range auth.Quota.Windows {
 		names = append(names, name)
 	}
 	sort.Slice(names, func(i, j int) bool {
+		leftAdditional := strings.HasPrefix(names[i], "additional/")
+		rightAdditional := strings.HasPrefix(names[j], "additional/")
+		if leftAdditional != rightAdditional {
+			return !leftAdditional
+		}
 		left, right := auth.Quota.Windows[names[i]], auth.Quota.Windows[names[j]]
 		if left.ObservedAt.Equal(right.ObservedAt) {
 			return names[i] < names[j]
 		}
 		return left.ObservedAt.After(right.ObservedAt)
 	})
-	for _, name := range names[maxCodexQuotaWindows:] {
-		delete(auth.Quota.Windows, name)
+	additional := make(map[string]bool)
+	retained := 0
+	for _, name := range names {
+		group := name[:max(0, strings.LastIndex(name, "/"))]
+		isAdditional := strings.HasPrefix(name, "additional/")
+		if retained >= maxCodexQuotaWindows || (isAdditional && !additional[group] && len(additional) >= 8) {
+			delete(auth.Quota.Windows, name)
+			continue
+		}
+		if isAdditional {
+			additional[group] = true
+		}
+		retained++
 	}
 }
 

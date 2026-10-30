@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -196,5 +198,32 @@ func TestCodexQuotaAdditionalIdentityMatchesHTTPAndPoll(t *testing.T) {
 	}
 	if len(auth.Quota.Windows) != 1 || auth.Quota.Windows["additional/gpt-5.3-codex-spark/five_hour"].Utilization != 30 {
 		t.Fatalf("duplicate identities: %+v", auth.Quota.Windows)
+	}
+}
+
+func TestCodexQuotaRetainedGroupsStayBoundedWithoutEvictingMain(t *testing.T) {
+	base := time.Unix(1800000000, 0)
+	auth := &Auth{}
+	mergeCodexQuotaWindows(auth, map[string]QuotaWindow{
+		"five_hour":             {Utilization: 10, ResetsAt: base.Add(time.Hour), ObservedAt: base},
+		"seven_day":             {Utilization: 20, ResetsAt: base.Add(time.Hour), ObservedAt: base},
+		"code_review/seven_day": {Utilization: 30, ResetsAt: base.Add(time.Hour), ObservedAt: base},
+	})
+	for i := range 50 {
+		mergeCodexQuotaWindows(auth, map[string]QuotaWindow{
+			fmt.Sprintf("additional/limit-%02d/five_hour", i): {Utilization: float64(i), ResetsAt: base.Add(time.Hour), ObservedAt: base.Add(time.Duration(i+1) * time.Second)},
+		})
+		groups := map[string]bool{}
+		for name := range auth.Quota.Windows {
+			if strings.HasPrefix(name, "additional/") {
+				groups[strings.TrimSuffix(name, "/five_hour")] = true
+			}
+		}
+		if len(groups) > 8 || len(auth.Quota.Windows) > maxCodexQuotaWindows {
+			t.Fatalf("unbounded retained usage: %+v", auth.Quota.Windows)
+		}
+	}
+	if len(auth.Quota.Windows) != 11 || auth.Quota.Windows["five_hour"].Utilization != 10 || auth.Quota.Windows["seven_day"].Utilization != 20 || auth.Quota.Windows["code_review/seven_day"].Utilization != 30 || auth.Quota.Windows["additional/limit-49/five_hour"].Utilization != 49 {
+		t.Fatalf("main or newest limit lost: %+v", auth.Quota.Windows)
 	}
 }
