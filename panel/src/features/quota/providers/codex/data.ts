@@ -61,6 +61,7 @@ type CodexResetCreditsData = {
 };
 
 export type CodexQuotaData = {
+  optionalMetadataSequence?: number;
   observedAt?: string | null;
   stale?: boolean;
   serverCache?: CodexQuotaState['serverCache'];
@@ -517,6 +518,7 @@ export const buildCachedCodexQuota = (
   const credits = normalizeCodexAccountCredits(payload.credits);
   const previous = useQuotaStore.getState().codexQuota[getQuotaCacheKey(file)];
   return {
+    optionalMetadataSequence: previous?.optionalMetadataSequence,
     windows,
     planType:
       normalizePlanType(payload.plan_type ?? payload.planType) ?? resolveCodexPlanType(file),
@@ -636,14 +638,17 @@ const enrichCodexQuota = async (
   const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
   if (!authIndex) return data;
   const headers = buildCodexRequestHeader(file);
+  const optionalMetadataSequence = captureCodexQuotaRequest();
   const [subscription, credits] = await Promise.all([
     fetchCodexSubscriptionActiveUntil(authIndex, resolveCodexChatgptAccountId(file), headers),
     fetchCodexResetCredits(authIndex, headers, t),
   ]);
   return {
     ...data,
+    optionalMetadataSequence,
     subscriptionActiveUntil: subscription ?? data.subscriptionActiveUntil,
-    rateLimitResetCreditsAvailableCount: credits.availableCount,
+    rateLimitResetCreditsAvailableCount:
+      credits.availableCount ?? (credits.credits.length > 0 ? credits.credits.length : null),
     rateLimitResetCreditsApplicableAvailableCount: credits.applicableAvailableCount,
     rateLimitResetCredits: credits.credits,
     rateLimitResetCreditsError: credits.error,
@@ -731,6 +736,7 @@ export const CODEX_CONFIG: QuotaProviderData<CodexQuotaState, CodexQuotaData> = 
   }),
   buildSuccessState: (data) => ({
     status: 'success',
+    optionalMetadataSequence: data.optionalMetadataSequence,
     observedAt: data.observedAt,
     stale: data.stale,
     serverCache: data.serverCache,

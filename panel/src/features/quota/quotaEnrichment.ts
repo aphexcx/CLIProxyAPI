@@ -20,11 +20,11 @@ export async function enrichQuotaInBackground(
   const cacheKey = getQuotaCacheKey(file);
   const currentState = () => adapter.storeSelector(useQuotaStore.getState())[cacheKey];
   const acceptedState = currentState();
-  if (acceptedState !== expectedState) {
+  if (adapter.type !== 'codex' && acceptedState !== expectedState) {
     // Claude may retain display windows while accepting this exact server
     // snapshot. Keep identity checks against the merged state during enrichment.
     const expectedCache =
-      adapter.type === 'claude' || adapter.type === 'codex'
+      adapter.type === 'claude'
         ? (expectedState as ClaudeQuotaState).serverCache
         : undefined;
     if (
@@ -41,7 +41,9 @@ export async function enrichQuotaInBackground(
     commitIfQuotaCacheCurrent(generation, () => {
       const setQuota = useQuotaStore.getState()[adapter.storeSetter] as QuotaMapUpdater;
       setQuota((prev) => {
-        if (prev[cacheKey] !== acceptedState) return prev;
+        // Codex independently orders optional metadata and usage snapshots, so
+        // a cache-only list read must not discard an explicit metadata refresh.
+        if (adapter.type !== 'codex' && prev[cacheKey] !== acceptedState) return prev;
         return { ...prev, [cacheKey]: adapter.buildSuccessState(enriched) };
       });
     });

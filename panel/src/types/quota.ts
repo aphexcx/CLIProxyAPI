@@ -307,6 +307,7 @@ export interface CodexQuotaWindow {
 
 export interface CodexQuotaState {
   status: 'idle' | 'loading' | 'success' | 'error';
+  optionalMetadataSequence?: number;
   windows: CodexQuotaWindow[];
   observedAt?: string | null;
   stale?: boolean;

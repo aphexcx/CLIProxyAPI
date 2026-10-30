@@ -201,6 +201,44 @@ func TestCodexQuotaAdditionalIdentityMatchesHTTPAndPoll(t *testing.T) {
 	}
 }
 
+func TestCodexQuotaPartialEventRetainsEarlierAdditionalWindow(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := internallogging.WithFreshResponseHeadersHolder(context.Background())
+		auth := &Auth{}
+		prefix := "X-Codex-Additional-Spark-"
+		headers := make(http.Header)
+		headers.Set(prefix+"Limit-Name", "Spark")
+		for _, window := range []string{"Primary", "Secondary"} {
+			headers.Set(prefix+window+"-Used-Percent", "10")
+			headers.Set(prefix+window+"-Window-Minutes", map[string]string{"Primary": "300", "Secondary": "10080"}[window])
+			headers.Set(prefix+window+"-Reset-After-Seconds", "300")
+		}
+		mergeCodexQuotaWindows(auth, CodexQuotaWindows(headers, time.Now()))
+		<-time.After(time.Second)
+		first := time.Now()
+		headers.Set(prefix+"Primary-Used-Percent", "80")
+		headers.Set(prefix+"Secondary-Used-Percent", "90")
+		internallogging.MergeResponseHeaders(ctx, headers)
+		<-time.After(time.Second)
+		second := time.Now()
+		for key := range headers {
+			if strings.Contains(key, "Secondary") {
+				delete(headers, key)
+			}
+		}
+		headers.Set(prefix+"Primary-Used-Percent", "95")
+		internallogging.MergeResponseHeaders(ctx, headers)
+		for _, observation := range internallogging.GetResponseHeaderObservations(ctx) {
+			mergeCodexQuotaWindows(auth, CodexQuotaWindows(observation.Headers, observation.ObservedAt))
+		}
+		primary := auth.Quota.Windows["additional/spark/five_hour"]
+		secondary := auth.Quota.Windows["additional/spark/seven_day"]
+		if primary.Utilization != 95 || !primary.ObservedAt.Equal(second) || secondary.Utilization != 90 || !secondary.ObservedAt.Equal(first) {
+			t.Fatalf("partial event lost or re-dated a window: %+v", auth.Quota.Windows)
+		}
+	})
+}
+
 func TestCodexQuotaRetainedGroupsStayBoundedWithoutEvictingMain(t *testing.T) {
 	base := time.Unix(1800000000, 0)
 	auth := &Auth{}

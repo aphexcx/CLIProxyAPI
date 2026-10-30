@@ -9,6 +9,8 @@ import { apiCallApi } from '@/services/api/apiCall';
 import { useQuotaStore } from '@/stores/useQuotaStore';
 import { getQuotaCacheKey } from '@/utils/quota/identity';
 import { CODEX_CONFIG, readCodexQuota } from '@/features/quota/providers/codex/data';
+import { enrichQuotaInBackground } from '@/features/quota/quotaEnrichment';
+import type { QuotaAdapter } from '@/features/quota/providers';
 import { CodexQuotaBody } from '@/features/quota/providers/codex/CodexQuotaBody';
 import { QUOTA_CLASS_KEYS, bindQuotaClasses } from '@/features/quota/types';
 import type { AuthFileItem, AuthFilesResponse, CodexCachedUsage } from '@/types';
@@ -168,6 +170,126 @@ describe('Codex cached usage', () => {
     expect(urls[1]).not.toContain('/consume');
     expect(urls.some((url) => url.endsWith('/wham/usage'))).toBe(false);
     expect(post).toHaveBeenCalledWith('/credentials/quota', { auth_index: 'fixture' });
+  });
+
+  test.each(['refresh', 'reset', 'invalidated'])(
+    'list reads preserve explicit metadata without rolling back usage: %s',
+    async (operation) => {
+      const get = spyOn(apiClient, 'get').mockResolvedValue({ files: [seat] });
+      await authFilesApi.list();
+      spyOn(apiClient, 'post').mockImplementation(async (url) =>
+        url === '/credentials/quota' ? usage : { status: 'ok', auth_index: 'fixture', models: [] }
+      );
+      const credits = Promise.withResolvers<Awaited<ReturnType<typeof apiCallApi.request>>>();
+      const started = Promise.withResolvers<void>();
+      spyOn(apiCallApi, 'request').mockImplementation(async (request) => {
+        if (request.url.endsWith('/consume')) {
+          return { statusCode: 200, header: {}, body: { code: 'reset' }, bodyText: '' };
+        }
+        started.resolve();
+        return credits.promise;
+      });
+      const setQuota = useQuotaStore.getState().setCodexQuota;
+      const key = getQuotaCacheKey(seat);
+      let pending: Promise<void>;
+      if (operation === 'reset') {
+        pending = CODEX_CONFIG.resetQuota!(seat, translations.t).then((data) => {
+          setQuota({ [key]: CODEX_CONFIG.buildSuccessState(data) });
+        });
+      } else {
+        const data = await CODEX_CONFIG.fetchQuota(seat, translations.t);
+        const success = CODEX_CONFIG.buildSuccessState(data);
+        setQuota({ [key]: success });
+        pending = enrichQuotaInBackground(
+          CODEX_CONFIG as unknown as QuotaAdapter,
+          seat,
+          data,
+          success,
+          translations.t
+        );
+      }
+      await started.promise;
+      get.mockResolvedValue({
+        files: [
+          {
+            ...seat,
+            codex_usage: {
+              ...usage,
+              polled_at: '2026-10-30T12:01:00Z',
+              last_poll_at: '2026-10-30T12:01:00Z',
+              rate_limit: {
+                primary_window: {
+                  used_percent: 99,
+                  reset_at: 1893456000,
+                  limit_window_seconds: 18000,
+                },
+              },
+            },
+          },
+        ],
+      });
+      await authFilesApi.list();
+      const currentWindows = state().windows;
+      if (operation === 'invalidated') useQuotaStore.getState().clearQuotaCache([seat.name]);
+      const body =
+        operation === 'reset'
+          ? { available_count: 0, credits: [] }
+          : {
+              credits: [
+                {
+                  id: 'fixture',
+                  status: 'available',
+                  reset_type: 'codex_rate_limits',
+                  expires_at: '2030-01-01T00:00:00Z',
+                },
+              ],
+            };
+      credits.resolve({ statusCode: 200, header: {}, body, bodyText: '' });
+      await pending;
+      if (operation === 'invalidated') {
+        expect(state()).toBeUndefined();
+      } else {
+        expect(state().windows).toBe(currentWindows);
+        expect(state().observedAt).toBe('2026-10-30T12:01:00Z');
+        expect(state().rateLimitResetCreditsAvailableCount).toBe(operation === 'reset' ? 0 : 1);
+        expect(CODEX_CONFIG.canResetQuota!(state())).toBe(operation !== 'reset');
+        await authFilesApi.list();
+        expect(state().rateLimitResetCreditsAvailableCount).toBe(operation === 'reset' ? 0 : 1);
+      }
+    }
+  );
+
+  test('a later explicit metadata read wins over an older enrichment', async () => {
+    spyOn(apiClient, 'get').mockResolvedValue({ files: [seat] });
+    await authFilesApi.list();
+    spyOn(apiClient, 'post').mockResolvedValue(usage);
+    const first = Promise.withResolvers<Awaited<ReturnType<typeof apiCallApi.request>>>();
+    const second = Promise.withResolvers<Awaited<ReturnType<typeof apiCallApi.request>>>();
+    spyOn(apiCallApi, 'request')
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const data = await CODEX_CONFIG.fetchQuota(seat, translations.t);
+    const key = getQuotaCacheKey(seat);
+    const success = CODEX_CONFIG.buildSuccessState(data);
+    useQuotaStore.getState().setCodexQuota({ [key]: success });
+    const adapter = CODEX_CONFIG as unknown as QuotaAdapter;
+    const older = enrichQuotaInBackground(adapter, seat, data, success, translations.t);
+    const newer = enrichQuotaInBackground(adapter, seat, data, success, translations.t);
+    second.resolve({
+      statusCode: 200,
+      header: {},
+      body: { available_count: 0, credits: [] },
+      bodyText: '',
+    });
+    await newer;
+    first.resolve({
+      statusCode: 200,
+      header: {},
+      body: { available_count: 2, credits: [] },
+      bodyText: '',
+    });
+    await older;
+    expect(state().rateLimitResetCreditsAvailableCount).toBe(0);
   });
 
   test('a delayed list cannot undo a newer server restart snapshot', async () => {

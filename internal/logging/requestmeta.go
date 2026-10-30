@@ -31,10 +31,10 @@ type responseStatusHolder struct {
 }
 
 type responseHeadersHolder struct {
-	mu         sync.RWMutex
-	headers    http.Header
-	observedAt time.Time
-	mergedAt   map[string]time.Time
+	mu           sync.RWMutex
+	headers      http.Header
+	observedAt   time.Time
+	observations map[string]*ResponseHeaderObservation
 }
 
 func WithEndpoint(ctx context.Context, endpoint string) context.Context {
@@ -127,7 +127,11 @@ func SetResponseHeaders(ctx context.Context, headers http.Header) {
 	defer holder.mu.Unlock()
 	holder.headers = cloneHTTPHeader(headers)
 	holder.observedAt = time.Now()
-	holder.mergedAt = nil
+	holder.observations = make(map[string]*ResponseHeaderObservation, len(headers))
+	observation := &ResponseHeaderObservation{Headers: cloneHTTPHeader(headers), ObservedAt: holder.observedAt}
+	for key := range holder.headers {
+		holder.observations[key] = observation
+	}
 }
 
 // MergeResponseHeaders adds headers observed after the initial HTTP response,
@@ -145,22 +149,22 @@ func MergeResponseHeaders(ctx context.Context, headers http.Header) {
 	if holder.headers == nil {
 		holder.headers = make(http.Header, len(headers))
 	}
-	if holder.mergedAt == nil {
-		holder.mergedAt = make(map[string]time.Time)
+	if holder.observations == nil {
+		holder.observations = make(map[string]*ResponseHeaderObservation)
 	}
-	observedAt := time.Now()
+	observation := &ResponseHeaderObservation{Headers: cloneHTTPHeader(headers), ObservedAt: time.Now()}
 	for key, values := range headers {
 		canonicalKey := http.CanonicalHeaderKey(key)
 		if canonicalKey == "" {
 			continue
 		}
 		holder.headers[canonicalKey] = append([]string(nil), values...)
-		holder.mergedAt[canonicalKey] = observedAt
+		holder.observations[canonicalKey] = observation
 	}
 }
 
-// ResponseHeaderObservation contains fields received together. Event updates do
-// not re-date untouched HTTP fields or fields from an earlier websocket event.
+// ResponseHeaderObservation retains fields received together, including window
+// identities. Partial events do not re-date or strip metadata from older windows.
 type ResponseHeaderObservation struct {
 	Headers    http.Header
 	ObservedAt time.Time
@@ -176,23 +180,18 @@ func GetResponseHeaderObservations(ctx context.Context) []ResponseHeaderObservat
 	}
 	holder.mu.RLock()
 	defer holder.mu.RUnlock()
-	groups := make(map[time.Time]http.Header)
-	for key, values := range holder.headers {
-		at, merged := holder.mergedAt[key]
-		if !merged {
-			at = holder.observedAt
-		}
-		if at.IsZero() {
+	// Each field points at its latest complete receipt. Once every field in a
+	// receipt has been replaced, that receipt can be collected; no event log grows.
+	seen := make(map[*ResponseHeaderObservation]bool)
+	observations := make([]ResponseHeaderObservation, 0)
+	for _, observation := range holder.observations {
+		if seen[observation] {
 			continue
 		}
-		if groups[at] == nil {
-			groups[at] = make(http.Header)
-		}
-		groups[at][key] = append([]string(nil), values...)
-	}
-	observations := make([]ResponseHeaderObservation, 0, len(groups))
-	for at, headers := range groups {
-		observations = append(observations, ResponseHeaderObservation{Headers: headers, ObservedAt: at})
+		seen[observation] = true
+		observations = append(observations, ResponseHeaderObservation{
+			Headers: cloneHTTPHeader(observation.Headers), ObservedAt: observation.ObservedAt,
+		})
 	}
 	return observations
 }

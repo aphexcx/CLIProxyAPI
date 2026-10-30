@@ -143,6 +143,7 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
       let retained = next;
       for (const [key, quota] of Object.entries(next)) {
         const previous = state.codexQuota[key];
+        let candidate = quota;
         if (previous?.serverCache && quota.serverCache) {
           const prior = previous.serverCache;
           const incoming = quota.serverCache;
@@ -152,15 +153,14 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
               Date.parse(prior.lastPollAt ?? prior.polledAt ?? '') ||
             Date.parse(incoming.polledAt ?? '') < Date.parse(prior.polledAt ?? '')
           ) {
-            if (retained === next) retained = { ...next };
-            retained[key] =
+            candidate =
               previous.status === 'loading' && quota.status === 'success'
                 ? { ...previous, status: 'success', error: undefined, errorStatus: undefined }
                 : previous;
-            continue;
           }
         }
         if (
+          candidate === quota &&
           previous &&
           quota !== previous &&
           !quota.observedAt &&
@@ -169,8 +169,7 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
             quota.serverCache?.polledAt === null) &&
           (previous.serverCache || previous.observedAt || previous.windows.length)
         ) {
-          if (retained === next) retained = { ...next };
-          retained[key] = {
+          candidate = {
             ...previous,
             ...quota,
             windows: quota.windows.length ? quota.windows : previous.windows,
@@ -183,6 +182,29 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
             stale:
               quota.serverCache?.polledAt === null || quota.status === 'error' || previous.stale,
           };
+        }
+        // Optional reads and cache-only usage reads have independent ordering.
+        // A newer list preserves explicit metadata, and late enrichment cannot
+        // restore old windows or undo a later reset-credit read.
+        const optional =
+          (quota.optionalMetadataSequence ?? 0) > (previous?.optionalMetadataSequence ?? 0)
+            ? quota
+            : previous;
+        if (optional?.optionalMetadataSequence && candidate !== optional) {
+          candidate = {
+            ...candidate,
+            optionalMetadataSequence: optional.optionalMetadataSequence,
+            subscriptionActiveUntil: optional.subscriptionActiveUntil,
+            rateLimitResetCreditsAvailableCount: optional.rateLimitResetCreditsAvailableCount,
+            rateLimitResetCreditsApplicableAvailableCount:
+              optional.rateLimitResetCreditsApplicableAvailableCount,
+            rateLimitResetCredits: optional.rateLimitResetCredits,
+            rateLimitResetCreditsError: optional.rateLimitResetCreditsError,
+          };
+        }
+        if (candidate !== quota) {
+          if (retained === next) retained = { ...next };
+          retained[key] = candidate;
         }
       }
       return { codexQuota: retained };
