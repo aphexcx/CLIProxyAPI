@@ -22,7 +22,8 @@ describe('Bun toolchain version', () => {
     expect(readProjectFile(path)).toContain(`**Bun ${bunVersion}**`);
   });
 
-  test('repository guidance documents the pinned Bun release', () => {
-    expect(readProjectFile('AGENTS.md')).toContain(`\`bun@${bunVersion}\``);
+  test('fork build and documentation use the pinned Bun release', () => {
+    expect(readProjectFile('README.fork.md')).toContain(`Bun ${bunVersion}`);
+    expect(readProjectFile('../Makefile')).toContain(`--package=bun@${bunVersion}`);
   });
 });

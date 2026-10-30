@@ -125,7 +125,7 @@ bun run dev
 | `bun run verify` | 运行测试、lint 与构建 |
 | `bun run format` | 使用 Prettier 格式化源文件 |
 
-欢迎提交 Issue 与 PR。请附上复现步骤、后端与 UI 版本、界面改动截图和验证结果。仓库约定见 [AGENTS.md](AGENTS.md)。
+欢迎提交 Issue 与 PR。请附上复现步骤、后端与 UI 版本、界面改动截图和验证结果。仓库约定见 [AGENTS.md](../AGENTS.md)，此分支的构建说明见 [README.fork.md](README.fork.md)。
 
 ## 安全提示
 

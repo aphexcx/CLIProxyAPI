@@ -125,7 +125,7 @@ Open `http://localhost:5173` and connect to your backend instance.
 | `bun run verify` | Run tests, lint, and build |
 | `bun run format` | Format source files with Prettier |
 
-Issues and PRs are welcome. Include reproduction steps, backend and UI versions, screenshots for UI changes, and verification results. See [AGENTS.md](AGENTS.md) for repository conventions.
+Issues and PRs are welcome. Include reproduction steps, backend and UI versions, screenshots for UI changes, and verification results. See [AGENTS.md](../AGENTS.md) for repository conventions and [README.fork.md](README.fork.md) for the fork's build recipe.
 
 ## Security
 

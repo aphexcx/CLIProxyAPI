@@ -18,7 +18,7 @@ import { parseTimestampMs } from '@/utils/timestamp';
 import { normalizeAuthFileCooldowns, normalizeCooldownTimestamp } from './authFileCooldowns';
 import i18n from '@/i18n';
 import { captureQuotaCacheGeneration } from '@/stores/useQuotaStore';
-import { seedClaudeQuota } from '@/features/quota/providers/claude/data';
+import { captureClaudeQuotaRequest, seedClaudeQuota } from '@/features/quota/providers/claude/data';
 
 type AuthFileStatusResponse = { status: string; disabled: boolean };
 export type AuthFileLookup = { name: string; authIndex?: string };
@@ -548,6 +548,7 @@ export interface AuthFileCooldownResetResponse {
 export const authFilesApi = {
   list: async (lookup?: AuthFileLookup) => {
     const generation = captureQuotaCacheGeneration();
+    const sequence = captureClaudeQuotaRequest();
     const connectionRevision = apiClient.getConnectionRevision();
     const response = normalizeAuthFilesResponse(
       await apiClient.get<AuthFilesResponse>(
@@ -556,7 +557,7 @@ export const authFilesApi = {
       )
     );
     if (connectionRevision === apiClient.getConnectionRevision()) {
-      seedClaudeQuota(response.files, generation, i18n.t);
+      seedClaudeQuota(response.files, generation, i18n.t, sequence);
     }
     return response;
   },

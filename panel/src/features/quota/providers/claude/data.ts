@@ -197,10 +197,15 @@ export const resolveClaudePlanType = (profile: ClaudeProfileResponse | null): st
   return null;
 };
 
+let requestSequence = 0;
+/** Orders overlapping list and quota requests when the server poll timestamps tie. */
+export const captureClaudeQuotaRequest = () => ++requestSequence;
+
 export const buildCachedClaudeQuota = (
   payload: ClaudeCachedUsage,
   t: TFunction,
-  receivedAtMs = Date.now()
+  receivedAtMs = Date.now(),
+  sequence = captureClaudeQuotaRequest()
 ): ClaudeQuotaData => {
   if (
     !payload ||
@@ -230,6 +235,7 @@ export const buildCachedClaudeQuota = (
       status: payload.status,
       ageSeconds: payload.age_seconds,
       receivedAtMs,
+      requestSequence: sequence,
       nextPollAt: payload.next_poll_at,
       refreshing: payload.refreshing,
       lastStatus: payload.last_status,
@@ -242,13 +248,14 @@ export const buildCachedClaudeQuota = (
 export const seedClaudeQuota = (
   files: AuthFileItem[],
   generation: ReturnType<typeof captureQuotaCacheGeneration>,
-  t: TFunction
+  t: TFunction,
+  sequence: number
 ): void => {
   for (const file of files) {
     if (!isClaudeFile(file) || !file.claude_usage) continue;
     let data: ClaudeQuotaData;
     try {
-      data = buildCachedClaudeQuota(file.claude_usage, t);
+      data = buildCachedClaudeQuota(file.claude_usage, t, Date.now(), sequence);
     } catch {
       // A malformed list entry must not erase a previously useful quota snapshot.
       continue;
@@ -325,13 +332,14 @@ const fetchCachedClaudeQuota = async (
   ]);
   let request = usageReads.get(key);
   if (!request) {
+    const sequence = captureClaudeQuotaRequest();
     const cached = refresh
       ? apiClient.post<ClaudeCachedUsage>('/credentials/quota', { auth_index: authIndex })
       : apiClient.get<ClaudeCachedUsage>('/credentials/quota', {
           params: { auth_index: authIndex },
         });
     request = cached
-      .then((payload) => buildCachedClaudeQuota(payload, t))
+      .then((payload) => buildCachedClaudeQuota(payload, t, Date.now(), sequence))
       .catch((error: unknown) => {
         // Pure reads and native-cache failures must never become upstream calls.
         if (

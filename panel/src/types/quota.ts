@@ -221,6 +221,7 @@ export interface ClaudeQuotaState {
     status: 'ok' | 'not_polled_yet' | 'polling_paused';
     ageSeconds: number | null;
     receivedAtMs: number;
+    requestSequence: number;
     nextPollAt: string | null;
     refreshing: boolean;
     lastStatus: number;

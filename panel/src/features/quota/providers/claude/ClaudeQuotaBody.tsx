@@ -33,7 +33,9 @@ export function ClaudeQuotaBody({
     cache?.ageSeconds == null
       ? null
       : Math.max(0, Math.floor(cache.ageSeconds + Math.max(0, now - cache.receivedAtMs) / 1000));
-  const pollFailed = cache?.lastPollAt && (cache.lastStatus < 200 || cache.lastStatus >= 300);
+  const firstPollRunning = !quota.observedAt && cache?.refreshing && cache.lastStatus === 0;
+  const pollFailed =
+    cache?.lastPollAt && !firstPollRunning && (cache.lastStatus < 200 || cache.lastStatus >= 300);
   const formatMoney = (value: number | null, currency = 'USD', divisor = 1): string => {
     if (value === null) return '--';
     try {

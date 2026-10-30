@@ -184,6 +184,30 @@ describe('Claude list ingestion and no-click rendering', () => {
     expect(render()).toContain('58%');
   });
 
+  test('the first running poll is pending, while a completed transport failure is an error', async () => {
+    const pending = {
+      ...usage,
+      status: 'not_polled_yet' as const,
+      polled_at: null,
+      age_seconds: null,
+      last_status: 0,
+      refreshing: true,
+      five_hour: null,
+      seven_day: null,
+    };
+    const get = spyOn(apiClient, 'get').mockResolvedValue({
+      files: [{ ...seat, claude_usage: pending }],
+    });
+    await authFilesApi.list();
+    expect(render()).toContain('Waiting for the first usage poll');
+    expect(render()).not.toContain('Last poll failed');
+    get.mockResolvedValue({
+      files: [{ ...seat, claude_usage: { ...pending, refreshing: false, stale: true } }],
+    });
+    await authFilesApi.list();
+    expect(render()).toContain('Last poll failed (no HTTP response)');
+  });
+
   test('optional profile metadata survives subsequent list updates', async () => {
     spyOn(apiClient, 'get').mockResolvedValue({ files: [seat] });
     await authFilesApi.list();
@@ -292,6 +316,44 @@ describe('Claude list ingestion and no-click rendering', () => {
     expect(state().windows[0].usedPercent).toBe(60);
     expect(state().serverCache?.refreshing).toBe(false);
   });
+
+  test.each([429, 0])(
+    'a delayed running snapshot cannot erase completed failure %s',
+    async (last_status) => {
+      const inFlight = Promise.withResolvers<AuthFilesResponse>();
+      const get = spyOn(apiClient, 'get').mockReturnValueOnce(inFlight.promise);
+      const old = authFilesApi.list();
+      get.mockResolvedValue({
+        files: [
+          {
+            ...seat,
+            claude_usage: {
+              ...usage,
+              last_poll_at: '2026-10-30T12:01:00Z',
+              last_status,
+              stale: true,
+              refreshing: false,
+            },
+          },
+        ],
+      });
+      await authFilesApi.list();
+      const completed = state();
+      inFlight.resolve({
+        files: [
+          {
+            ...seat,
+            claude_usage: { ...usage, last_poll_at: '2026-10-30T12:01:00Z', refreshing: true },
+          },
+        ],
+      });
+      await old;
+      expect(state()).toBe(completed);
+      expect(state().serverCache?.lastStatus).toBe(last_status);
+      expect(state().stale).toBe(true);
+      expect(render()).toContain('Last poll failed');
+    }
+  );
 
   test.each(['cache', 'connection', 'file'] as const)(
     'rejects list ingestion after %s invalidation',

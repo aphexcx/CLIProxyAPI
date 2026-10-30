@@ -74,11 +74,16 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
           const nextPoll = Date.parse(quota.serverCache.lastPollAt ?? quota.observedAt ?? '');
           const previousObservation = Date.parse(previous.observedAt ?? '');
           const nextObservation = Date.parse(quota.observedAt ?? '');
+          const samePoll = previous.serverCache.lastPollAt === quota.serverCache.lastPollAt;
+          const sameObservation = previous.observedAt === quota.observedAt;
           if (
             (Number.isFinite(previousPoll) &&
               (!Number.isFinite(nextPoll) || nextPoll < previousPoll)) ||
             (Number.isFinite(previousObservation) &&
-              (!Number.isFinite(nextObservation) || nextObservation < previousObservation))
+              (!Number.isFinite(nextObservation) || nextObservation < previousObservation)) ||
+            (samePoll &&
+              sameObservation &&
+              quota.serverCache.requestSequence < previous.serverCache.requestSequence)
           ) {
             if (retained === next) retained = { ...next };
             retained[key] = previous;
