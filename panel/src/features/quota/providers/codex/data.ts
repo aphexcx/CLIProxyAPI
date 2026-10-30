@@ -63,6 +63,7 @@ type CodexResetCreditsData = {
 export type CodexQuotaData = {
   optionalMetadataSequence?: number;
   resetCreditsUpdatedForPoll?: string | null;
+  resetCreditsConfirmed?: boolean;
   usageResetCredits?: CodexUsagePayload['rate_limit_reset_credits'];
   observedAt?: string | null;
   stale?: boolean;
@@ -484,8 +485,14 @@ const fetchManualCodexQuota = async (
   const planType = planTypeFromUsage ?? planTypeFromFile;
   const subscriptionActiveUntil = liveSubscriptionActiveUntil ?? subscriptionActiveUntilFromFile;
   const windows = buildCodexQuotaWindows(payload, t);
+  const previous = useQuotaStore.getState().codexQuota[getQuotaCacheKey(file)];
   return {
     optionalMetadataSequence,
+    resetCreditsConfirmed: true,
+    resetCreditsUpdatedForPoll: latestCodexPoll(
+      previous?.serverCache?.polledAt,
+      previous?.resetCreditsUpdatedForPoll
+    ),
     planType,
     subscriptionActiveUntil,
     creditBalance: accountCredits.balance,
@@ -496,6 +503,20 @@ const fetchManualCodexQuota = async (
     rateLimitResetCreditsError: resetCreditsData.error,
     windows,
   };
+};
+
+const latestCodexPoll = (...polls: (string | null | undefined)[]): string | null => {
+  let latest: string | null = null;
+  for (const poll of polls) {
+    if (
+      poll &&
+      Number.isFinite(Date.parse(poll)) &&
+      (!latest || Date.parse(poll) > Date.parse(latest))
+    ) {
+      latest = poll;
+    }
+  }
+  return latest;
 };
 
 let requestSequence = 0;
@@ -681,12 +702,14 @@ const enrichCodexQuota = async (
   return {
     ...data,
     optionalMetadataSequence,
-    resetCreditsUpdatedForPoll:
-      detailsCount !== null || suppressFallback
-        ? polledAt
-        : preserveUpdated
-          ? updatedForPoll
-          : undefined,
+    resetCreditsConfirmed: detailsCount !== null || consumedCredit,
+    // Confirmation also supersedes polls received while the details read was
+    // pending. A fallback only advances through its own usage observation.
+    resetCreditsUpdatedForPoll: latestCodexPoll(
+      polledAt,
+      updatedForPoll,
+      detailsCount !== null || suppressFallback ? previous?.serverCache?.polledAt : undefined
+    ),
     subscriptionActiveUntil: subscription ?? data.subscriptionActiveUntil,
     rateLimitResetCreditsAvailableCount: availableCount,
     rateLimitResetCreditsApplicableAvailableCount: suppressFallback
@@ -770,9 +793,12 @@ const resetCodexQuota = async (file: AuthFileItem, t: TFunction): Promise<CodexQ
             [key]: {
               ...previous,
               optionalMetadataSequence: captureCodexQuotaRequest(),
-              resetCreditsUpdatedForPoll: previous.serverCache
-                ? previous.serverCache.polledAt
-                : (file.codex_usage?.polled_at ?? null),
+              resetCreditsConfirmed: true,
+              resetCreditsUpdatedForPoll: latestCodexPoll(
+                previous.serverCache?.polledAt,
+                previous.resetCreditsUpdatedForPoll,
+                file.codex_usage?.polled_at
+              ),
               rateLimitResetCreditsAvailableCount: null,
               rateLimitResetCreditsApplicableAvailableCount: null,
               rateLimitResetCredits: [],
@@ -816,6 +842,7 @@ export const CODEX_CONFIG: QuotaProviderData<CodexQuotaState, CodexQuotaData> = 
     status: 'success',
     optionalMetadataSequence: data.optionalMetadataSequence,
     resetCreditsUpdatedForPoll: data.resetCreditsUpdatedForPoll,
+    resetCreditsConfirmed: data.resetCreditsConfirmed,
     observedAt: data.observedAt,
     stale: data.stale,
     serverCache: data.serverCache,

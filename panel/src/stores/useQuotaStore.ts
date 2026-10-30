@@ -186,10 +186,9 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
         // Optional reads and cache-only usage reads have independent ordering.
         // A newer list preserves explicit metadata, and late enrichment cannot
         // restore old windows or undo a later reset-credit read.
-        const optional =
-          (quota.optionalMetadataSequence ?? 0) > (previous?.optionalMetadataSequence ?? 0)
-            ? quota
-            : previous;
+        const newerOptional =
+          (quota.optionalMetadataSequence ?? 0) > (previous?.optionalMetadataSequence ?? 0);
+        const optional = newerOptional ? quota : previous;
         if (optional?.optionalMetadataSequence && candidate !== optional) {
           candidate = {
             ...candidate,
@@ -201,6 +200,63 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
               optional.rateLimitResetCreditsApplicableAvailableCount,
             rateLimitResetCredits: optional.rateLimitResetCredits,
             rateLimitResetCreditsError: optional.rateLimitResetCreditsError,
+          };
+        }
+        // A failed newer read must not outrank a pending successful read, or
+        // erase the fence established by a successful redemption.
+        const confirmationSequence = previous?.resetCreditsConfirmationSequence ?? 0;
+        const newConfirmation =
+          quota.resetCreditsConfirmed &&
+          (quota.optionalMetadataSequence ?? 0) > confirmationSequence;
+        const priorPoll = previous?.resetCreditsUpdatedForPoll;
+        const incomingPoll = quota.resetCreditsUpdatedForPoll;
+        const protectedFallback =
+          priorPoll !== undefined &&
+          (priorPoll === incomingPoll ||
+            (priorPoll && incomingPoll && Date.parse(incomingPoll) <= Date.parse(priorPoll)));
+        let credits = newerOptional ? quota : (previous ?? quota);
+        if (quota.resetCreditsConfirmed) {
+          credits = newConfirmation ? quota : (previous ?? quota);
+        } else if (newerOptional && previous && protectedFallback) {
+          credits = previous;
+        }
+        let updatedForPoll = credits.resetCreditsUpdatedForPoll;
+        if (newConfirmation) {
+          // Include polls that arrived after enrichment resolved but before its
+          // result commits. Never move the protected observation backwards.
+          let latest: string | null = null;
+          for (const poll of [
+            updatedForPoll,
+            previous?.resetCreditsUpdatedForPoll,
+            candidate.serverCache?.polledAt,
+            previous?.serverCache?.polledAt,
+          ]) {
+            if (
+              poll &&
+              Number.isFinite(Date.parse(poll)) &&
+              (!latest || Date.parse(poll) > Date.parse(latest))
+            ) {
+              latest = poll;
+            }
+          }
+          updatedForPoll = latest;
+        }
+        if (
+          candidate !== credits ||
+          newConfirmation ||
+          (candidate.resetCreditsConfirmationSequence ?? 0) !== confirmationSequence
+        ) {
+          candidate = {
+            ...candidate,
+            resetCreditsConfirmed: false,
+            resetCreditsConfirmationSequence: newConfirmation
+              ? quota.optionalMetadataSequence
+              : confirmationSequence,
+            resetCreditsUpdatedForPoll: updatedForPoll,
+            rateLimitResetCreditsAvailableCount: credits.rateLimitResetCreditsAvailableCount,
+            rateLimitResetCreditsApplicableAvailableCount:
+              credits.rateLimitResetCreditsApplicableAvailableCount,
+            rateLimitResetCredits: credits.rateLimitResetCredits,
           };
         }
         if (candidate !== quota) {

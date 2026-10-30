@@ -309,6 +309,8 @@ export interface CodexQuotaState {
   status: 'idle' | 'loading' | 'success' | 'error';
   optionalMetadataSequence?: number;
   resetCreditsUpdatedForPoll?: string | null;
+  resetCreditsConfirmed?: boolean;
+  resetCreditsConfirmationSequence?: number;
   windows: CodexQuotaWindow[];
   observedAt?: string | null;
   stale?: boolean;

@@ -333,6 +333,92 @@ describe('Codex cached usage', () => {
     }
   );
 
+  test.each(['before-response', 'before-commit'])(
+    'credit confirmation protects newer polls observed %s',
+    async (timing) => {
+      let cachedUsage = {
+        ...usage,
+        rate_limit_reset_credits: { available_count: 1, applicable_available_count: 1 },
+      };
+      spyOn(apiClient, 'get').mockImplementation(async () => ({
+        files: [{ ...seat, codex_usage: cachedUsage }],
+      }));
+      spyOn(apiClient, 'post').mockImplementation(async () => cachedUsage);
+      const details = Promise.withResolvers<Awaited<ReturnType<typeof apiCallApi.request>>>();
+      const request = spyOn(apiCallApi, 'request').mockReturnValueOnce(details.promise);
+      const save = (data: Awaited<ReturnType<typeof CODEX_CONFIG.fetchQuota>>) =>
+        useQuotaStore.getState().setCodexQuota({
+          [getQuotaCacheKey(seat)]: CODEX_CONFIG.buildSuccessState(data),
+        });
+      await authFilesApi.list();
+      const oldData = await CODEX_CONFIG.fetchQuota(seat, translations.t);
+      const pending = CODEX_CONFIG.enrichQuota!(seat, oldData, translations.t);
+      const zero = { statusCode: 200, header: {}, body: { available_count: 0 }, bodyText: '' };
+      if (timing === 'before-commit') {
+        details.resolve(zero);
+        await pending;
+      }
+      cachedUsage = {
+        ...cachedUsage,
+        polled_at: '2026-10-30T12:02:00Z',
+        last_poll_at: '2026-10-30T12:02:00Z',
+      };
+      await authFilesApi.list();
+      details.resolve(zero);
+      save(await pending);
+      expect(state().serverCache?.polledAt).toBe(cachedUsage.polled_at);
+      expect(state().rateLimitResetCreditsAvailableCount).toBe(0);
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        request.mockResolvedValue({ statusCode: 503, header: {}, body: {}, bodyText: '' });
+        const current = await CODEX_CONFIG.fetchQuota(seat, translations.t);
+        save(await CODEX_CONFIG.enrichQuota!(seat, current, translations.t));
+        expect(state().rateLimitResetCreditsAvailableCount).toBe(0);
+        expect(CODEX_CONFIG.canResetQuota!(state())).toBe(false);
+        // Reusing older usage data for a successful details read must not lower
+        // the poll timestamp protected by the newer credit observation.
+        request.mockResolvedValue(zero);
+        save(await CODEX_CONFIG.enrichQuota!(seat, oldData, translations.t));
+      }
+    }
+  );
+
+  test.each(['confirmation-first', 'fallback-first'])(
+    'credit confirmation wins over a failed newer read: %s',
+    async (order) => {
+      const cachedUsage = {
+        ...usage,
+        rate_limit_reset_credits: { available_count: 1, applicable_available_count: 1 },
+      };
+      spyOn(apiClient, 'get').mockResolvedValue({ files: [{ ...seat, codex_usage: cachedUsage }] });
+      spyOn(apiClient, 'post').mockResolvedValue(cachedUsage);
+      const save = (data: Awaited<ReturnType<typeof CODEX_CONFIG.fetchQuota>>) =>
+        useQuotaStore.getState().setCodexQuota({
+          [getQuotaCacheKey(seat)]: CODEX_CONFIG.buildSuccessState(data),
+        });
+      await authFilesApi.list();
+      const data = await CODEX_CONFIG.fetchQuota(seat, translations.t);
+      const confirmed = Promise.withResolvers<Awaited<ReturnType<typeof apiCallApi.request>>>();
+      const request = spyOn(apiCallApi, 'request').mockReturnValueOnce(confirmed.promise);
+      const earlier = CODEX_CONFIG.enrichQuota!(seat, data, translations.t);
+      request.mockResolvedValue({ statusCode: 503, header: {}, body: {}, bodyText: '' });
+      const fallback = await CODEX_CONFIG.enrichQuota!(seat, data, translations.t);
+      expect(fallback.rateLimitResetCreditsAvailableCount).toBe(1);
+      if (order === 'fallback-first') save(fallback);
+      confirmed.resolve({
+        statusCode: 200,
+        header: {},
+        body: { available_count: 0 },
+        bodyText: '',
+      });
+      save(await earlier);
+      expect(state().rateLimitResetCreditsAvailableCount).toBe(0);
+      if (order === 'confirmation-first') save(fallback);
+      expect(state().rateLimitResetCreditsAvailableCount).toBe(0);
+      expect(CODEX_CONFIG.canResetQuota!(state())).toBe(false);
+    }
+  );
+
   test('a failed details read cannot restore consumed credits from the same cached poll', async () => {
     let cachedUsage = {
       ...usage,
