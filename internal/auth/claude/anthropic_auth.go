@@ -244,6 +244,7 @@ func (o *ClaudeAuth) fetchOAuthControlPlaneJSON(ctx context.Context, endpoint, a
 	req.Header.Set("Cache-Control", "no-cache")
 	if endpoint == UsageURL {
 		req.Header.Set("Anthropic-Beta", "oauth-2025-04-20")
+		req = req.WithContext(context.WithValue(req.Context(), claudeUsageConnectTimeoutContextKey{}, claudeUsageConnectTimeout))
 	}
 
 	resp, errDo := o.httpClient.Do(req)

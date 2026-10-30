@@ -22,11 +22,16 @@ type cachedUsagePoller struct {
 	coreauth.ProviderExecutor
 	calls atomic.Int64
 	fail  atomic.Bool
+	stall atomic.Bool
 }
 
 func (*cachedUsagePoller) Identifier() string { return "claude" }
-func (p *cachedUsagePoller) PollQuota(context.Context, *coreauth.Auth) (map[string]coreauth.QuotaWindow, error) {
+func (p *cachedUsagePoller) PollQuota(ctx context.Context, _ *coreauth.Auth) (map[string]coreauth.QuotaWindow, error) {
 	p.calls.Add(1)
+	if p.stall.Load() {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	if p.fail.Load() {
 		return nil, &coreauth.Error{HTTPStatus: 429}
 	}
@@ -35,6 +40,75 @@ func (p *cachedUsagePoller) PollQuota(context.Context, *coreauth.Auth) (map[stri
 		"seven_day": {Utilization: 20, ResetsAt: time.Now().Add(24 * time.Hour), ObservedAt: time.Now()},
 		"Fable":     {Utilization: 100, ResetsAt: time.Now().Add(time.Hour), ObservedAt: time.Now()},
 	}, nil
+}
+
+func TestClaudePluginQuotaRejectsStaleSnapshots(t *testing.T) {
+	for _, state := range []string{"never polled", "failed", "stalled", "paused"} {
+		t.Run(state, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				cfg := &config.Config{RequestRetry: 3}
+				cfg.Claude.Quota.Enabled = true
+				m := coreauth.NewManager(nil, nil, nil)
+				m.SetConfig(cfg)
+				seat, errRegister := m.Register(context.Background(), &coreauth.Auth{ID: "seat", Provider: "claude", Status: coreauth.StatusActive, Metadata: map[string]any{"access_token": "test"}})
+				if errRegister != nil {
+					t.Fatal(errRegister)
+				}
+				h := &Handler{cfg: cfg, authManager: m}
+				host := pluginhost.New()
+				host.RegisterPluginForTest("claude", pluginapi.Plugin{Capabilities: pluginapi.Capabilities{QuotaProvider: &mockQuotaProvider{identifier: "claude", fetchFn: func(context.Context, pluginapi.QuotaFetchRequest) (pluginapi.QuotaFetchResponse, error) {
+					t.Fatal("stale snapshot reached plugin normalizer")
+					return pluginapi.QuotaFetchResponse{}, nil
+				}}}})
+				h.SetPluginHost(host)
+				poller := &cachedUsagePoller{}
+				m.RegisterExecutor(poller)
+				if state != "never polled" {
+					m.StartQuotaPolling(context.Background())
+					t.Cleanup(m.StopQuotaPolling)
+					synctest.Wait()
+					switch state {
+					case "failed":
+						poller.fail.Store(true)
+					case "stalled":
+						poller.stall.Store(true)
+					case "paused":
+						seat.Disabled = true
+						if _, errUpdate := m.Update(context.Background(), seat); errUpdate != nil {
+							t.Fatal(errUpdate)
+						}
+					}
+					<-time.After(121 * time.Second)
+					synctest.Wait()
+				}
+				rec := httptest.NewRecorder()
+				ctx, _ := gin.CreateTestContext(rec)
+				ctx.Request = httptest.NewRequest(http.MethodGet, "/v8/management/plugins/claude/quota?auth_index="+seat.Index, nil)
+				ctx.Set(ConfigV8ContextKey, true)
+				ctx.Params = gin.Params{{Key: "id", Value: "claude"}}
+				h.GetPluginQuota(ctx)
+				if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "/claude-seats.html") {
+					t.Fatalf("%s reported as fresh: HTTP %d %s", state, rec.Code, rec.Body)
+				}
+			})
+		})
+	}
+}
+
+func TestCachedClaudeQuotaClientCannotCallUpstream(t *testing.T) {
+	client := cachedClaudeQuotaClient{body: []byte(`{}`)}
+	for _, req := range []pluginapi.HTTPRequest{
+		{Method: http.MethodPost, URL: "https://api.anthropic.com/api/oauth/usage"},
+		{Method: http.MethodGet, URL: "https://example.invalid/api/oauth/usage"},
+		{Method: http.MethodGet, URL: "https://api.anthropic.com/api/oauth/profile"},
+	} {
+		if _, errDo := client.Do(context.Background(), req); errDo == nil {
+			t.Fatal("accepted uncached request")
+		}
+	}
+	if _, errStream := client.DoStream(context.Background(), pluginapi.HTTPRequest{}); errStream == nil {
+		t.Fatal("accepted streaming")
+	}
 }
 
 func (p *cachedUsagePoller) PollQuotaUsage(ctx context.Context, auth *coreauth.Auth) (map[string]coreauth.QuotaWindow, json.RawMessage, error) {
@@ -59,11 +133,29 @@ func TestClaudeCachedUsageRoutesAndList(t *testing.T) {
 			t.Fatal(errRegister)
 		}
 		h := &Handler{cfg: cfg, authManager: m}
+		if _, errRegister := m.Register(context.Background(), &coreauth.Auth{ID: "codex-seat", FileName: "codex.json", Provider: "codex", Status: coreauth.StatusActive, Attributes: map[string]string{"runtime_only": "true"}, Metadata: map[string]any{"access_token": "codex-fixture"}}); errRegister != nil {
+			t.Fatal(errRegister)
+		}
 		host := pluginhost.New()
 		host.RegisterPluginForTest("claude", pluginapi.Plugin{Metadata: pluginapi.Metadata{Name: "Claude quota"}, Capabilities: pluginapi.Capabilities{QuotaProvider: &mockQuotaProvider{
-			identifier: "claude", fetchFn: func(context.Context, pluginapi.QuotaFetchRequest) (pluginapi.QuotaFetchResponse, error) {
-				t.Fatal("Claude quota plugin fetched upstream instead of using the cache")
-				return pluginapi.QuotaFetchResponse{}, nil
+			identifier: "claude", fetchFn: func(ctx context.Context, req pluginapi.QuotaFetchRequest) (pluginapi.QuotaFetchResponse, error) {
+				response, errFetch := req.HTTPClient.Do(ctx, pluginapi.HTTPRequest{Method: http.MethodGet, URL: "https://api.anthropic.com/api/oauth/usage"})
+				if errFetch != nil {
+					t.Fatal(errFetch)
+				}
+				var usage struct {
+					ExtraUsage struct {
+						UsedCredits float64 `json:"used_credits"`
+					} `json:"extra_usage"`
+				}
+				if errDecode := json.Unmarshal(response.Body, &usage); errDecode != nil {
+					t.Fatal(errDecode)
+				}
+				return pluginapi.QuotaFetchResponse{
+					Subscription: &pluginapi.QuotaSubscription{Plan: "selected-plugin-plan", TierName: "test-tier"},
+					Summary:      []pluginapi.QuotaMetric{{Key: "credits", Value: usage.ExtraUsage.UsedCredits}},
+					Groups:       []pluginapi.QuotaGroup{{DisplayName: "selected-plugin-window"}},
+				}, nil
 			},
 		}}})
 		h.SetPluginHost(host)
@@ -116,6 +208,13 @@ func TestClaudeCachedUsageRoutesAndList(t *testing.T) {
 		if plugin.Code != 200 || !strings.Contains(plugin.Body.String(), `"groups"`) {
 			t.Fatalf("plugin=%s", plugin.Body)
 		}
+		var normalized pluginapi.QuotaFetchResponse
+		if errDecode := json.Unmarshal(plugin.Body.Bytes(), &normalized); errDecode != nil {
+			t.Fatal(errDecode)
+		}
+		if normalized.Subscription == nil || normalized.Subscription.Plan != "selected-plugin-plan" || normalized.Subscription.TierName != "test-tier" || len(normalized.Summary) != 1 || normalized.Summary[0].Value != 12 || len(normalized.Groups) != 1 || normalized.Groups[0].DisplayName != "selected-plugin-window" {
+			t.Fatalf("plugin normalization lost: %+v", normalized)
+		}
 		h.SetPluginHost(nil)
 		missingPlugin := call(h.GetPluginQuota, "GET", "/v8/management/plugins/claude/quota?auth_index="+seat.Index, "", true)
 		if missingPlugin.Code != http.StatusNotFound {
@@ -123,6 +222,21 @@ func TestClaudeCachedUsageRoutesAndList(t *testing.T) {
 		}
 		for _, v8 := range []bool{true, false} {
 			list := call(h.ListAuthFiles, "GET", "/v8/management/credentials", "", v8)
+			var entries struct {
+				Files []map[string]any `json:"files"`
+			}
+			if errDecode := json.Unmarshal(list.Body.Bytes(), &entries); errDecode != nil {
+				t.Fatal(errDecode)
+			}
+			if len(entries.Files) != 2 {
+				t.Fatalf("mixed provider list lost entries: %s", list.Body)
+			}
+			for _, entry := range entries.Files {
+				_, hasUsage := entry["claude_usage"]
+				if hasUsage != (v8 && entry["provider"] == "claude") {
+					t.Fatalf("incorrect provider cache projection: %v", entry)
+				}
+			}
 			if strings.Contains(list.Body.String(), `"claude_usage"`) != v8 {
 				t.Fatalf("list v8=%v: %s", v8, list.Body)
 			}
@@ -163,7 +277,7 @@ func TestClaudeCachedUsageRoutesAndList(t *testing.T) {
 		ctx, _ := gin.CreateTestContext(rec)
 		ctx.Set(ConfigV8ContextKey, true)
 		ctx.Request = httptest.NewRequest(http.MethodGet, "/v8/management/plugins/claude/quota", nil)
-		if h.serveCachedClaudeAPICall(ctx, seat) || h.serveCachedClaudePluginQuota(ctx, seat) {
+		if h.serveCachedClaudeAPICall(ctx, seat) || h.serveCachedClaudePluginQuota(ctx, seat, host, "claude") {
 			t.Fatal("disabled feature intercepted upstream request")
 		}
 	})

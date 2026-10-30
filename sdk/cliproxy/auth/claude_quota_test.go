@@ -1251,7 +1251,7 @@ func TestClaudeQuotaExpiryPublishesWhilePollsFail(t *testing.T) {
 		reg.UnregisterClient(b)
 		reg.RegisterClient(a, "claude", []*registry.ModelInfo{{ID: quotaFable}})
 		cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
-		cfg.Claude.Quota.PollInterval = "15s"
+		cfg.Claude.Quota.PollInterval = "1m"
 		m.SetConfig(cfg)
 		store := &recordingCooldownStateStore{}
 		m.SetCooldownStateStore(store)

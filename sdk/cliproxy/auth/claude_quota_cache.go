@@ -12,7 +12,14 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const claudeQuotaMinimumPollInterval = time.Minute
+const claudeQuotaMinimumPollInterval = internalconfig.ClaudeQuotaMinimumPollInterval
+
+func (m *Manager) wakeClaudeQuotaPoll() {
+	select {
+	case m.quotaPollWake <- struct{}{}:
+	default:
+	}
+}
 
 type claudeQuotaPollSeat struct {
 	lastAttempt time.Time
@@ -181,6 +188,7 @@ func (m *Manager) reserveClaudeQuotaPoll(ctx context.Context, cfg *internalconfi
 		m.mu.Lock()
 		seat.running = false
 		m.mu.Unlock()
+		m.wakeClaudeQuotaPoll()
 	}, true
 }
 

@@ -17,6 +17,7 @@ h2 { font-size: 1rem; margin-top: 0; } progress { width: 100%; accent-color: #38
 </style>
 <h1>Claude seats</h1>
 <p class="muted">Usage from the hub’s latest observations. Updates every 60 seconds.</p>
+<p class="muted">Refresh shares each seat’s scheduled poll slot, at most once a minute. The next eligible time is a lower bound while other seats are waiting.</p>
 <form id="login">
 <label for="key">Management key</label>
 <input id="key" type="password" autocomplete="off" required>
@@ -42,11 +43,16 @@ const node = (tag, text, parent, className) => {
 };
 const date = value => value ? new Date(value).toLocaleString() : 'unknown';
 async function request(path, body) {
+  const current = revision;
   const response = await fetch('/v8/management/' + path, {
     method: body ? 'POST' : 'GET', cache: 'no-store', credentials: 'omit',
     headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
     ...(body ? { body: JSON.stringify(body) } : {})
   });
+  if (response.status === 401 || response.status === 403) {
+    if (current === revision) lockView('Management key rejected or access denied (' + response.status + '). Enter a valid key to retry.');
+    throw new Error('Management access denied.');
+  }
   if (!response.ok) throw new Error('Management request failed (' + response.status + ').');
   return response.json();
 }
@@ -103,9 +109,10 @@ login.onsubmit = event => {
   event.preventDefault(); revision++; key = keyInput.value; keyInput.value = '';
   clearInterval(timer); void load(); timer = setInterval(load, 60000);
 };
-logout.onclick = () => {
-  revision++; key = ''; clearInterval(timer); seats.replaceChildren(); status.textContent = '';
+function lockView(message = '') {
+  revision++; key = ''; keyInput.value = ''; clearInterval(timer); seats.replaceChildren(); status.textContent = message;
   login.hidden = false; logout.hidden = true; keyInput.focus();
-};
+}
+logout.onclick = () => lockView();
 </script>
 </html>

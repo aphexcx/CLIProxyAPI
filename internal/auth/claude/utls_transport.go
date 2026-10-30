@@ -18,6 +18,9 @@ import (
 )
 
 type claudeRefreshHandshakeTimeoutContextKey struct{}
+type claudeUsageConnectTimeoutContextKey struct{}
+
+const claudeUsageConnectTimeout = 10 * time.Second
 
 var claudeOAuthRefreshHeaderOrder = []string{
 	"Accept",
@@ -199,6 +202,13 @@ func newUtlsRoundTripper(cfg *config.SDKConfig) *utlsRoundTripper {
 }
 
 func (t *utlsRoundTripper) dialTLSContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	// Bound connection acquisition only. The request context and established
+	// socket retain no deadline, including response headers and body reads.
+	if timeout, _ := ctx.Value(claudeUsageConnectTimeoutContextKey{}).(time.Duration); timeout > 0 {
+		var cancelConnect context.CancelFunc
+		ctx, cancelConnect = context.WithTimeout(ctx, timeout)
+		defer cancelConnect()
+	}
 	var (
 		conn net.Conn
 		err  error

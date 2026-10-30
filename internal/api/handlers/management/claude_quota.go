@@ -1,17 +1,21 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
-	"math"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
+
+const staleClaudeUsageMessage = "Cached Claude usage is stale or not polled yet; open /claude-seats.html to view retained usage and its poll age."
 
 // claudeUsagePayload retains the OAuth usage shape understood by the panel.
 // It adds freshness and diagnostics, without inventing absent plan/billing data.
@@ -101,7 +105,7 @@ func (h *Handler) serveCachedClaudeAPICall(c *gin.Context, auth *coreauth.Auth) 
 		// The existing panel stamps successful API calls as freshly observed,
 		// ignoring cache timestamps. Do not report stale usage as a new success.
 		status = http.StatusServiceUnavailable
-		payload["error"] = gin.H{"message": "Cached Claude usage is stale or not polled yet; open /claude-seats.html to view retained usage and its poll age."}
+		payload["error"] = gin.H{"message": staleClaudeUsageMessage}
 	}
 	body, errMarshal := json.Marshal(payload)
 	if errMarshal != nil {
@@ -113,7 +117,7 @@ func (h *Handler) serveCachedClaudeAPICall(c *gin.Context, auth *coreauth.Auth) 
 	return true
 }
 
-func (h *Handler) serveCachedClaudePluginQuota(c *gin.Context, auth *coreauth.Auth) bool {
+func (h *Handler) serveCachedClaudePluginQuota(c *gin.Context, auth *coreauth.Auth, host *pluginhost.Host, pluginID string) bool {
 	if !c.GetBool(ConfigV8ContextKey) {
 		return false
 	}
@@ -121,19 +125,45 @@ func (h *Handler) serveCachedClaudePluginQuota(c *gin.Context, auth *coreauth.Au
 	if !ok {
 		return false
 	}
-	payload := claudeUsagePayload(snapshot)
-	groups := make([]pluginapi.QuotaGroup, 0, len(snapshot.Windows))
-	names := make([]string, 0, len(snapshot.Windows))
-	for name := range snapshot.Windows {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		window := snapshot.Windows[name]
-		groups = append(groups, pluginapi.QuotaGroup{DisplayName: name, Buckets: []pluginapi.QuotaBucket{{Window: name, RemainingFraction: math.Max(0, 1-window.Utilization/100), ResetTime: window.ResetsAt.Format(time.RFC3339Nano)}}})
-	}
-	payload["groups"] = groups
 	c.Header("Cache-Control", "no-store")
+	if snapshot.Stale {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"message": staleClaudeUsageMessage}})
+		return true
+	}
+	payload := claudeUsagePayload(snapshot)
+	body, errMarshal := json.Marshal(payload)
+	if errMarshal != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot encode cached Claude usage"})
+		return true
+	}
+	// Let the selected plugin keep its subscription, summary and bucket semantics.
+	// Its HTTP client can only read this snapshot; no request can reach upstream.
+	normalized, handled, errNormalize := host.FetchQuotaByPlugin(c.Request.Context(), pluginID, pluginapi.QuotaFetchRequest{
+		AuthIndex: auth.Index, AuthID: auth.ID, Provider: auth.Provider, Metadata: auth.Metadata, Attributes: auth.Attributes,
+		HTTPClient: cachedClaudeQuotaClient{body: body},
+	})
+	if !handled || errNormalize != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "cannot normalize cached Claude usage"})
+		return true
+	}
+	payload["groups"], payload["subscription"], payload["summary"] = normalized.Groups, normalized.Subscription, normalized.Summary
+	payload["serverTimeOffsetMs"] = normalized.ServerTimeOffsetMs
 	c.JSON(http.StatusOK, payload)
 	return true
+}
+
+type cachedClaudeQuotaClient struct{ body []byte }
+
+func (client cachedClaudeQuotaClient) Do(ctx context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+	if errContext := ctx.Err(); errContext != nil {
+		return pluginapi.HTTPResponse{}, errContext
+	}
+	if req.Method != http.MethodGet || req.URL != claude.UsageURL {
+		return pluginapi.HTTPResponse{}, errors.New("only the cached Claude usage request is available")
+	}
+	return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Headers: http.Header{"Content-Type": {"application/json"}}, Body: append([]byte(nil), client.body...)}, nil
+}
+
+func (cachedClaudeQuotaClient) DoStream(context.Context, pluginapi.HTTPRequest) (pluginapi.HTTPStreamResponse, error) {
+	return pluginapi.HTTPStreamResponse{}, errors.New("cached Claude usage does not support streaming")
 }

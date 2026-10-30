@@ -2,11 +2,65 @@ package pluginhost
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
+
+type cachedQuotaTestClient struct {
+	calls, streams int
+}
+
+func (c *cachedQuotaTestClient) Do(context.Context, pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+	c.calls++
+	return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"cached":true}`)}, nil
+}
+
+func (c *cachedQuotaTestClient) DoStream(context.Context, pluginapi.HTTPRequest) (pluginapi.HTTPStreamResponse, error) {
+	c.streams++
+	return pluginapi.HTTPStreamResponse{}, errors.New("cached streaming disabled")
+}
+
+func TestQuotaSuppliedHTTPClientReachesHostCallbacks(t *testing.T) {
+	host := New()
+	client := &cachedQuotaTestClient{}
+	provider := &testQuotaProvider{identifier: "claude", fetchFn: func(ctx context.Context, req pluginapi.QuotaFetchRequest) (pluginapi.QuotaFetchResponse, error) {
+		if req.HTTPClient != client {
+			t.Fatal("native plugin lost supplied HTTP client")
+		}
+		// RPC plugins register the fetch context, then send HTTP callbacks using
+		// its ID. These calls must not construct a new network client.
+		callbackID, closeCallback := host.openCallbackContext(ctx)
+		defer closeCallback()
+		request, errMarshal := json.Marshal(rpcHostHTTPRequest{HostCallbackID: callbackID, Method: http.MethodGet, URL: "https://cache.invalid/usage"})
+		if errMarshal != nil {
+			t.Fatal(errMarshal)
+		}
+		body, errCall := host.callFromPlugin(context.Background(), pluginabi.MethodHostHTTPDo, request)
+		if errCall != nil {
+			t.Fatal(errCall)
+		}
+		response, errDecode := decodeRPCEnvelope[pluginapi.HTTPResponse](body)
+		if errDecode != nil || string(response.Body) != `{"cached":true}` {
+			t.Fatalf("callback body=%s err=%v", body, errDecode)
+		}
+		if _, errStream := host.callFromPlugin(context.Background(), pluginabi.MethodHostHTTPDoStream, request); errStream == nil || errStream.Error() != "cached streaming disabled" {
+			t.Fatalf("stream escaped cached client: %v", errStream)
+		}
+		return pluginapi.QuotaFetchResponse{}, nil
+	}}
+	host.RegisterPluginForTest("claude", pluginapi.Plugin{Capabilities: pluginapi.Capabilities{QuotaProvider: provider}})
+	if _, handled, errFetch := host.FetchQuotaByPlugin(context.Background(), "claude", pluginapi.QuotaFetchRequest{Provider: "claude", HTTPClient: client}); !handled || errFetch != nil {
+		t.Fatalf("handled=%v err=%v", handled, errFetch)
+	}
+	if client.calls != 1 || client.streams != 1 {
+		t.Fatalf("callbacks not routed: %+v", client)
+	}
+}
 
 type testQuotaProvider struct {
 	identifier string

@@ -79,13 +79,13 @@ func TestClaudeQuotaCacheRefreshSharesMinuteBudgetAndRetainsFailures(t *testing.
 }
 
 func TestClaudeQuotaFleetPollsAreStaggeredAndClicksDoNotAddCalls(t *testing.T) {
-	for _, size := range []int{11, 300} {
+	for _, size := range []int{11, 300, 1000} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				m := NewManager(nil, nil, nil)
 				cfg := &config.Config{RequestRetry: 3}
 				cfg.Claude.Quota.Enabled = true
-				cfg.Claude.Quota.PollInterval = "15s" // Old configs still obey the one-minute floor.
+				cfg.Claude.Quota.PollInterval = "1m"
 				m.SetConfig(cfg)
 				for i := range size {
 					if _, errRegister := m.Register(context.Background(), &Auth{ID: fmt.Sprintf("seat-%02d", i), Provider: "claude", Status: StatusActive, Metadata: map[string]any{"access_token": "test"}}); errRegister != nil {
@@ -104,9 +104,15 @@ func TestClaudeQuotaFleetPollsAreStaggeredAndClicksDoNotAddCalls(t *testing.T) {
 				}})
 				m.StartQuotaPolling(context.Background())
 				t.Cleanup(m.StopQuotaPolling)
-				for range 130 {
+				for elapsed := range 130 {
 					synctest.Wait()
 					for _, auth := range m.List() {
+						if elapsed == 120 {
+							cached, ok := m.ClaudeQuotaCached(auth.ID)
+							if !ok || cached.Stale || cached.PolledAt == nil {
+								t.Fatalf("seat %s not fresh at the 120s threshold: %+v", auth.ID, cached)
+							}
+						}
 						m.RequestClaudeQuotaPoll(auth.ID)
 					}
 					<-time.After(time.Second)

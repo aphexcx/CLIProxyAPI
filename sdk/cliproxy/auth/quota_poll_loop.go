@@ -82,8 +82,9 @@ func (m *Manager) restartQuotaPollingLocked() {
 }
 
 func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
+	launch := time.NewTimer(time.Hour)
+	launch.Stop()
+	defer launch.Stop()
 	expiry := time.NewTimer(time.Hour)
 	expiry.Stop()
 	defer expiry.Stop()
@@ -155,8 +156,13 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 			}()
 		}
 	}
-	poll()
 	for {
+		poll()
+		var launchC <-chan time.Time
+		if next := m.nextClaudeQuotaPoll(); !next.IsZero() {
+			launch.Reset(time.Until(next))
+			launchC = launch.C
+		}
 		var expiryC <-chan time.Time
 		if next := m.nextClaudeQuotaExpiry(); !next.IsZero() {
 			expiry.Reset(time.Until(next))
@@ -169,16 +175,50 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 			m.expireClaudeQuotaState(ctx)
 		case <-m.quotaPollWake:
 			// A response installed an earlier expiry or a refresh queued a poll.
-			poll()
 		case finished := <-completed:
 			if running[finished.auth.ID] == finished {
 				delete(running, finished.auth.ID)
 			}
-		case <-ticker.C:
-			poll()
+		case <-launchC:
 		}
+		launch.Stop()
 		expiry.Stop()
 	}
+}
+
+// Wake at the earliest eligible launch, including sub-250ms fleet spacing.
+// With N seats the launch rate scales to N/minute, plus at most 10% jitter;
+// a healthy rotation therefore fits inside the cache's extra minute of grace.
+func (m *Manager) nextClaudeQuotaPoll() time.Time {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var next time.Time
+	for _, auth := range m.auths {
+		if !claudeQuotaEligible(auth) {
+			continue
+		}
+		executor, _ := m.executorLocked(auth.Provider)
+		if _, ok := executor.(QuotaPoller); !ok {
+			continue
+		}
+		due := time.Now()
+		if seat := m.quotaPollSeats[auth.ID]; seat != nil {
+			if seat.running {
+				continue
+			}
+			due = seat.nextPoll
+			if floor := seat.lastAttempt.Add(claudeQuotaMinimumPollInterval); due.Before(floor) {
+				due = floor
+			}
+		}
+		if due.Before(m.quotaNextStart) {
+			due = m.quotaNextStart
+		}
+		if next.IsZero() || due.Before(next) {
+			next = due
+		}
+	}
+	return next
 }
 
 func sameClaudeQuotaCredential(current, base *Auth) bool {
