@@ -4,6 +4,8 @@ This directory is a Git subtree of
 https://github.com/router-for-me/Cli-Proxy-API-Management-Center at
 `64b4f5aed19b8f791eb21eb9e785ea379ea05b44`. The import preserves the upstream
 history and license. Local changes consume the hub's v8 Claude usage cache.
+The imported nested `AGENTS.md` is excluded from the final tree to comply with
+the fork's pull-request path guard; the repository's root guidance applies.
 
 From the repository root, with Node 24 and pnpm available, run:
 
