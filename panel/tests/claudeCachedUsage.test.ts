@@ -35,6 +35,16 @@ const seat: AuthFileItem = {
   authIndex: 'fixture-index',
   claude_usage: usage,
 };
+const restartedUsage: ClaudeCachedUsage = {
+  status: 'not_polled_yet',
+  stale: true,
+  polled_at: null,
+  age_seconds: null,
+  next_poll_at: '2026-10-30T12:02:00Z',
+  refreshing: false,
+  last_status: 0,
+  last_poll_at: null,
+};
 const classes = bindQuotaClasses(
   Object.fromEntries(QUOTA_CLASS_KEYS.map((key) => [key, key])),
   'test'
@@ -142,6 +152,127 @@ describe('Claude list ingestion and no-click rendering', () => {
     expect(html).toContain('Last poll failed (429)');
     expect(html).toContain('Cached usage is stale');
   });
+
+  test.each([429, 0])(
+    'a failed poll after a restart retains usage and accepts diagnostics and refresh (%s)',
+    async (last_status) => {
+      const get = spyOn(apiClient, 'get').mockResolvedValue({ files: [seat] });
+      await authFilesApi.list();
+      const windows = state().windows;
+      get.mockResolvedValue({ files: [{ ...seat, claude_usage: restartedUsage }] });
+      await authFilesApi.list();
+      const failed = {
+        ...restartedUsage,
+        last_status,
+        last_poll_at: '2026-10-30T12:01:00Z',
+      };
+      get.mockResolvedValue({ files: [{ ...seat, claude_usage: failed }] });
+      await authFilesApi.list();
+      expect(state().windows).toBe(windows);
+      expect(state().observedAt).toBe(polledAt);
+      expect(state().serverCache?.lastStatus).toBe(last_status);
+      expect(state().serverCache?.lastPollAt).toBe(failed.last_poll_at);
+      expect(state().stale).toBe(true);
+      expect(render()).toContain('58%');
+      expect(render()).toContain('75%');
+      expect(render()).toContain('Cached usage is stale');
+      expect(render()).toContain(`Last poll failed (${last_status || 'no HTTP response'})`);
+
+      const post = spyOn(apiClient, 'post').mockResolvedValue({ ...failed, refreshing: true });
+      const setQuota = useQuotaStore.getState().setClaudeQuota;
+      const key = getQuotaCacheKey(seat);
+      setQuota({ [key]: CLAUDE_CONFIG.buildLoadingState() });
+      setQuota({
+        [key]: CLAUDE_CONFIG.buildSuccessState(
+          await CLAUDE_CONFIG.fetchQuota(seat, translations.t)
+        ),
+      });
+      expect(state().status).toBe('success');
+      expect(state().windows).toBe(windows);
+      expect(render()).toContain('Refresh queued or in progress');
+      expect(state().serverCache?.lastStatus).toBe(last_status);
+      expect(post).toHaveBeenCalledWith('/credentials/quota', { auth_index: 'fixture-index' });
+
+      const recovered = {
+        ...usage,
+        polled_at: '2026-10-30T12:02:03Z',
+        last_poll_at: '2026-10-30T12:02:00Z',
+        five_hour: { ...usage.five_hour, utilization: 60 },
+      };
+      get.mockResolvedValue(recovered);
+      setQuota({
+        [key]: CLAUDE_CONFIG.buildSuccessState(await readClaudeQuota(seat, translations.t)),
+      });
+      expect(state().observedAt).toBe(recovered.polled_at);
+      expect(state().windows[0].usedPercent).toBe(60);
+      expect(state().stale).toBe(false);
+      expect(render()).not.toContain('Last poll failed');
+      expect(render()).not.toContain('Waiting for the first usage poll');
+    }
+  );
+
+  test.each(['pending', 'running', 'paused'] as const)(
+    'a restart shows %s diagnostics alongside retained windows',
+    async (kind) => {
+      const get = spyOn(apiClient, 'get').mockResolvedValue({ files: [seat] });
+      await authFilesApi.list();
+      const windows = state().windows;
+      get.mockResolvedValue({
+        files: [
+          {
+            ...seat,
+            claude_usage: {
+              ...restartedUsage,
+              status: kind === 'paused' ? 'polling_paused' : 'not_polled_yet',
+              refreshing: kind === 'running',
+              last_poll_at: kind === 'running' ? '2026-10-30T12:01:00Z' : null,
+              next_poll_at: kind === 'paused' ? null : restartedUsage.next_poll_at,
+            },
+          },
+        ],
+      });
+      await authFilesApi.list();
+      expect(state().windows).toBe(windows);
+      expect(state().observedAt).toBe(polledAt);
+      expect(state().stale).toBe(true);
+      expect(render()).toContain('58%');
+      expect(render()).toContain('Waiting for the first usage poll');
+      expect(render()).toContain('Cached usage is stale');
+      expect(render()).not.toContain('Last poll failed');
+      if (kind === 'running') expect(render()).toContain('Refresh queued or in progress');
+      if (kind === 'paused') expect(render()).toContain('Polling paused');
+    }
+  );
+
+  test.each([usage, restartedUsage])(
+    'a delayed response cannot replace newer restart diagnostics (%j)',
+    async (delayed) => {
+      const get = spyOn(apiClient, 'get').mockResolvedValue({ files: [seat] });
+      await authFilesApi.list();
+      const inFlight = Promise.withResolvers<AuthFilesResponse>();
+      get.mockReturnValueOnce(inFlight.promise);
+      const old = authFilesApi.list();
+      get.mockResolvedValue({
+        files: [
+          {
+            ...seat,
+            claude_usage: {
+              ...restartedUsage,
+              last_poll_at: '2026-10-30T12:01:00Z',
+              last_status: 429,
+            },
+          },
+        ],
+      });
+      await authFilesApi.list();
+      expect(render()).toContain('Last poll failed (429)');
+      const newest = state();
+      inFlight.resolve({ files: [{ ...seat, claude_usage: delayed }] });
+      await old;
+      expect(state()).toBe(newest);
+      expect(render()).toContain('Last poll failed (429)');
+    }
+  );
 
   test('queued and paused states do not imply a successful refresh', async () => {
     spyOn(apiClient, 'get').mockResolvedValue({

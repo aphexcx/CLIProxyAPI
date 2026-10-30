@@ -33,7 +33,7 @@ export function ClaudeQuotaBody({
     cache?.ageSeconds == null
       ? null
       : Math.max(0, Math.floor(cache.ageSeconds + Math.max(0, now - cache.receivedAtMs) / 1000));
-  const firstPollRunning = !quota.observedAt && cache?.refreshing && cache.lastStatus === 0;
+  const firstPollRunning = !cache?.polledAt && cache?.refreshing && cache.lastStatus === 0;
   const pollFailed =
     cache?.lastPollAt && !firstPollRunning && (cache.lastStatus < 200 || cache.lastStatus >= 300);
   const formatMoney = (value: number | null, currency = 'USD', divisor = 1): string => {
@@ -62,16 +62,15 @@ export function ClaudeQuotaBody({
     <>
       {cache && (
         <div role="status" className={classes.quotaMessage}>
-          {quota.observedAt ? (
+          {quota.observedAt && (
             <div>
               <time dateTime={quota.observedAt}>
                 {new Date(quota.observedAt).toLocaleString(language)}
               </time>
               {age !== null && ` · ${t('claude_quota.cache_age', { seconds: age })}`}
             </div>
-          ) : (
-            <div>{t('claude_quota.cache_pending')}</div>
           )}
+          {!cache.polledAt && <div>{t('claude_quota.cache_pending')}</div>}
           {cache.status === 'polling_paused' && <div>{t('claude_quota.cache_paused')}</div>}
           {cache.refreshing && <div>{t('claude_quota.cache_queued')}</div>}
           {cache.nextPollAt && (

@@ -219,6 +219,8 @@ export interface ClaudeQuotaState {
   stale?: boolean;
   serverCache?: {
     status: 'ok' | 'not_polled_yet' | 'polling_paused';
+    /** Server observation, distinct from locally retained pre-restart usage. */
+    polledAt: string | null;
     ageSeconds: number | null;
     receivedAtMs: number;
     requestSequence: number;

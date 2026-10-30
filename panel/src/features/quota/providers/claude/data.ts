@@ -198,7 +198,7 @@ export const resolveClaudePlanType = (profile: ClaudeProfileResponse | null): st
 };
 
 let requestSequence = 0;
-/** Orders overlapping list and quota requests when the server poll timestamps tie. */
+/** Orders overlapping list and quota requests, including across server cache resets. */
 export const captureClaudeQuotaRequest = () => ++requestSequence;
 
 export const buildCachedClaudeQuota = (
@@ -233,6 +233,7 @@ export const buildCachedClaudeQuota = (
     stale: payload.stale,
     serverCache: {
       status: payload.status,
+      polledAt: payload.polled_at,
       ageSeconds: payload.age_seconds,
       receivedAtMs,
       requestSequence: sequence,

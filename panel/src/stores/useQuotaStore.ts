@@ -69,21 +69,23 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
         const previous = state.claudeQuota[key];
         if (previous?.serverCache && quota.serverCache) {
           const previousPoll = Date.parse(
-            previous.serverCache.lastPollAt ?? previous.observedAt ?? ''
+            previous.serverCache.lastPollAt ?? previous.serverCache.polledAt ?? ''
           );
-          const nextPoll = Date.parse(quota.serverCache.lastPollAt ?? quota.observedAt ?? '');
-          const previousObservation = Date.parse(previous.observedAt ?? '');
-          const nextObservation = Date.parse(quota.observedAt ?? '');
-          const samePoll = previous.serverCache.lastPollAt === quota.serverCache.lastPollAt;
-          const sameObservation = previous.observedAt === quota.observedAt;
+          const nextPoll = Date.parse(
+            quota.serverCache.lastPollAt ?? quota.serverCache.polledAt ?? ''
+          );
+          const previousObservation = Date.parse(previous.serverCache.polledAt ?? '');
+          const nextObservation = Date.parse(quota.serverCache.polledAt ?? '');
+          // Null timestamps can be a newer server cache after a restart. Order
+          // those diagnostics by request sequence, not the retained display time.
           if (
+            quota.serverCache.requestSequence < previous.serverCache.requestSequence ||
             (Number.isFinite(previousPoll) &&
-              (!Number.isFinite(nextPoll) || nextPoll < previousPoll)) ||
+              Number.isFinite(nextPoll) &&
+              nextPoll < previousPoll) ||
             (Number.isFinite(previousObservation) &&
-              (!Number.isFinite(nextObservation) || nextObservation < previousObservation)) ||
-            (samePoll &&
-              sameObservation &&
-              quota.serverCache.requestSequence < previous.serverCache.requestSequence)
+              Number.isFinite(nextObservation) &&
+              nextObservation < previousObservation)
           ) {
             if (retained === next) retained = { ...next };
             // A coalesced request can finish after a newer list snapshot was
@@ -99,7 +101,9 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
         if (
           previous &&
           quota !== previous &&
-          (quota.status === 'loading' || quota.status === 'error') &&
+          (quota.status === 'loading' ||
+            quota.status === 'error' ||
+            quota.serverCache?.polledAt === null) &&
           !quota.observedAt &&
           (previous.serverCache ||
             previous.observedAt ||
@@ -114,9 +118,10 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
             extraUsage: previous.extraUsage,
             dollarWindows: previous.dollarWindows,
             observedAt: previous.observedAt,
-            serverCache: previous.serverCache,
+            serverCache: quota.serverCache ?? previous.serverCache,
             planType: previous.planType,
-            stale: quota.status === 'error' || previous.stale,
+            stale:
+              quota.serverCache?.polledAt === null || quota.status === 'error' || previous.stale,
           };
         }
       }
