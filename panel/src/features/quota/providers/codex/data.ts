@@ -62,6 +62,7 @@ type CodexResetCreditsData = {
 
 export type CodexQuotaData = {
   optionalMetadataSequence?: number;
+  resetCreditsConfirmedForPoll?: string | null;
   usageResetCredits?: CodexUsagePayload['rate_limit_reset_credits'];
   observedAt?: string | null;
   stale?: boolean;
@@ -522,6 +523,7 @@ export const buildCachedCodexQuota = (
   const previous = useQuotaStore.getState().codexQuota[getQuotaCacheKey(file)];
   return {
     optionalMetadataSequence: previous?.optionalMetadataSequence,
+    resetCreditsConfirmedForPoll: previous?.resetCreditsConfirmedForPoll,
     usageResetCredits: payload.rate_limit_reset_credits ?? payload.rateLimitResetCredits,
     windows,
     planType:
@@ -648,20 +650,39 @@ const enrichCodexQuota = async (
     fetchCodexResetCredits(authIndex, headers, t),
   ]);
   const usageResetCredits = normalizeCodexResetCreditsPayload(data.usageResetCredits);
+  const detailsCount =
+    credits.availableCount ?? (credits.credits.length > 0 ? credits.credits.length : null);
+  const previous = useQuotaStore.getState().codexQuota[getQuotaCacheKey(file)];
+  const confirmedForPoll = previous?.resetCreditsConfirmedForPoll;
+  const polledAt = data.serverCache.polledAt;
+  // A summary from the same or an older poll cannot undo confirmed credit details.
+  // Compare server poll timestamps rather than relying on the browser's clock.
+  const preserveConfirmed =
+    detailsCount === null &&
+    previous?.rateLimitResetCreditsAvailableCount != null &&
+    confirmedForPoll !== undefined &&
+    (confirmedForPoll === polledAt ||
+      (confirmedForPoll && polledAt && Date.parse(polledAt) <= Date.parse(confirmedForPoll)));
   const availableCount =
-    credits.availableCount ??
-    (credits.credits.length > 0 ? credits.credits.length : null) ??
-    usageResetCredits.availableCount;
+    detailsCount ??
+    (preserveConfirmed
+      ? previous.rateLimitResetCreditsAvailableCount!
+      : usageResetCredits.availableCount);
   return {
     ...data,
     optionalMetadataSequence,
+    resetCreditsConfirmedForPoll:
+      detailsCount !== null ? polledAt : preserveConfirmed ? confirmedForPoll : undefined,
     subscriptionActiveUntil: subscription ?? data.subscriptionActiveUntil,
     rateLimitResetCreditsAvailableCount: availableCount,
-    rateLimitResetCreditsApplicableAvailableCount:
-      usageResetCredits.applicableAvailableCount ??
-      credits.applicableAvailableCount ??
-      availableCount,
-    rateLimitResetCredits: credits.credits,
+    rateLimitResetCreditsApplicableAvailableCount: preserveConfirmed
+      ? (previous.rateLimitResetCreditsApplicableAvailableCount ?? availableCount)
+      : (usageResetCredits.applicableAvailableCount ??
+        credits.applicableAvailableCount ??
+        availableCount),
+    rateLimitResetCredits: preserveConfirmed
+      ? (previous.rateLimitResetCredits ?? [])
+      : credits.credits,
     rateLimitResetCreditsError: credits.error,
   };
 };
@@ -748,6 +769,7 @@ export const CODEX_CONFIG: QuotaProviderData<CodexQuotaState, CodexQuotaData> = 
   buildSuccessState: (data) => ({
     status: 'success',
     optionalMetadataSequence: data.optionalMetadataSequence,
+    resetCreditsConfirmedForPoll: data.resetCreditsConfirmedForPoll,
     observedAt: data.observedAt,
     stale: data.stale,
     serverCache: data.serverCache,

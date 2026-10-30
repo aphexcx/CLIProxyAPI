@@ -285,6 +285,57 @@ describe('Codex cached usage', () => {
     }
   );
 
+  test('a failed details read cannot restore consumed credits from the same cached poll', async () => {
+    let cachedUsage = {
+      ...usage,
+      rate_limit_reset_credits: { available_count: 1, applicable_available_count: 1 },
+    };
+    spyOn(apiClient, 'get').mockImplementation(async () => ({
+      files: [{ ...seat, codex_usage: cachedUsage }],
+    }));
+    spyOn(apiClient, 'post').mockImplementation(async (url) =>
+      url === '/credentials/quota'
+        ? cachedUsage
+        : { status: 'ok', auth_index: 'fixture', models: [] }
+    );
+    let failDetails = false;
+    spyOn(apiCallApi, 'request').mockImplementation(async (request) => ({
+      statusCode: failDetails ? 503 : 200,
+      header: {},
+      body: request.url.endsWith('/consume')
+        ? { code: 'reset' }
+        : { available_count: 0, applicable_available_count: 0, credits: [] },
+      bodyText: '',
+    }));
+    const save = (data: Awaited<ReturnType<typeof CODEX_CONFIG.fetchQuota>>) =>
+      useQuotaStore.getState().setCodexQuota({
+        [getQuotaCacheKey(seat)]: CODEX_CONFIG.buildSuccessState(data),
+      });
+    await authFilesApi.list();
+    save(await CODEX_CONFIG.resetQuota!(seat, translations.t));
+    expect(state().rateLimitResetCreditsAvailableCount).toBe(0);
+    failDetails = true;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await authFilesApi.list();
+      const data = await CODEX_CONFIG.fetchQuota(seat, translations.t);
+      save(await CODEX_CONFIG.enrichQuota!(seat, data, translations.t));
+      expect(state().rateLimitResetCreditsAvailableCount).toBe(0);
+      expect(CODEX_CONFIG.canResetQuota!(state())).toBe(false);
+      expect(state().rateLimitResetCreditsError).not.toBe('');
+    }
+    cachedUsage = {
+      ...cachedUsage,
+      polled_at: '2026-10-30T12:02:00Z',
+      last_poll_at: '2026-10-30T12:02:00Z',
+      rate_limit_reset_credits: { available_count: 2, applicable_available_count: 1 },
+    };
+    await authFilesApi.list();
+    const newer = await CODEX_CONFIG.fetchQuota(seat, translations.t);
+    save(await CODEX_CONFIG.enrichQuota!(seat, newer, translations.t));
+    expect(state().rateLimitResetCreditsAvailableCount).toBe(2);
+    expect(CODEX_CONFIG.canResetQuota!(state())).toBe(true);
+  });
+
   test('manual refresh replaces native metadata and consuming the final credit removes reset', async () => {
     const get = spyOn(apiClient, 'get').mockResolvedValue({ files: [seat] });
     await authFilesApi.list();
