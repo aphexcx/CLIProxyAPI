@@ -67,12 +67,31 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
       let retained = next;
       for (const [key, quota] of Object.entries(next)) {
         const previous = state.claudeQuota[key];
+        if (previous?.serverCache && quota.serverCache) {
+          const previousPoll = Date.parse(
+            previous.serverCache.lastPollAt ?? previous.observedAt ?? ''
+          );
+          const nextPoll = Date.parse(quota.serverCache.lastPollAt ?? quota.observedAt ?? '');
+          if (
+            Number.isFinite(previousPoll) &&
+            (!Number.isFinite(nextPoll) || nextPoll < previousPoll)
+          ) {
+            if (retained === next) retained = { ...next };
+            retained[key] = previous;
+            continue;
+          }
+        }
+        if (previous?.planType && quota.status === 'success' && quota.planType === undefined) {
+          if (retained === next) retained = { ...next };
+          retained[key] = { ...quota, planType: previous.planType };
+        }
         if (
           previous &&
           quota !== previous &&
           (quota.status === 'loading' || quota.status === 'error') &&
           !quota.observedAt &&
-          (previous.observedAt ||
+          (previous.serverCache ||
+            previous.observedAt ||
             previous.windows.length ||
             previous.extraUsage ||
             previous.dollarWindows?.length)
@@ -84,6 +103,7 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
             extraUsage: previous.extraUsage,
             dollarWindows: previous.dollarWindows,
             observedAt: previous.observedAt,
+            serverCache: previous.serverCache,
             planType: previous.planType,
             stale: quota.status === 'error' || previous.stale,
           };

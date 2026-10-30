@@ -28,6 +28,12 @@ export function ClaudeQuotaBody({
   const extraUsage = quota.extraUsage ?? null;
   const planType = quota.planType ?? null;
   const language = i18n.resolvedLanguage;
+  const cache = quota.serverCache;
+  const age =
+    cache?.ageSeconds == null
+      ? null
+      : Math.max(0, Math.floor(cache.ageSeconds + Math.max(0, now - cache.receivedAtMs) / 1000));
+  const pollFailed = cache?.lastPollAt && (cache.lastStatus < 200 || cache.lastStatus >= 300);
   const formatMoney = (value: number | null, currency = 'USD', divisor = 1): string => {
     if (value === null) return '--';
     try {
@@ -52,7 +58,38 @@ export function ClaudeQuotaBody({
 
   return (
     <>
-      {quota.stale && (
+      {cache && (
+        <div role="status" className={classes.quotaMessage}>
+          {quota.observedAt ? (
+            <div>
+              <time dateTime={quota.observedAt}>
+                {new Date(quota.observedAt).toLocaleString(language)}
+              </time>
+              {age !== null && ` · ${t('claude_quota.cache_age', { seconds: age })}`}
+            </div>
+          ) : (
+            <div>{t('claude_quota.cache_pending')}</div>
+          )}
+          {cache.status === 'polling_paused' && <div>{t('claude_quota.cache_paused')}</div>}
+          {cache.refreshing && <div>{t('claude_quota.cache_queued')}</div>}
+          {cache.nextPollAt && (
+            <div>
+              {t('claude_quota.cache_next', {
+                time: new Date(cache.nextPollAt).toLocaleString(language),
+              })}
+            </div>
+          )}
+          {pollFailed && (
+            <div>
+              {t('claude_quota.cache_failed', {
+                status: cache.lastStatus || t('claude_quota.cache_no_response'),
+              })}
+            </div>
+          )}
+          {quota.stale && quota.observedAt && <div>{t('claude_quota.cache_stale')}</div>}
+        </div>
+      )}
+      {quota.stale && !cache && (
         <div role="status" className={classes.codexResetCreditsError}>
           {t('claude_quota.stale_snapshot', {
             time: quota.observedAt ? new Date(quota.observedAt).toLocaleString(language) : '--',
@@ -156,7 +193,9 @@ export function ClaudeQuotaBody({
         );
       })}
       {windows.length === 0 && !extraUsage && !quota.dollarWindows?.length ? (
-        <div className={classes.quotaMessage}>{t('claude_quota.empty_windows')}</div>
+        cache && !quota.observedAt ? null : (
+          <div className={classes.quotaMessage}>{t('claude_quota.empty_windows')}</div>
+        )
       ) : (
         windows.map((window, index) => {
           const used = window.usedPercent;

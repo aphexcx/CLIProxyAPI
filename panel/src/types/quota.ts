@@ -217,6 +217,15 @@ export interface ClaudeQuotaState {
   dollarWindows?: ClaudeDollarWindow[];
   observedAt?: string | null;
   stale?: boolean;
+  serverCache?: {
+    status: 'ok' | 'not_polled_yet' | 'polling_paused';
+    ageSeconds: number | null;
+    receivedAtMs: number;
+    nextPollAt: string | null;
+    refreshing: boolean;
+    lastStatus: number;
+    lastPollAt: string | null;
+  };
   planType?: string | null;
   error?: string;
   errorStatus?: number;
