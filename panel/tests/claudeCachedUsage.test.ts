@@ -274,6 +274,86 @@ describe('Claude list ingestion and no-click rendering', () => {
     }
   );
 
+  test.each([restartedUsage, usage])(
+    'restart cache accepts header usage before a successful poll (%j)',
+    async (initial) => {
+      const get = spyOn(apiClient, 'get').mockResolvedValue({
+        files: [{ ...seat, claude_usage: initial }],
+      });
+      await authFilesApi.list();
+      for (const utilization of [44, 55]) {
+        get.mockResolvedValue({
+          files: [
+            {
+              ...seat,
+              claude_usage: {
+                ...restartedUsage,
+                five_hour: { ...usage.five_hour, utilization },
+              },
+            },
+          ],
+        });
+        await authFilesApi.list();
+        expect(state().windows[0].usedPercent).toBe(utilization);
+        expect(state().serverCache?.polledAt).toBeNull();
+        expect(state().stale).toBe(true);
+        expect(render()).toContain(`${100 - utilization}%`);
+        expect(render()).toContain('Waiting for the first usage poll');
+      }
+    }
+  );
+
+  test.each([false, true])(
+    'pending refresh enriches only its accepted merged state (superseded: %s)',
+    async (superseded) => {
+      const get = spyOn(apiClient, 'get').mockResolvedValue({ files: [seat] });
+      await authFilesApi.list();
+      spyOn(apiClient, 'post').mockResolvedValue({ ...restartedUsage, refreshing: true });
+      const profile = Promise.withResolvers<Awaited<ReturnType<typeof apiCallApi.request>>>();
+      const request = spyOn(apiCallApi, 'request').mockReturnValue(profile.promise);
+      const setQuota = useQuotaStore.getState().setClaudeQuota;
+      const key = getQuotaCacheKey(seat);
+      const adapter = { ...CLAUDE_CONFIG, Body: ClaudeQuotaBody } as unknown as QuotaAdapter;
+      setQuota({ [key]: CLAUDE_CONFIG.buildLoadingState() });
+      const data = await CLAUDE_CONFIG.fetchQuota(seat, translations.t);
+      const success = CLAUDE_CONFIG.buildSuccessState(data);
+      setQuota({ [key]: success });
+      const enriching = enrichQuotaInBackground(adapter, seat, data, success, translations.t);
+      expect(request).toHaveBeenCalledTimes(1);
+      if (superseded) {
+        get.mockResolvedValue({
+          files: [
+            {
+              ...seat,
+              claude_usage: {
+                ...restartedUsage,
+                last_status: 429,
+                last_poll_at: '2026-10-30T12:01:00Z',
+              },
+            },
+          ],
+        });
+        await authFilesApi.list();
+      }
+      const accepted = state();
+      profile.resolve({
+        statusCode: 200,
+        header: {},
+        body: { account: { has_claude_pro: true } },
+        bodyText: '',
+      });
+      await enriching;
+      expect(state().windows).toBe(accepted.windows);
+      expect(state().serverCache).toBe(accepted.serverCache);
+      expect(state().stale).toBe(true);
+      if (superseded) expect(state()).toBe(accepted);
+      else {
+        expect(state().planType).toBe('plan_pro');
+        expect(render()).toContain('Pro');
+      }
+    }
+  );
+
   test('queued and paused states do not imply a successful refresh', async () => {
     spyOn(apiClient, 'get').mockResolvedValue({
       files: [

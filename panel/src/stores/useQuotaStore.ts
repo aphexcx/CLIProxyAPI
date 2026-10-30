@@ -114,12 +114,14 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
           if (retained === next) retained = { ...next };
           retained[key] = {
             ...quota,
-            windows: previous.windows,
-            extraUsage: previous.extraUsage,
-            dollarWindows: previous.dollarWindows,
+            windows: quota.windows.length ? quota.windows : previous.windows,
+            extraUsage: quota.extraUsage ?? previous.extraUsage,
+            dollarWindows: quota.dollarWindows?.length
+              ? quota.dollarWindows
+              : previous.dollarWindows,
             observedAt: previous.observedAt,
             serverCache: quota.serverCache ?? previous.serverCache,
-            planType: previous.planType,
+            planType: quota.planType ?? previous.planType,
             stale:
               quota.serverCache?.polledAt === null || quota.status === 'error' || previous.stale,
           };

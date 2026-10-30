@@ -1,5 +1,5 @@
 import type { TFunction } from 'i18next';
-import type { AuthFileItem } from '@/types';
+import type { AuthFileItem, ClaudeQuotaState } from '@/types';
 import {
   captureQuotaCacheGeneration,
   commitIfQuotaCacheCurrent,
@@ -19,7 +19,18 @@ export async function enrichQuotaInBackground(
   if (!adapter.enrichQuota) return;
   const cacheKey = getQuotaCacheKey(file);
   const currentState = () => adapter.storeSelector(useQuotaStore.getState())[cacheKey];
-  if (currentState() !== expectedState) return;
+  const acceptedState = currentState();
+  if (acceptedState !== expectedState) {
+    // Claude may retain display windows while accepting this exact server
+    // snapshot. Keep identity checks against the merged state during enrichment.
+    const expectedCache =
+      adapter.type === 'claude' ? (expectedState as ClaudeQuotaState).serverCache : undefined;
+    if (
+      !expectedCache ||
+      (acceptedState as ClaudeQuotaState | undefined)?.serverCache !== expectedCache
+    )
+      return;
+  }
   const generation = captureQuotaCacheGeneration(file.name);
 
   try {
@@ -28,7 +39,7 @@ export async function enrichQuotaInBackground(
     commitIfQuotaCacheCurrent(generation, () => {
       const setQuota = useQuotaStore.getState()[adapter.storeSetter] as QuotaMapUpdater;
       setQuota((prev) => {
-        if (prev[cacheKey] !== expectedState) return prev;
+        if (prev[cacheKey] !== acceptedState) return prev;
         return { ...prev, [cacheKey]: adapter.buildSuccessState(enriched) };
       });
     });
