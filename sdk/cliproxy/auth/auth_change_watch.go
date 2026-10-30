@@ -3,8 +3,9 @@ package auth
 // WatchAuthChanges observes structural changes to one runtime credential,
 // including token preparation/refresh, replacement, removal and store reload.
 // Notifications are coalesced: consumers must inspect the latest manager state.
-// The caller must unsubscribe when its work ends. Request result accounting does
-// not notify watchers, so ordinary Generation increments do not invalidate work.
+// The caller must unsubscribe when its work ends. Request result accounting only
+// notifies watchers for Claude quota eligibility transitions; ordinary Generation
+// increments do not invalidate work.
 func (m *Manager) WatchAuthChanges(authID string) (<-chan struct{}, func()) {
 	changes := make(chan struct{}, 1)
 	if m == nil || authID == "" {

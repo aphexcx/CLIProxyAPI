@@ -201,6 +201,116 @@ func TestClaudeQuotaRejectedCredentialCancelsStalledRead(t *testing.T) {
 	})
 }
 
+func TestClaudeQuotaResetRearmsSleepingLoop(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, a, b := newClaudeQuotaManager(t)
+		m.Remove(context.Background(), b)
+		m.mu.Lock()
+		m.auths[a].LastError = &Error{Code: "invalid_grant", Message: "invalid grant"}
+		m.mu.Unlock()
+		var calls atomic.Int64
+		m.RegisterExecutor(&claudeQuotaTestPoller{poll: func(context.Context, *Auth) (map[string]QuotaWindow, error) {
+			calls.Add(1)
+			return nil, nil
+		}})
+		m.StartQuotaPolling(context.Background())
+		t.Cleanup(m.StopQuotaPolling)
+		synctest.Wait()
+		if calls.Load() != 0 || !m.nextClaudeQuotaPoll().IsZero() || !m.nextClaudeQuotaExpiry().IsZero() {
+			t.Fatal("fixture must have no eligible seat or guard expiry")
+		}
+		if _, _, errReset := m.ResetQuota(context.Background(), a); errReset != nil {
+			t.Fatal(errReset)
+		}
+		synctest.Wait()
+		if calls.Load() != 1 {
+			t.Fatal("cooldown reset did not wake the sole seat without another event")
+		}
+	})
+}
+
+func TestClaudeQuotaRefreshFailureCancelsStalledRead(t *testing.T) {
+	for _, failure := range []struct {
+		name string
+		err  error
+	}{
+		{"invalid_grant", &Error{Code: "invalid_grant", Message: "invalid grant"}},
+		{"unauthorized", &Error{HTTPStatus: 401, Message: "unauthorized"}},
+	} {
+		t.Run(failure.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, a, b := newClaudeQuotaManager(t)
+				m.Remove(context.Background(), b)
+				started, cancelled := make(chan struct{}), make(chan struct{})
+				m.RegisterExecutor(&claudeQuotaTestPoller{
+					ProviderExecutor: &mockOAuthErrorExecutor{id: "claude", errToReturn: failure.err},
+					poll: func(ctx context.Context, _ *Auth) (map[string]QuotaWindow, error) {
+						close(started)
+						<-ctx.Done()
+						close(cancelled)
+						return nil, ctx.Err()
+					},
+				})
+				m.StartQuotaPolling(context.Background())
+				t.Cleanup(m.StopQuotaPolling)
+				synctest.Wait()
+				select {
+				case <-started:
+				default:
+					t.Fatal("fixture did not start the quota read")
+				}
+				if _, errRefresh := m.refreshAuthForRequest(context.Background(), a, ""); errRefresh == nil {
+					t.Fatal("fixture refresh must fail")
+				}
+				synctest.Wait()
+				select {
+				case <-cancelled:
+				default:
+					t.Fatal("refresh failure retained the ineligible seat's stalled quota read")
+				}
+			})
+		})
+	}
+}
+
+func TestClaudeQuotaFloorTimerRecoversMissedWake(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, a, b := newClaudeQuotaManager(t)
+		m.Remove(context.Background(), b)
+		cfg := m.runtimeConfig.Load().(*config.Config).CloneForRuntime()
+		cfg.Claude.Quota.PollInterval = "5m"
+		m.SetConfig(cfg)
+		m.mu.Lock()
+		m.auths[a].LastError = &Error{Code: "invalid_grant", Message: "invalid grant"}
+		m.mu.Unlock()
+		var calls atomic.Int64
+		m.RegisterExecutor(&claudeQuotaTestPoller{poll: func(context.Context, *Auth) (map[string]QuotaWindow, error) {
+			calls.Add(1)
+			return nil, nil
+		}})
+		m.StartQuotaPolling(context.Background())
+		t.Cleanup(m.StopQuotaPolling)
+		synctest.Wait()
+		if calls.Load() != 0 || !m.nextClaudeQuotaPoll().IsZero() || !m.nextClaudeQuotaExpiry().IsZero() {
+			t.Fatal("fixture must have no eligible seat or guard expiry")
+		}
+		<-time.After(10 * time.Second)
+		// Deliberately omit notification to model a future missed mutation path.
+		m.mu.Lock()
+		m.auths[a].LastError = nil
+		m.mu.Unlock()
+		synctest.Wait()
+		if calls.Load() != 0 {
+			t.Fatal("fixture unexpectedly woke the loop")
+		}
+		<-time.After(50 * time.Second)
+		synctest.Wait()
+		if calls.Load() != 1 {
+			t.Fatal("fallback timer did not recover polling within one minute")
+		}
+	})
+}
+
 func TestClaudeQuotaRestoredHoldRearmsSleepingLoop(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m, a, b := newClaudeQuotaManager(t)

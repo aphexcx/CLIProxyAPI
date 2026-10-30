@@ -163,11 +163,13 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 		wake := m.quotaPollWake
 		m.mu.RUnlock()
 		poll()
-		var launchC <-chan time.Time
-		if next := m.nextClaudeQuotaPoll(); !next.IsZero() {
-			launch.Reset(time.Until(next))
-			launchC = launch.C
+		nextLaunch := m.nextClaudeQuotaPoll()
+		if nextLaunch.IsZero() {
+			// Bound recovery from a missed eligibility notification even when
+			// every seat is paused or has an outstanding read and no expiry.
+			nextLaunch = time.Now().Add(claudeQuotaMinimumPollInterval)
 		}
+		launch.Reset(time.Until(nextLaunch))
 		var expiryC <-chan time.Time
 		if next := m.nextClaudeQuotaExpiry(); !next.IsZero() {
 			expiry.Reset(time.Until(next))
@@ -184,7 +186,7 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 			if running[finished.auth.ID] == finished {
 				delete(running, finished.auth.ID)
 			}
-		case <-launchC:
+		case <-launch.C:
 		}
 		launch.Stop()
 		expiry.Stop()

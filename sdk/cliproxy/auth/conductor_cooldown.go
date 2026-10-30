@@ -631,6 +631,7 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 		m.mu.Unlock()
 		return nil, nil, nil
 	}
+	quotaWasEligible := claudeQuotaEligible(auth)
 
 	var cooldownRecordsBefore []CooldownStateRecord
 	trackCooldownState := m.cooldownStore != nil
@@ -670,6 +671,9 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 	auth.Generation++
 	auth.UpdatedAt = now
 	snapshot = auth.Clone()
+	if quotaWasEligible != claudeQuotaEligible(auth) {
+		m.notifyAuthChangeLocked(auth.ID)
+	}
 	if trackCooldownState {
 		cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
 		cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
