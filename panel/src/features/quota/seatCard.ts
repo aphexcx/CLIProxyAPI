@@ -92,6 +92,10 @@ type FreshnessSource = Pick<ClaudeQuotaState, 'serverCache' | 'observedAt' | 'st
  * One state for the card footer, most actionable first. Age comes from the
  * server's own clock where it is known, so a skewed browser clock cannot make
  * fresh data look old.
+ *
+ * `polledAt` is the last successful poll, so it stays null after a failed
+ * first poll and after a hub restart; a completed failure and retained stale
+ * usage both outrank "waiting for the first poll".
  */
 export const describeSeatFreshness = (
   quota: FreshnessSource,
@@ -105,13 +109,18 @@ export const describeSeatFreshness = (
       : Number.isFinite(observedMs)
         ? Math.max(0, nowMs - observedMs)
         : null;
-  if (cache) {
-    const firstPollRunning = !cache.polledAt && cache.refreshing && cache.lastStatus === 0;
-    if (!cache.polledAt) return firstPollRunning ? { kind: 'queued' } : { kind: 'pending' };
-    if (cache.lastPollAt && (cache.lastStatus < 200 || cache.lastStatus >= 300)) {
-      return { kind: 'failed', status: cache.lastStatus, ageMs };
-    }
+  const firstPollRunning = cache
+    ? !cache.polledAt && cache.refreshing && cache.lastStatus === 0
+    : false;
+  if (
+    cache?.lastPollAt &&
+    !firstPollRunning &&
+    (cache.lastStatus < 200 || cache.lastStatus >= 300)
+  ) {
+    return { kind: 'failed', status: cache.lastStatus, ageMs };
   }
+  if (quota.stale && quota.observedAt) return { kind: 'stale', ageMs };
+  if (cache && !cache.polledAt) return firstPollRunning ? { kind: 'queued' } : { kind: 'pending' };
   if (quota.stale) return { kind: 'stale', ageMs };
   if (cache?.status === 'polling_paused') return { kind: 'paused' };
   if (cache?.refreshing) return { kind: 'queued' };

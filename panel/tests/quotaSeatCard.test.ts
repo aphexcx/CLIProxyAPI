@@ -158,6 +158,40 @@ describe('describeSeatFreshness', () => {
     ).toEqual({ kind: 'queued' });
   });
 
+  test('a failed first poll is a failure, not a wait', () => {
+    const failedFirst = cache({
+      polledAt: null,
+      ageSeconds: null,
+      lastStatus: 429,
+      lastPollAt: '2026-10-30T23:59:50Z',
+    });
+    expect(
+      describeSeatFreshness({ serverCache: failedFirst, observedAt: null, stale: true }, now)
+    ).toEqual({ kind: 'failed', status: 429, ageMs: null });
+  });
+
+  test('usage retained across a hub restart is stale, then failed if the next poll fails', () => {
+    // After a restart the server has not polled yet; the panel keeps the last windows.
+    const restarted = cache({
+      status: 'not_polled_yet',
+      polledAt: null,
+      ageSeconds: null,
+      lastStatus: 0,
+      lastPollAt: null,
+    });
+    const retained = { observedAt: '2026-10-30T23:00:00Z', stale: true };
+    expect(describeSeatFreshness({ ...retained, serverCache: restarted }, now)).toEqual({
+      kind: 'stale',
+      ageMs: 3_600_000,
+    });
+    expect(
+      describeSeatFreshness(
+        { ...retained, serverCache: { ...restarted, lastPollAt: '2026-10-30T23:59:00Z' } },
+        now
+      )
+    ).toEqual({ kind: 'failed', status: 0, ageMs: 3_600_000 });
+  });
+
   test('paused and queued polls are named', () => {
     expect(describeSeatFreshness(quota(cache({ status: 'polling_paused' })), now)?.kind).toBe(
       'paused'
