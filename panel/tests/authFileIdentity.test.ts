@@ -35,7 +35,7 @@ describe('stripJsonExtension', () => {
 });
 
 describe('deriveAuthFileIdentity', () => {
-  test('leads with the account email and keeps the full name as the secondary row', () => {
+  test('leads with the account email without displaying the file name below it', () => {
     expect(
       deriveAuthFileIdentity(
         authFile({
@@ -46,7 +46,7 @@ describe('deriveAuthFileIdentity', () => {
     ).toEqual({
       primary: 'user@example.com',
       kind: 'email',
-      secondary: 'codex-abc12345-user@example.com-team',
+      secondary: null,
       fullName: 'codex-abc12345-user@example.com-team.json',
     });
   });
@@ -86,7 +86,7 @@ describe('deriveAuthFileIdentity', () => {
     ).toEqual({
       primary: 'my-proj',
       kind: 'projectId',
-      secondary: 'vertex-my-proj',
+      secondary: null,
       fullName: 'vertex-my-proj.json',
     });
   });
@@ -149,24 +149,94 @@ describe('deriveAuthFileIdentity', () => {
     ).toBeNull();
   });
 
-  test('keeps the disambiguating secondary row for two credentials sharing one email', () => {
+  test('distinguishes plans for two credentials sharing one email', () => {
     const team = deriveAuthFileIdentity(
-      authFile({ name: 'codex-abc12345-user@example.com-team.json', email: 'user@example.com' })
+      authFile({
+        name: 'codex-abc12345-user@example.com-team.json',
+        email: 'user@example.com',
+        plan_type: 'team',
+      })
     );
     const plus = deriveAuthFileIdentity(
-      authFile({ name: 'codex-abc12345-user@example.com-plus.json', email: 'user@example.com' })
+      authFile({
+        name: 'codex-abc12345-user@example.com-plus.json',
+        email: 'user@example.com',
+        plan_type: 'plus',
+      })
     );
     expect(team.primary).toBe(plus.primary);
-    expect(team.secondary).not.toBeNull();
-    expect(team.secondary).not.toBe(plus.secondary);
+    expect(team.secondary).toBe('Team');
+    expect(plus.secondary).toBe('Plus');
   });
 
-  test('does not strip a provider prefix from the secondary row', () => {
+  test('never derives the secondary row from a file name', () => {
     expect(
       deriveAuthFileIdentity(
         authFile({ name: '-abc12345-user@example.com-team.json', email: 'user@example.com' })
       ).secondary
-    ).toBe('-abc12345-user@example.com-team');
+    ).toBeNull();
+  });
+
+  test('shows the Claude organization below the email and preserves the filename tooltip', () => {
+    expect(
+      deriveAuthFileIdentity(
+        authFile({
+          name: 'claude-seat.json',
+          type: 'claude',
+          email: ' user@example.com ',
+          organization_name: ' Example Organization ',
+          plan_type: 'pro',
+        })
+      )
+    ).toEqual({
+      primary: 'user@example.com',
+      kind: 'email',
+      secondary: 'Example Organization',
+      fullName: 'claude-seat.json',
+    });
+  });
+
+  test.each(['pro', 'plus', 'team'])('shows the Codex %s plan in words', (plan) => {
+    const identity = deriveAuthFileIdentity(
+      authFile({
+        email: 'user@example.com',
+        plan_type: ` ${plan.toUpperCase()} `,
+        organization_name: 'Not a Claude seat',
+      })
+    );
+    expect(identity.primary).toBe('user@example.com');
+    expect(identity.secondary).toBe(plan[0].toUpperCase() + plan.slice(1));
+  });
+
+  test('uses the provider alias when type is absent', () => {
+    expect(
+      deriveAuthFileIdentity(
+        authFile({
+          type: undefined,
+          provider: ' CLAUDE ',
+          email: 'user@example.com',
+          organization_name: 'Org',
+        })
+      ).secondary
+    ).toBe('Org');
+  });
+
+  test('does not show missing, malformed or unrelated provider metadata', () => {
+    for (const value of [undefined, '', '  ', 123, { name: 'Org' }]) {
+      expect(
+        deriveAuthFileIdentity(
+          authFile({ type: 'claude', email: 'u@x.com', organization_name: value as string })
+        ).secondary
+      ).toBeNull();
+      expect(
+        deriveAuthFileIdentity(authFile({ email: 'u@x.com', plan_type: value as string })).secondary
+      ).toBeNull();
+    }
+    expect(
+      deriveAuthFileIdentity(
+        authFile({ type: 'gemini', email: 'u@x.com', organization_name: 'Org', plan_type: 'pro' })
+      ).secondary
+    ).toBeNull();
   });
 
   test('handles an empty file name without inventing a placeholder', () => {
