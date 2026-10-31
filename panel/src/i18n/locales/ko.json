@@ -1589,6 +1589,19 @@
       }
     }
   },
+  "quota_card": {
+    "left": "남음",
+    "resets": "{{time}} 초기화",
+    "details": "세부 정보",
+    "updated_now": "방금 업데이트됨",
+    "updated": "{{age}} 업데이트됨",
+    "stale": "오래됨 · {{age}} 업데이트됨",
+    "stale_unknown": "오래됨",
+    "polled": "마지막 조회",
+    "next_poll": "다음 조회",
+    "file": "파일",
+    "failed": "업데이트 실패 · {{age}} 데이터"
+  },
   "quota_management": {
     "search_label": "계정 검색",
     "search_placeholder": "파일명 또는 이메일로 검색",

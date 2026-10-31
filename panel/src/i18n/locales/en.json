@@ -1589,6 +1589,19 @@
       }
     }
   },
+  "quota_card": {
+    "left": "left",
+    "resets": "Resets {{time}}",
+    "details": "Details",
+    "updated_now": "Updated just now",
+    "updated": "Updated {{age}}",
+    "stale": "Stale · updated {{age}}",
+    "stale_unknown": "Stale",
+    "polled": "Last poll",
+    "next_poll": "Next poll",
+    "file": "File",
+    "failed": "Update failed · data from {{age}}"
+  },
   "quota_management": {
     "search_label": "Search accounts",
     "search_placeholder": "Search by filename or email",

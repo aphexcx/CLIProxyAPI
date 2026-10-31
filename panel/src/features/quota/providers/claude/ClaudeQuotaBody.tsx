@@ -17,6 +17,7 @@ export function ClaudeQuotaBody({
   classes,
   planItems,
   afterPlan,
+  extrasOnly = false,
 }: QuotaBodyProps<ClaudeQuotaState>) {
   const { t, i18n } = useTranslation();
   const now = useNow();
@@ -26,7 +27,7 @@ export function ClaudeQuotaBody({
   );
   const windows = quota.windows ?? [];
   const extraUsage = quota.extraUsage ?? null;
-  const planType = quota.planType ?? null;
+  const planType = extrasOnly ? null : (quota.planType ?? null);
   const language = i18n.resolvedLanguage;
   const cache = quota.serverCache;
   const age =
@@ -60,7 +61,7 @@ export function ClaudeQuotaBody({
 
   return (
     <>
-      {cache && (
+      {cache && !extrasOnly && (
         <div role="status" className={classes.quotaMessage}>
           {quota.observedAt && (
             <div>
@@ -90,7 +91,7 @@ export function ClaudeQuotaBody({
           {quota.stale && quota.observedAt && <div>{t('claude_quota.cache_stale')}</div>}
         </div>
       )}
-      {quota.stale && !cache && (
+      {quota.stale && !cache && !extrasOnly && (
         <div role="status" className={classes.codexResetCreditsError}>
           {t('claude_quota.stale_snapshot', {
             time: quota.observedAt ? new Date(quota.observedAt).toLocaleString(language) : '--',
@@ -193,7 +194,7 @@ export function ClaudeQuotaBody({
           </div>
         );
       })}
-      {windows.length === 0 && !extraUsage && !quota.dollarWindows?.length ? (
+      {extrasOnly ? null : windows.length === 0 && !extraUsage && !quota.dollarWindows?.length ? (
         cache && !quota.observedAt ? null : (
           <div className={classes.quotaMessage}>{t('claude_quota.empty_windows')}</div>
         )

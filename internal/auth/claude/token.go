@@ -41,6 +41,9 @@ type ClaudeTokenStorage struct {
 	// OrganizationName is the display name returned by OAuth.
 	OrganizationName string `json:"organization_name,omitempty"`
 
+	// PlanTier is the subscription tier label derived from the OAuth profile.
+	PlanTier string `json:"plan_tier,omitempty"`
+
 	// DeviceIDs contains the single device identity assigned to this credential.
 	DeviceIDs []string `json:"claude_device_ids,omitempty"`
 

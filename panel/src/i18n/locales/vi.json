@@ -1545,6 +1545,19 @@
     "concurrent_list_conflict": "Danh sách trên máy chủ {{path}} đã thay đổi sau mốc cơ sở bản nháp của bạn. Thao tác lưu bị chặn để tránh ghi đè các thay đổi đó. Bản nháp của bạn được giữ lại; hãy ghi lại các chỉnh sửa, sau đó tải lại cấu hình và hợp nhất.",
     "precise_save_recovery_required": "Không thể đọc lại kết quả lưu. Đã tạm dừng chỉnh sửa. Lưu lại để khôi phục mốc cơ sở của bản nháp, hoặc tải lại cấu hình."
   },
+  "quota_card": {
+    "left": "còn lại",
+    "resets": "Đặt lại {{time}}",
+    "details": "Chi tiết",
+    "updated_now": "Vừa cập nhật",
+    "updated": "Cập nhật {{age}}",
+    "stale": "Đã cũ · cập nhật {{age}}",
+    "stale_unknown": "Đã cũ",
+    "polled": "Lần truy vấn trước",
+    "next_poll": "Lần truy vấn tới",
+    "file": "Tệp",
+    "failed": "Cập nhật thất bại · dữ liệu từ {{age}}"
+  },
   "quota_management": {
     "title": "Quản lý Quota",
     "description": "Theo dõi trạng thái quota OAuth của credential Antigravity, Codex, Claude, Kimi và xAI.",
