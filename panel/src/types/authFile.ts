@@ -3,10 +3,10 @@
  */
 
 import type { RecentRequestBucket } from '@/utils/recentRequests';
-import type { ClaudeUsagePayload } from './quota';
+import type { ClaudeUsagePayload, CodexUsagePayload } from './quota';
 
 /** Native poll-loop snapshot carried by v8 credentials and credentials/quota. */
-export interface ClaudeCachedUsage extends ClaudeUsagePayload {
+export interface QuotaCacheMetadata {
   status: 'ok' | 'not_polled_yet' | 'polling_paused';
   stale: boolean;
   polled_at: string | null;
@@ -16,6 +16,9 @@ export interface ClaudeCachedUsage extends ClaudeUsagePayload {
   last_status: number;
   last_poll_at: string | null;
 }
+
+export interface ClaudeCachedUsage extends ClaudeUsagePayload, QuotaCacheMetadata {}
+export interface CodexCachedUsage extends CodexUsagePayload, QuotaCacheMetadata {}
 
 export type AuthFileType =
   | 'qwen'
@@ -55,6 +58,7 @@ export interface AuthFileCooldownSnapshot {
 export interface AuthFileItem {
   name: string;
   claude_usage?: ClaudeCachedUsage;
+  codex_usage?: CodexCachedUsage;
   siwcBindSupported?: boolean;
   useSiwc?: boolean;
   siwcBound?: boolean;

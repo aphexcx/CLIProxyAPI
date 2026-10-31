@@ -138,9 +138,152 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
       return { claudeQuota: retained };
     }),
   setCodexQuota: (updater) =>
-    set((state) => ({
-      codexQuota: resolveUpdater(updater, state.codexQuota),
-    })),
+    set((state) => {
+      const next = resolveUpdater(updater, state.codexQuota);
+      let retained = next;
+      for (const [key, quota] of Object.entries(next)) {
+        const previous = state.codexQuota[key];
+        let candidate = quota;
+        if (previous?.serverCache && quota.serverCache) {
+          const prior = previous.serverCache;
+          const incoming = quota.serverCache;
+          if (
+            incoming.requestSequence < prior.requestSequence ||
+            Date.parse(incoming.lastPollAt ?? incoming.polledAt ?? '') <
+              Date.parse(prior.lastPollAt ?? prior.polledAt ?? '') ||
+            Date.parse(incoming.polledAt ?? '') < Date.parse(prior.polledAt ?? '')
+          ) {
+            candidate =
+              previous.status === 'loading' && quota.status === 'success'
+                ? { ...previous, status: 'success', error: undefined, errorStatus: undefined }
+                : previous;
+          }
+        }
+        if (
+          candidate === quota &&
+          previous &&
+          quota !== previous &&
+          !quota.observedAt &&
+          (quota.status === 'loading' ||
+            quota.status === 'error' ||
+            quota.serverCache?.polledAt === null) &&
+          (previous.serverCache || previous.observedAt || previous.windows.length)
+        ) {
+          candidate = {
+            ...previous,
+            ...quota,
+            windows: quota.windows.length ? quota.windows : previous.windows,
+            observedAt: previous.observedAt,
+            serverCache: quota.serverCache ?? previous.serverCache,
+            planType: quota.planType ?? previous.planType,
+            subscriptionActiveUntil:
+              quota.subscriptionActiveUntil ?? previous.subscriptionActiveUntil,
+            creditBalance: quota.creditBalance ?? previous.creditBalance,
+            stale:
+              quota.serverCache?.polledAt === null || quota.status === 'error' || previous.stale,
+          };
+        }
+        // Optional reads and cache-only usage reads have independent ordering.
+        // A newer list preserves explicit metadata, and late enrichment cannot
+        // restore old windows or undo a later reset-credit read.
+        const newerOptional =
+          (quota.optionalMetadataSequence ?? 0) > (previous?.optionalMetadataSequence ?? 0);
+        const optional = newerOptional ? quota : previous;
+        if (optional?.optionalMetadataSequence && candidate !== optional) {
+          candidate = {
+            ...candidate,
+            optionalMetadataSequence: optional.optionalMetadataSequence,
+            resetCreditsUpdatedForPoll: optional.resetCreditsUpdatedForPoll,
+            subscriptionActiveUntil: optional.subscriptionActiveUntil,
+            rateLimitResetCreditsAvailableCount: optional.rateLimitResetCreditsAvailableCount,
+            rateLimitResetCreditsApplicableAvailableCount:
+              optional.rateLimitResetCreditsApplicableAvailableCount,
+            rateLimitResetCredits: optional.rateLimitResetCredits,
+            rateLimitResetCreditsError: optional.rateLimitResetCreditsError,
+          };
+        }
+        // A failed newer read must not outrank a pending successful read, or
+        // erase the fence established by a successful redemption.
+        const confirmationSequence = previous?.resetCreditsConfirmationSequence ?? 0;
+        const newConfirmation =
+          quota.resetCreditsConfirmed &&
+          (quota.optionalMetadataSequence ?? 0) > confirmationSequence;
+        const priorPoll = previous?.resetCreditsUpdatedForPoll;
+        const incomingPoll = quota.resetCreditsUpdatedForPoll;
+        let waitForPoll = previous?.resetCreditsWaitForPoll ?? false;
+        const protectedFallback =
+          priorPoll !== undefined &&
+          (priorPoll === incomingPoll ||
+            (priorPoll && incomingPoll && Date.parse(incomingPoll) <= Date.parse(priorPoll)));
+        let credits = newerOptional ? quota : (previous ?? quota);
+        if (quota.resetCreditsConfirmed) {
+          credits = newConfirmation ? quota : (previous ?? quota);
+        } else if (newerOptional && previous && protectedFallback) {
+          credits = previous;
+        }
+        let updatedForPoll = credits.resetCreditsUpdatedForPoll;
+        const completedPoll = candidate.serverCache?.polledAt;
+        if (
+          !newConfirmation &&
+          waitForPoll &&
+          previous &&
+          completedPoll &&
+          (!priorPoll || Date.parse(completedPoll) > Date.parse(priorPoll))
+        ) {
+          // The server serializes polls per seat. This first completion may
+          // have started before confirmation; only a later poll is safe.
+          credits = previous;
+          updatedForPoll = completedPoll;
+          waitForPoll = false;
+        }
+        if (newConfirmation) {
+          waitForPoll = true;
+          // Include polls that arrived after enrichment resolved but before its
+          // result commits. Never move the protected observation backwards.
+          let latest: string | null = null;
+          for (const poll of [
+            updatedForPoll,
+            previous?.resetCreditsUpdatedForPoll,
+            candidate.serverCache?.polledAt,
+            previous?.serverCache?.polledAt,
+          ]) {
+            if (
+              poll &&
+              Number.isFinite(Date.parse(poll)) &&
+              (!latest || Date.parse(poll) > Date.parse(latest))
+            ) {
+              latest = poll;
+            }
+          }
+          updatedForPoll = latest;
+        }
+        if (
+          candidate !== credits ||
+          newConfirmation ||
+          (candidate.resetCreditsConfirmationSequence ?? 0) !== confirmationSequence ||
+          (candidate.resetCreditsWaitForPoll ?? false) !== waitForPoll
+        ) {
+          candidate = {
+            ...candidate,
+            resetCreditsConfirmed: false,
+            resetCreditsConfirmationSequence: newConfirmation
+              ? quota.optionalMetadataSequence
+              : confirmationSequence,
+            resetCreditsUpdatedForPoll: updatedForPoll,
+            resetCreditsWaitForPoll: waitForPoll,
+            rateLimitResetCreditsAvailableCount: credits.rateLimitResetCreditsAvailableCount,
+            rateLimitResetCreditsApplicableAvailableCount:
+              credits.rateLimitResetCreditsApplicableAvailableCount,
+            rateLimitResetCredits: credits.rateLimitResetCredits,
+          };
+        }
+        if (candidate !== quota) {
+          if (retained === next) retained = { ...next };
+          retained[key] = candidate;
+        }
+      }
+      return { codexQuota: retained };
+    }),
   setDevinQuota: (updater) =>
     set((state) => ({
       devinQuota: resolveUpdater(updater, state.devinQuota),

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { TFunction } from 'i18next';
 import {
   CODEX_CONFIG,
@@ -7,6 +7,7 @@ import {
 } from '@/features/quota/providers/codex/data';
 import type { CodexQuotaState, CodexUsagePayload } from '@/types';
 import { apiCallApi, type ApiCallRequest, type ApiCallResult } from '@/services/api';
+import { apiClient } from '@/services/api/client';
 import {
   CODEX_RATE_LIMIT_RESET_CREDITS_URL,
   CODEX_SUBSCRIPTION_URL,
@@ -17,6 +18,14 @@ import {
 
 const t = ((key: string) => key) as TFunction;
 const originalApiCallRequest = apiCallApi.request;
+const originalPost = apiClient.post;
+
+// These cases exercise the explicit legacy path with native polling disabled.
+beforeEach(() => {
+  apiClient.post = async () => {
+    throw Object.assign(new Error('cache disabled'), { status: 404 });
+  };
+});
 
 const result = (statusCode: number, body: unknown = null): ApiCallResult => ({
   statusCode,
@@ -63,6 +72,7 @@ const CURRENT_CODEX_USAGE_PAYLOAD: CodexUsagePayload = {
 };
 
 afterEach(() => {
+  apiClient.post = originalPost;
   apiCallApi.request = originalApiCallRequest;
 });
 

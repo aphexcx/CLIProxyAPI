@@ -6,7 +6,7 @@ import {
   useNotificationStore,
   useQuotaStore,
 } from '@/stores';
-import type { AuthFileItem, ClaudeQuotaState } from '@/types';
+import type { AuthFileItem, ClaudeQuotaState, CodexQuotaState } from '@/types';
 import { getStatusFromError, resolveQuotaErrorMessage } from '@/utils/quota';
 import { getQuotaCacheKey } from '@/utils/quota/identity';
 import { isRuntimeOnlyAuthFile, type QuotaProviderType } from '@/features/authFiles/constants';
@@ -15,6 +15,7 @@ import { IconRefreshCw } from '@/components/ui/icons';
 import { bindQuotaClasses } from '@/features/quota/types';
 import { QUOTA_ADAPTERS, type QuotaCardState } from '@/features/quota/providers';
 import { hasClaudeUsageData } from '@/features/quota/providers/claude/data';
+import { hasCodexUsageData } from '@/features/quota/providers/codex/data';
 import { enrichQuotaInBackground } from '@/features/quota/quotaEnrichment';
 import styles from './AuthFileQuota.module.scss';
 
@@ -57,7 +58,8 @@ export function AuthFileQuotaSection(props: AuthFileQuotaSectionProps) {
     return assertNever(quotaType);
   });
   const retainedClaudeUsage =
-    quotaType === 'claude' && hasClaudeUsageData(quota as ClaudeQuotaState | undefined);
+    (quotaType === 'claude' && hasClaudeUsageData(quota as ClaudeQuotaState | undefined)) ||
+    (quotaType === 'codex' && hasCodexUsageData(quota as CodexQuotaState | undefined));
 
   const updateQuotaState = useQuotaStore(
     (state) => state[adapter.storeSetter] as unknown as QuotaMapUpdater
@@ -87,7 +89,7 @@ export function AuthFileQuotaSection(props: AuthFileQuotaSectionProps) {
         void enrichQuotaInBackground(adapter, file, data, successState, t);
         showNotification(
           t(
-            adapter.type === 'claude'
+            adapter.type === 'claude' || adapter.type === 'codex'
               ? 'claude_quota.cache_refresh_requested'
               : 'auth_files.quota_refresh_success',
             { name: file.name }
