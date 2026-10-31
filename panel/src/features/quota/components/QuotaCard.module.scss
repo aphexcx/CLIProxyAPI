@@ -1,9 +1,10 @@
 @use '../../../styles/mixins' as *;
 
 /* ============================================================
- * 额度卡片 — 继承凭证卡 statTile 配方（14px 圆角 / 1px 边框 / 82% 透感纸面）。
- * 提供商身份只由图标承载（混合网格下五色渐变卡底会互相打架，已退役）。
- * 遥测内容一律 mono + tabular-nums。
+ * Quota card: the credential card's statTile recipe (14px radius, 1px border,
+ * 82% translucent paper). Provider identity rides on the icon alone (per-provider
+ * gradient card backgrounds clashed in a mixed grid and were retired).
+ * Telemetry uses tabular numerals throughout.
  * ============================================================ */
 
 .card {
@@ -29,7 +30,7 @@
   }
 }
 
-/* 首次数据到达时的一次性级联入场；切 tab / 翻页 / 刷新不重播 */
+/* One-time cascade on first data arrival; tab switches, paging and refreshes do not replay it */
 .cardEnter {
   animation: quota-card-in 0.45s var(--ease-out-strong, ease-out) both;
   animation-delay: var(--card-delay, 0s);
@@ -42,7 +43,7 @@
   }
 }
 
-/* ---------- 头部：品牌图标 + 文件名 ---------- */
+/* ---------- Header: provider icon + identity ---------- */
 
 .head {
   display: flex;
@@ -85,7 +86,360 @@
   @include text-ellipsis;
 }
 
-/* ---------- body 容器 ---------- */
+/* ---------- Seat cards (Claude, Codex): who, which plan, what is left ----------
+ * Hierarchy by size and weight, not by color: the account at 15px, the two
+ * binding windows as 30px figures, everything else at 12px. Small text stays on
+ * --text-secondary so it keeps 4.5:1 on the white theme. */
+
+/* Opening one card's details must not stretch its row neighbours. */
+.seatCard {
+  align-self: start;
+}
+
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.seatName {
+  min-width: 0;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.005em;
+  color: var(--text-primary);
+  @include text-ellipsis;
+}
+
+.seatNameMono {
+  font-family: $font-mono;
+  font-size: 13.5px;
+  letter-spacing: -0.01em;
+}
+
+.seatMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  /* The chip's height, so a seat without a plan lines up with its row. */
+  min-height: 20px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.seatOrg {
+  min-width: 0;
+  @include text-ellipsis;
+}
+
+.planChip {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: $radius-full;
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.gauges {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  padding-top: 4px;
+}
+
+/* Large figures keep 3:1 on --text-secondary; the reset lines stay readable. */
+.gaugesDimmed .gaugeNumber {
+  color: var(--text-secondary);
+}
+
+.gauge {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.gaugeLabel {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  @include text-ellipsis;
+}
+
+.gaugeFigure {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+}
+
+.gaugeNumber {
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.025em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.gaugeUnit {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.gaugeReset {
+  font-size: 12px;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+/* Bound onto the meter's track class; scoped under .gauge to outrank the shared .quotaBar. */
+.gauge .trackExhausted {
+  background: color-mix(in srgb, var(--viz-failure) 30%, transparent);
+}
+
+/* An exhausted window's reset is the one fact that matters on the card. */
+.gaugeResetNow {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.seatFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 9px;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+}
+
+.freshness {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  @include text-ellipsis;
+}
+
+.freshnessWarn {
+  font-weight: 600;
+  /* Pulled toward the ink so the warning holds 4.5:1 on the white theme too. */
+  color: color-mix(in srgb, var(--warning-text) 78%, var(--text-primary));
+}
+
+.disclosure {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  margin-right: -8px;
+  padding: 0 8px 0 10px;
+  border: 0;
+  border-radius: $radius-full;
+  background: none;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  transition:
+    background-color var(--dur-hover, 200ms) var(--ease-out-strong, ease-out),
+    color var(--dur-hover, 200ms) var(--ease-out-strong, ease-out);
+
+  &[aria-expanded='true'] {
+    color: var(--text-primary);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .disclosure:hover {
+    background: color-mix(in srgb, var(--bg-tertiary) 70%, transparent);
+    color: var(--text-primary);
+  }
+}
+
+@media (pointer: coarse) {
+  .disclosure,
+  .actionPill {
+    min-height: 40px;
+  }
+}
+
+.chevron {
+  transition: transform var(--dur-hover, 200ms) var(--ease-out-strong, ease-out);
+}
+
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+.details {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  animation: quota-details-in 220ms var(--ease-out-strong, ease-out);
+
+  &[hidden] {
+    display: none;
+  }
+
+  .actionRow {
+    justify-content: flex-start;
+  }
+}
+
+@keyframes quota-details-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.windowRows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.windowRow {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.windowRowHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.windowRowLabel {
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  @include text-ellipsis;
+}
+
+.windowRowFigure {
+  flex-shrink: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.windowRowReset {
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 14px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.fact {
+  display: contents;
+
+  dt {
+    color: var(--text-secondary);
+  }
+
+  dd {
+    margin: 0;
+    min-width: 0;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+  }
+}
+
+.factMono {
+  font-family: $font-mono;
+  font-size: 11.5px;
+}
+
+/* Details host overrides for the shared body (QuotaBody's finalized label and
+   countdown tones fall below 4.5:1 on the white theme). */
+.detailsLabel {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+}
+
+.detailsCreditLabel {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}
+
+.detailsMeta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.detailsAmount {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.detailsMuted {
+  color: var(--text-secondary);
+}
+
+.detailsRelative {
+  color: var(--text-secondary);
+
+  &::before {
+    content: '·';
+    margin: 0 4px;
+  }
+}
+
+@include mobile {
+  .gauges {
+    gap: 16px;
+  }
+
+  .gaugeNumber {
+    font-size: 28px;
+  }
+}
+
+/* ---------- Body container ---------- */
 
 .body {
   display: flex;
@@ -94,7 +448,7 @@
   min-width: 0;
 }
 
-/* ---------- idle：整块 body 即点击加载的落点 ---------- */
+/* ---------- Idle: the whole body is the click-to-load target ---------- */
 
 .idleBody {
   display: flex;
@@ -150,7 +504,7 @@
   text-align: center;
 }
 
-/* ---------- loading：双幽灵行骨架 ---------- */
+/* ---------- Loading: two ghost-row skeleton ---------- */
 
 .skeleton {
   display: flex;
@@ -165,7 +519,7 @@
   gap: 6px;
 }
 
-/* 骨架：底色 + 一道 1.2s 匀速扫光（linear —— 环境性匀速运动的唯一例外） */
+/* Skeleton: base tint plus one 1.2s linear sweep (the only linear, ambient motion allowed) */
 .skeletonLabel,
 .skeletonTrack {
   display: block;
@@ -226,7 +580,7 @@
   overflow-wrap: anywhere;
 }
 
-/* ---------- footer 动作 ---------- */
+/* ---------- Footer actions ---------- */
 
 .actionRow {
   display: flex;
@@ -235,7 +589,7 @@
   flex-wrap: wrap;
 }
 
-/* 安静描边药丸（与凭证卡图标动作同族：hover 才显色块） */
+/* Quiet outline pill (same family as the credential card's icon actions: fill only on hover) */
 .actionPill {
   display: inline-flex;
   align-items: center;
@@ -292,8 +646,14 @@
 @media (prefers-reduced-motion: reduce) {
   .card,
   .idleBody,
-  .actionPill {
+  .actionPill,
+  .disclosure,
+  .chevron {
     transition: none;
+  }
+
+  .details {
+    animation: none;
   }
 
   .idleBody:active:not(:disabled),

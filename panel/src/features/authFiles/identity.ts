@@ -16,7 +16,7 @@ export type AuthFileIdentity = {
   primary: string;
   /** Primary source; filename fallbacks use monospace rendering. */
   kind: AuthFileIdentityKind;
-  /** Organization or plan; null hides the secondary row. */
+  /** Organization and tier (Claude) or plan (Codex); null hides the secondary row. */
   secondary: string | null;
   /** Full filename for the secondary row's tooltip. */
   fullName: string;
@@ -49,7 +49,8 @@ export const deriveAuthFileIdentity = (file: AuthFileItem): AuthFileIdentity => 
   const provider = (readIdentityText(file.type) || readIdentityText(file.provider)).toLowerCase();
   let secondary: string | null = null;
   if (provider === 'claude') {
-    secondary = readIdentityText(file.organization_name) || null;
+    const parts = [readIdentityText(file.organization_name), readIdentityText(file.plan_tier)];
+    secondary = parts.filter(Boolean).join(' · ') || null;
   } else if (provider === 'codex') {
     const plan = readIdentityText(file.plan_type);
     secondary = plan

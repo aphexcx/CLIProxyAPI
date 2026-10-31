@@ -73,6 +73,8 @@ export interface AuthFileItem {
   email?: string;
   /** Claude organization name supplied by v8 credential metadata. */
   organization_name?: string;
+  /** Claude plan tier label ("Max 20x", "Team premium") supplied by v8 credential metadata. */
+  plan_tier?: string;
   /** Codex plan supplied by v8 credential metadata. */
   plan_type?: string;
   /** GCP / Vertex project ID, used when account email is absent. */

@@ -196,6 +196,24 @@ describe('deriveAuthFileIdentity', () => {
     });
   });
 
+  test('follows the Claude organization with its plan tier', () => {
+    const seat = (overrides: Partial<AuthFileItem>) =>
+      deriveAuthFileIdentity(
+        authFile({ name: 'claude-seat.json', type: 'claude', email: 'u@x.com', ...overrides })
+      ).secondary;
+    expect(seat({ organization_name: 'Example Organization', plan_tier: ' Max 20x ' })).toBe(
+      'Example Organization · Max 20x'
+    );
+    expect(seat({ plan_tier: 'Team premium' })).toBe('Team premium');
+    for (const value of [undefined, '', '  ', 20, { label: 'Max' }]) {
+      expect(seat({ organization_name: 'Org', plan_tier: value as string })).toBe('Org');
+    }
+    expect(
+      deriveAuthFileIdentity(authFile({ email: 'u@x.com', plan_type: 'pro', plan_tier: 'Max 20x' }))
+        .secondary
+    ).toBe('Pro');
+  });
+
   test.each(['pro', 'plus', 'team'])('shows the Codex %s plan in words', (plan) => {
     const identity = deriveAuthFileIdentity(
       authFile({

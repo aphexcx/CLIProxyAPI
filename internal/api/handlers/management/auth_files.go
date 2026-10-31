@@ -427,7 +427,11 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context, pagination authFilesPagi
 			emailValue := gjson.GetBytes(data, "email").String()
 			fileData["type"] = typeValue
 			fileData["email"] = emailValue
-			if identityField := authFileIdentityField(typeValue); c.GetBool(ConfigV8ContextKey) && identityField != "" {
+			identityFields := authFileIdentityFields(typeValue)
+			if !c.GetBool(ConfigV8ContextKey) {
+				identityFields = nil
+			}
+			for _, identityField := range identityFields {
 				if value := gjson.GetBytes(data, identityField); value.Type == gjson.String {
 					if trimmed := strings.TrimSpace(value.String()); trimmed != "" {
 						fileData[identityField] = trimmed
@@ -692,10 +696,11 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 	entry["quota"] = quotaObservationPayloadForProvider(auth.Provider, auth.Quota)
 	if quota.v8 {
 		// Only expose provider identity fields, never the credential metadata itself.
-		identityField := authFileIdentityField(auth.Provider)
-		if value, ok := auth.Metadata[identityField].(string); identityField != "" && ok {
-			if value = strings.TrimSpace(value); value != "" {
-				entry[identityField] = value
+		for _, identityField := range authFileIdentityFields(auth.Provider) {
+			if value, ok := auth.Metadata[identityField].(string); ok {
+				if value = strings.TrimSpace(value); value != "" {
+					entry[identityField] = value
+				}
 			}
 		}
 		windows := auth.Quota.Clone().Windows
@@ -987,14 +992,15 @@ func extractCodexIDTokenClaims(auth *coreauth.Auth) gin.H {
 	return result
 }
 
-func authFileIdentityField(provider string) string {
+// authFileIdentityFields lists the display-only metadata a v8 entry may carry.
+func authFileIdentityFields(provider string) []string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "claude":
-		return "organization_name"
+		return []string{"organization_name", "plan_tier"}
 	case "codex":
-		return "plan_type"
+		return []string{"plan_type"}
 	default:
-		return ""
+		return nil
 	}
 }
 

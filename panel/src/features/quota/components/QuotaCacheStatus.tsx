@@ -1,9 +1,7 @@
-import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ClaudeQuotaState } from '@/types';
 import { useNow } from '@/hooks/useNow';
-import { useAuthStore } from '@/stores';
-import { subscribeQuotaCacheReads } from '../cachedQuotaReads';
+import { useQuotaCacheReads } from '../hooks/useQuotaCacheReads';
 
 /** Server poll diagnostics; rendering this component never starts a request. */
 export function QuotaCacheStatus({
@@ -16,11 +14,7 @@ export function QuotaCacheStatus({
   const { t, i18n } = useTranslation();
   const now = useNow();
   const cache = quota.serverCache;
-  const connected = useAuthStore((state) => state.connectionStatus === 'connected');
-  const readCache = Boolean(cache) && connected;
-  useEffect(() => {
-    if (readCache) return subscribeQuotaCacheReads();
-  }, [readCache]);
+  useQuotaCacheReads(Boolean(cache));
   if (!cache) return null;
   const age =
     cache.ageSeconds == null

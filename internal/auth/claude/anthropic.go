@@ -23,6 +23,8 @@ type ClaudeTokenData struct {
 	OrganizationUUID string `json:"organization_uuid"`
 	// OrganizationName is the display name returned by OAuth.
 	OrganizationName string `json:"organization_name"`
+	// PlanTier is the subscription tier label derived from the OAuth profile.
+	PlanTier string `json:"plan_tier"`
 	// Expire is the timestamp of the token expiry.
 	Expire string `json:"expired"`
 }

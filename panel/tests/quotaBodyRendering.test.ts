@@ -258,3 +258,95 @@ describe('ClaudeQuotaBody', () => {
     expect(markup).toMatch(/4 days/);
   });
 });
+
+/**
+ * The quota page's seat card shows the plan, the binding windows and the cache
+ * state itself, then opens the body in `extrasOnly` mode inside its disclosure.
+ * The auth-files host passes nothing and must render exactly as before.
+ */
+describe('extrasOnly body mode', () => {
+  const serverCache = {
+    status: 'ok' as const,
+    polledAt: new Date(now - 47_000).toISOString(),
+    ageSeconds: 47,
+    receivedAtMs: now,
+    requestSequence: 1,
+    nextPollAt: new Date(now + 73_000).toISOString(),
+    refreshing: false,
+    lastStatus: 200,
+    lastPollAt: new Date(now - 47_000).toISOString(),
+  };
+  const window = {
+    id: 'five-hour',
+    label: 'Window label',
+    usedPercent: 62,
+    resetLabel: '08-02 18:00',
+    resetAtMs: now + 2 * HOUR_MS,
+    periodHours: 5,
+  };
+
+  test('Codex keeps credits and manual resets and drops plan, windows and cache lines', () => {
+    const quota: CodexQuotaState = {
+      status: 'success',
+      planType: 'pro',
+      creditBalance: '12.50',
+      rateLimitResetCreditsAvailableCount: 2,
+      windows: [window],
+      observedAt: serverCache.polledAt,
+      serverCache,
+    };
+    const extras = renderToStaticMarkup(
+      createElement(CodexQuotaBody, { quota, classes, extrasOnly: true })
+    );
+    expect(extras).toContain('Credit balance');
+    expect(extras).toContain('12.50');
+    expect(extras).toContain('Manual resets');
+    expect(extras).not.toContain('Pro 200');
+    expect(extras).not.toContain('Window label');
+    expect(extras).not.toContain('seconds old');
+    expect(extras).not.toContain('No quota data available');
+
+    const full = renderToStaticMarkup(createElement(CodexQuotaBody, { quota, classes }));
+    expect(full).toContain('Pro 200');
+    expect(full).toContain('Window label');
+    expect(full).toContain('seconds old');
+  });
+
+  test('Claude keeps host plan items and extra usage and drops plan, windows and cache lines', () => {
+    const quota: ClaudeQuotaState = {
+      status: 'success',
+      planType: 'plan_max',
+      windows: [window],
+      extraUsage: {
+        isEnabled: true,
+        monthlyLimit: 5000,
+        usedCredits: 1240,
+        utilization: 24.8,
+        currency: 'USD',
+        disabledReason: null,
+        userDisabled: false,
+        spendLimitReached: false,
+      },
+      observedAt: serverCache.polledAt,
+      stale: false,
+      serverCache,
+    };
+    const planItems = createElement('span', null, 'Host plan item');
+    const extras = renderToStaticMarkup(
+      createElement(ClaudeQuotaBody, { quota, classes, planItems, extrasOnly: true })
+    );
+    expect(extras).toContain('Host plan item');
+    expect(extras).toContain('Extra Usage');
+    expect(extras).not.toContain('>Plan<');
+    expect(extras).not.toContain('Window label');
+    expect(extras).not.toContain('seconds old');
+    expect(extras).not.toContain('No quota data available');
+
+    const full = renderToStaticMarkup(
+      createElement(ClaudeQuotaBody, { quota, classes, planItems })
+    );
+    expect(full).toContain('>Plan<');
+    expect(full).toContain('Window label');
+    expect(full).toContain('seconds old');
+  });
+});
