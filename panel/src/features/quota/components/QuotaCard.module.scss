@@ -207,8 +207,8 @@
   color: var(--text-secondary);
 }
 
-/* The track is the meter's first child; an empty fill would otherwise show no state. */
-.gaugeExhausted > div:first-of-type {
+/* Bound onto the meter's track class; scoped under .gauge to outrank the shared .quotaBar. */
+.gauge .trackExhausted {
   background: color-mix(in srgb, var(--viz-failure) 30%, transparent);
 }
 
@@ -218,13 +218,11 @@
   color: var(--text-primary);
 }
 
-/* margin-top: auto lines footers up across a grid row of unequal cards. */
 .seatFooter {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-top: auto;
   padding-top: 9px;
   border-top: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
 }

@@ -253,10 +253,9 @@ export function QuotaCard(props: QuotaCardProps) {
         : '';
     let planChip: ReactNode = null;
     if (entry.type === 'claude') {
-      // The hub's recorded tier wins; a profile read from an explicit refresh is the fallback.
-      const tier =
-        readSeatPlanTier(file) ??
-        (claudeQuota?.planType ? t(`claude_quota.${claudeQuota.planType}`) : null);
+      // Only the hub's recorded tier: the panel's own profile read infers "Free" for
+      // Enterprise seats and cannot tell Max 5x from 20x, so an unknown tier shows no chip.
+      const tier = readSeatPlanTier(file);
       if (tier) planChip = <span className={styles.planChip}>{tier}</span>;
     }
     if (entry.type === 'codex') {
@@ -287,8 +286,9 @@ export function QuotaCard(props: QuotaCardProps) {
     const freshnessText = loading
       ? t(`${adapter.i18nPrefix}.loading`)
       : describeFreshnessText(freshness, t, now, i18n.resolvedLanguage);
-    // Numbers from a failed or stale poll stay readable but stop looking current.
-    const freshnessWarn = freshness?.kind === 'failed' || freshness?.kind === 'stale';
+    // Numbers from a failed, stale or paused poll stay readable but stop looking current.
+    const freshnessWarn =
+      freshness?.kind === 'failed' || freshness?.kind === 'stale' || freshness?.kind === 'paused';
     const nextPollAt = (quota as ClaudeQuotaState | undefined)?.serverCache?.nextPollAt;
     const observedAt = (quota as ClaudeQuotaState | undefined)?.observedAt;
     const waitingForFirstPoll = freshness?.kind === 'pending' || freshness?.kind === 'queued';

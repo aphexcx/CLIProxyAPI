@@ -22,9 +22,12 @@ function useWindowText(window: SeatWindow) {
     : window.label;
   const left = remainingPercent(window.usedPercent);
   const resetAt = window.resetAtMs;
+  // Stale data can carry a reset that already passed; say so instead of a future time.
   const reset =
     typeof resetAt === 'number' && Number.isFinite(resetAt)
-      ? t('quota_card.resets', { time: formatResetWords(resetAt, now, i18n.resolvedLanguage) })
+      ? t(resetAt > now ? 'quota_card.resets' : 'quota_card.reset_passed', {
+          time: formatResetWords(resetAt, now, i18n.resolvedLanguage),
+        })
       : null;
   return { label, left, reset, t };
 }
@@ -39,16 +42,20 @@ function SeatGauge({
   index: number;
 }) {
   const { label, left, reset, t } = useWindowText(window);
-  const exhausted = left !== null && left <= 0;
+  // Judged on the shown figure, so "0% left" always reads as exhausted.
+  const exhausted = left !== null && Math.round(left) <= 0;
+  // An empty fill draws nothing, so an exhausted window tints its track instead.
+  const meterClasses = exhausted
+    ? { ...classes, quotaBar: `${classes.quotaBar} ${styles.trackExhausted}` }
+    : classes;
   return (
-    <div className={exhausted ? `${styles.gauge} ${styles.gaugeExhausted}` : styles.gauge}>
+    <div className={styles.gauge}>
       <span className={styles.gaugeLabel}>{label}</span>
       <span className={styles.gaugeFigure}>
         <span className={styles.gaugeNumber}>{left === null ? '—' : `${Math.round(left)}%`}</span>
         {left !== null && <span className={styles.gaugeUnit}>{t('quota_card.left')}</span>}
       </span>
-      {/* An empty fill draws nothing, so an exhausted window tints its track instead. */}
-      <QuotaMeter percent={left} classes={classes} index={index} />
+      <QuotaMeter percent={left} classes={meterClasses} index={index} />
       {reset && (
         <span
           className={exhausted ? `${styles.gaugeReset} ${styles.gaugeResetNow}` : styles.gaugeReset}
@@ -60,7 +67,7 @@ function SeatGauge({
   );
 }
 
-/** The binding windows, side by side at every width; dimmed when the poll is stale or failed. */
+/** The binding windows, side by side at every width; dimmed when the data is not current. */
 export function SeatGauges({
   windows,
   classes,

@@ -1600,7 +1600,8 @@
     "polled": "마지막 조회",
     "next_poll": "다음 조회",
     "file": "파일",
-    "failed": "업데이트 실패 · {{age}} 데이터"
+    "failed": "업데이트 실패 · {{age}} 데이터",
+    "reset_passed": "{{time}}에 초기화됨"
   },
   "quota_management": {
     "search_label": "계정 검색",
