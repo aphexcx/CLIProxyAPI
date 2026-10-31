@@ -162,10 +162,15 @@ type OAuthProfile struct {
 	Account struct {
 		UUID  string `json:"uuid"`
 		Email string `json:"email"`
+		// Tier facts stay untyped so an unexpected shape never fails the identity parse.
+		HasClaudeMax any `json:"has_claude_max"`
+		HasClaudePro any `json:"has_claude_pro"`
 	} `json:"account"`
 	Organization struct {
-		UUID string `json:"uuid"`
-		Name string `json:"name"`
+		UUID             string `json:"uuid"`
+		Name             string `json:"name"`
+		OrganizationType any    `json:"organization_type"`
+		RateLimitTier    any    `json:"rate_limit_tier"`
 	} `json:"organization"`
 }
 
@@ -495,6 +500,7 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 		if value := strings.TrimSpace(profile.Organization.Name); value != "" {
 			tokenData.OrganizationName = value
 		}
+		tokenData.PlanTier = profile.PlanTier()
 	}
 
 	// Create auth bundle.
@@ -628,6 +634,7 @@ func (o *ClaudeAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken
 	tokenData.AccountUUID = profile.Account.UUID
 	tokenData.OrganizationUUID = profile.Organization.UUID
 	tokenData.OrganizationName = profile.Organization.Name
+	tokenData.PlanTier = profile.PlanTier()
 	return tokenData, nil
 }
 
@@ -649,6 +656,7 @@ func (o *ClaudeAuth) CreateTokenStorage(bundle *ClaudeAuthBundle) *ClaudeTokenSt
 		AccountUUID:      bundle.TokenData.AccountUUID,
 		OrganizationUUID: bundle.TokenData.OrganizationUUID,
 		OrganizationName: bundle.TokenData.OrganizationName,
+		PlanTier:         bundle.TokenData.PlanTier,
 		DeviceIDs:        append([]string(nil), bundle.DeviceIDs...),
 		Expire:           bundle.TokenData.Expire,
 	}
@@ -718,6 +726,9 @@ func (o *ClaudeAuth) UpdateTokenStorage(storage *ClaudeTokenStorage, tokenData *
 	}
 	if tokenData.OrganizationName != "" {
 		storage.OrganizationName = tokenData.OrganizationName
+	}
+	if tokenData.PlanTier != "" {
+		storage.PlanTier = tokenData.PlanTier
 	}
 	storage.Expire = tokenData.Expire
 }

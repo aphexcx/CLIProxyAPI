@@ -1588,6 +1588,19 @@
       }
     }
   },
+  "quota_card": {
+    "left": "剩余",
+    "resets": "{{time}} 重置",
+    "details": "详情",
+    "updated_now": "刚刚更新",
+    "updated": "{{age}}更新",
+    "stale": "已过期 · {{age}}更新",
+    "stale_unknown": "已过期",
+    "polled": "上次轮询",
+    "next_poll": "下次轮询",
+    "file": "文件",
+    "failed": "更新失败 · 数据来自{{age}}"
+  },
   "quota_management": {
     "search_label": "搜索账号",
     "search_placeholder": "按文件名或邮箱搜索",

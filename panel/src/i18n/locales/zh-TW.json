@@ -1616,6 +1616,19 @@
       }
     }
   },
+  "quota_card": {
+    "left": "剩餘",
+    "resets": "{{time}} 重置",
+    "details": "詳情",
+    "updated_now": "剛剛更新",
+    "updated": "{{age}}更新",
+    "stale": "已過期 · {{age}}更新",
+    "stale_unknown": "已過期",
+    "polled": "上次輪詢",
+    "next_poll": "下次輪詢",
+    "file": "檔案",
+    "failed": "更新失敗 · 資料來自{{age}}"
+  },
   "quota_management": {
     "search_label": "搜尋帳號",
     "search_placeholder": "依檔案名稱或電子郵件搜尋",

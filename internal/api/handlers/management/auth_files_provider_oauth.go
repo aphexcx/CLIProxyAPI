@@ -172,6 +172,9 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		if tokenStorage.OrganizationName != "" {
 			metadata["organization_name"] = tokenStorage.OrganizationName
 		}
+		if tokenStorage.PlanTier != "" {
+			metadata["plan_tier"] = tokenStorage.PlanTier
+		}
 		if len(tokenStorage.DeviceIDs) > 0 {
 			metadata[claude.ClaudeDeviceIDsMetadataKey] = append([]string(nil), tokenStorage.DeviceIDs...)
 		}

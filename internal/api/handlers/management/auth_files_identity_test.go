@@ -21,9 +21,10 @@ func TestBuildAuthFileEntryV8AccountIdentity(t *testing.T) {
 		want     string
 	}{
 		{"claude", "organization_name", "  Example Organization  ", "Example Organization"},
+		{"claude", "plan_tier", "  Max 20x  ", "Max 20x"},
 		{"codex", "plan_type", "  pro  ", "pro"},
 	} {
-		t.Run(tc.provider, func(t *testing.T) {
+		t.Run(tc.provider+"/"+tc.field, func(t *testing.T) {
 			auth := &coreauth.Auth{
 				ID: "seat.json", FileName: "seat.json", Provider: tc.provider,
 				Attributes: map[string]string{"runtime_only": "true"},
@@ -66,9 +67,10 @@ func TestBuildAuthFileEntryV8AccountIdentity(t *testing.T) {
 func TestListAuthFilesFromDiskV8AccountIdentity(t *testing.T) {
 	for _, tc := range []struct{ provider, field, value string }{
 		{"claude", "organization_name", "Example Organization"},
+		{"claude", "plan_tier", "Max 20x"},
 		{"codex", "plan_type", "pro"},
 	} {
-		t.Run(tc.provider, func(t *testing.T) {
+		t.Run(tc.provider+"/"+tc.field, func(t *testing.T) {
 			dir := t.TempDir()
 			h := &Handler{cfg: &config.Config{AuthDir: dir}}
 			for _, value := range []any{"  " + tc.value + "  ", "  ", nil, 42} {
