@@ -101,6 +101,12 @@ describe('formatResetWords', () => {
     expect(formatResetWords(noon + 13 * DAY_MS, noon, 'en')).toBe('Nov 12');
   });
 
+  test('never words a past reset as a time later today', () => {
+    const yesterday = noon - 15 * HOUR_MS;
+    expect(formatResetWords(yesterday, noon, 'en')).toBe(`yesterday ${time(yesterday)}`);
+    expect(formatResetWords(noon - 3 * DAY_MS, noon, 'en')).toBe('Oct 27');
+  });
+
   test('falls back to the default locale for an unknown language tag', () => {
     expect(() => formatResetWords(noon + HOUR_MS, noon, 'not a locale')).not.toThrow();
   });
@@ -193,9 +199,16 @@ describe('describeSeatFreshness', () => {
   });
 
   test('paused and queued polls are named', () => {
-    expect(describeSeatFreshness(quota(cache({ status: 'polling_paused' })), now)?.kind).toBe(
+    // The server marks every paused seat stale; a failed last poll does not hide the pause.
+    const paused = cache({ status: 'polling_paused', nextPollAt: null });
+    expect(describeSeatFreshness(quota(paused, true), now)?.kind).toBe('paused');
+    expect(describeSeatFreshness(quota({ ...paused, lastStatus: 401 }, true), now)?.kind).toBe(
       'paused'
     );
+    const neverPolled = { ...paused, polledAt: null, ageSeconds: null, lastPollAt: null };
+    expect(
+      describeSeatFreshness({ serverCache: neverPolled, observedAt: null, stale: true }, now)?.kind
+    ).toBe('paused');
     expect(describeSeatFreshness(quota(cache({ refreshing: true })), now)?.kind).toBe('queued');
   });
 

@@ -61,18 +61,20 @@ const safeLocale = (locale?: string): string | undefined => {
 
 /**
  * A reset instant in plain words, in the reader's clock: `10:06 PM` today,
- * `tomorrow 3:48 AM`, `Mon 11:53 PM` within the week, `Nov 12` beyond it.
+ * `tomorrow 3:48 AM` / `yesterday 9:12 PM`, `Mon 11:53 PM` within the coming
+ * week, `Nov 12` beyond it or further back. Callers word past instants
+ * themselves ("Reset at …"), since stale data can carry them.
  */
 export const formatResetWords = (atMs: number, nowMs: number, locale?: string): string => {
   const lang = safeLocale(locale);
   const time = new Date(atMs).toLocaleTimeString(lang, { hour: 'numeric', minute: '2-digit' });
   const days = Math.round((startOfDay(atMs) - startOfDay(nowMs)) / DAY_MS);
-  if (days <= 0) return time;
-  if (days === 1) {
-    const tomorrow = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' }).format(1, 'day');
-    return `${tomorrow} ${time}`;
+  if (days === 0) return time;
+  if (days === 1 || days === -1) {
+    const day = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' }).format(days, 'day');
+    return `${day} ${time}`;
   }
-  if (days < 7) {
+  if (days > 1 && days < 7) {
     return `${new Date(atMs).toLocaleDateString(lang, { weekday: 'short' })} ${time}`;
   }
   return new Date(atMs).toLocaleDateString(lang, { month: 'short', day: 'numeric' });
@@ -93,9 +95,10 @@ type FreshnessSource = Pick<ClaudeQuotaState, 'serverCache' | 'observedAt' | 'st
  * server's own clock where it is known, so a skewed browser clock cannot make
  * fresh data look old.
  *
- * `polledAt` is the last successful poll, so it stays null after a failed
- * first poll and after a hub restart; a completed failure and retained stale
- * usage both outrank "waiting for the first poll".
+ * A paused seat is always reported stale by the server, so pause is checked
+ * first. `polledAt` is the last successful poll, so it stays null after a
+ * failed first poll and after a hub restart; a completed failure and retained
+ * stale usage both outrank "waiting for the first poll".
  */
 export const describeSeatFreshness = (
   quota: FreshnessSource,
@@ -112,6 +115,7 @@ export const describeSeatFreshness = (
   const firstPollRunning = cache
     ? !cache.polledAt && cache.refreshing && cache.lastStatus === 0
     : false;
+  if (cache?.status === 'polling_paused') return { kind: 'paused' };
   if (
     cache?.lastPollAt &&
     !firstPollRunning &&
@@ -122,7 +126,6 @@ export const describeSeatFreshness = (
   if (quota.stale && quota.observedAt) return { kind: 'stale', ageMs };
   if (cache && !cache.polledAt) return firstPollRunning ? { kind: 'queued' } : { kind: 'pending' };
   if (quota.stale) return { kind: 'stale', ageMs };
-  if (cache?.status === 'polling_paused') return { kind: 'paused' };
   if (cache?.refreshing) return { kind: 'queued' };
   if (!cache && !quota.observedAt) return null;
   return { kind: 'fresh', ageMs };
