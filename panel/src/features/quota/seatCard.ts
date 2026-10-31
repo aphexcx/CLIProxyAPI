@@ -28,7 +28,11 @@ export const readSeatPlanTier = (file: AuthFileItem): string | null => {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 };
 
-/** Split windows into the binding pair (in display order) and the rest (in payload order). */
+/**
+ * Split windows into the binding pair (in display order) and the rest (in payload
+ * order). A seat reporting neither binding window leads with the first two it has,
+ * so a scoped-only snapshot never reads as empty.
+ */
 export const splitSeatWindows = <T extends SeatWindow>(
   type: SeatCardType,
   windows: readonly T[]
@@ -38,6 +42,7 @@ export const splitSeatWindows = <T extends SeatWindow>(
     const match = windows.find((window) => ids.includes(window.id));
     if (match) headline.push(match);
   }
+  if (headline.length === 0) headline.push(...windows.slice(0, 2));
   return { headline, rest: windows.filter((window) => !headline.includes(window)) };
 };
 
