@@ -53,6 +53,19 @@ describe('splitSeatWindows', () => {
     expect(ids(team.rest)).toEqual(['code-review-five-hour']);
   });
 
+  test('a seat without either binding window leads with the windows it has', () => {
+    const scopedOnly = splitSeatWindows('claude', [
+      { id: 'seven-day-fable' },
+      { id: 'seven-day-sonnet' },
+      { id: 'seven-day-opus' },
+    ]);
+    expect(ids(scopedOnly.headline)).toEqual(['seven-day-fable', 'seven-day-sonnet']);
+    expect(ids(scopedOnly.rest)).toEqual(['seven-day-opus']);
+    const none = splitSeatWindows('codex', []);
+    expect(none.headline).toEqual([]);
+    expect(none.rest).toEqual([]);
+  });
+
   test('only Claude and Codex cards use the seat layout', () => {
     expect(['claude', 'codex', 'kimi', 'xai'].map(isSeatCardType)).toEqual([
       true,

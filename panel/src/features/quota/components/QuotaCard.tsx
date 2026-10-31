@@ -292,6 +292,9 @@ export function QuotaCard(props: QuotaCardProps) {
     const nextPollAt = (quota as ClaudeQuotaState | undefined)?.serverCache?.nextPollAt;
     const observedAt = (quota as ClaudeQuotaState | undefined)?.observedAt;
     const waitingForFirstPoll = freshness?.kind === 'pending' || freshness?.kind === 'queued';
+    // Same rule as the Claude body: balances alone are usage, so the card is not "empty".
+    const claudeBalances = Boolean(claudeQuota?.extraUsage || claudeQuota?.dollarWindows?.length);
+    const showEmpty = hasData && !waitingForFirstPoll && !claudeBalances;
 
     return (
       <article
@@ -334,7 +337,7 @@ export function QuotaCard(props: QuotaCardProps) {
             {status === 'error' && errorStrip}
             {headline.length > 0 ? (
               <SeatGauges windows={headline} classes={quotaClasses} dimmed={freshnessWarn} />
-            ) : hasData && !waitingForFirstPoll ? (
+            ) : showEmpty ? (
               <div className={styles.idleHint}>{t(`${adapter.i18nPrefix}.empty_windows`)}</div>
             ) : null}
           </>
