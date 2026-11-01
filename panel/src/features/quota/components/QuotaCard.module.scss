@@ -87,9 +87,10 @@
 }
 
 /* ---------- Seat cards (Claude, Codex): who, which plan, what is left ----------
- * Hierarchy by size and weight, not by color: the account at 15px, the two
- * binding windows as 30px figures, everything else at 12px. Small text stays on
- * --text-secondary so it keeps 4.5:1 on the white theme. */
+ * Hierarchy by size and weight, not by color: the account at 15px, the
+ * at-a-glance windows' "% left" as 24px figures beside bars that fill with what
+ * was used, everything else at 12px. Small text stays on --text-secondary so it
+ * keeps 4.5:1 on the white theme. */
 
 /* Opening one card's details must not stretch its row neighbours. */
 .seatCard {
@@ -152,10 +153,13 @@
   white-space: nowrap;
 }
 
+/* One window per line, so two windows lay out as two and three as three, never a gap.
+ * The figure column is shared, so every bar of a card ends at the same x. */
 .gauges {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 16px;
+  row-gap: 14px;
   padding-top: 4px;
 }
 
@@ -164,50 +168,69 @@
   color: var(--text-secondary);
 }
 
+/* Label over the bar, reset under it; the "% left" figure beside the bar on the right. */
 .gauge {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-template-areas:
+    'label figure'
+    'bar figure'
+    'reset figure';
+  row-gap: 5px;
+  align-items: center;
   min-width: 0;
 }
 
 .gaugeLabel {
+  grid-area: label;
+  min-width: 0;
   font-size: 12px;
   font-weight: 500;
+  line-height: 1.35;
   color: var(--text-secondary);
   @include text-ellipsis;
 }
 
 .gaugeFigure {
+  grid-area: figure;
   display: flex;
   align-items: baseline;
-  gap: 5px;
-  min-width: 0;
+  justify-content: flex-end;
+  gap: 4px;
 }
 
 .gaugeNumber {
-  font-size: 30px;
+  font-size: 24px;
   font-weight: 600;
   line-height: 1;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
   color: var(--text-primary);
 }
 
 .gaugeUnit {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--text-secondary);
 }
 
 .gaugeReset {
+  grid-area: reset;
+  min-width: 0;
   font-size: 12px;
   line-height: 1.35;
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
+  @include text-ellipsis;
 }
 
 /* Bound onto the meter's track class; scoped under .gauge to outrank the shared .quotaBar. */
+.gauge .gaugeTrack {
+  grid-area: bar;
+  height: 8px;
+}
+
 .gauge .trackExhausted {
   background: color-mix(in srgb, var(--viz-failure) 30%, transparent);
 }
@@ -431,11 +454,11 @@
 
 @include mobile {
   .gauges {
-    gap: 16px;
+    column-gap: 12px;
   }
 
   .gaugeNumber {
-    font-size: 28px;
+    font-size: 22px;
   }
 }
 

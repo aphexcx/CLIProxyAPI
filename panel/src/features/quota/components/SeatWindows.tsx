@@ -1,7 +1,8 @@
 /**
- * Seat-card usage windows: the binding pair as large "% left" figures, and the
- * remaining windows as compact rows inside the card's details. Both read the
- * same normalized windows and say their resets in words ("Resets 10:06 PM").
+ * Seat-card usage windows: the at-a-glance windows stacked one per line, and the
+ * remaining windows as compact rows inside the card's details. Every bar fills
+ * left to right with what was used, with the "% left" figure beside it; both read
+ * the same normalized windows and say their resets in words ("Resets 10:06 PM").
  */
 
 import { useTranslation } from 'react-i18next';
@@ -29,7 +30,17 @@ function useWindowText(window: SeatWindow) {
           time: formatResetWords(resetAt, now, i18n.resolvedLanguage),
         })
       : null;
-  return { label, left, reset, t };
+  const figure = left === null ? null : `${Math.round(left)}% ${t('quota_card.left')}`;
+  // The bar is a meter of the used share; its name carries the window and the figure.
+  const meter = {
+    fill: 'used' as const,
+    ariaLabel: figure === null ? label : `${label}: ${figure}`,
+    ariaValueText:
+      left === null
+        ? undefined
+        : t('claude_quota.usage_utilization', { percent: 100 - Math.round(left) }),
+  };
+  return { label, left, figure, reset, meter, t };
 }
 
 function SeatGauge({
@@ -41,21 +52,24 @@ function SeatGauge({
   classes: QuotaClassMap;
   index: number;
 }) {
-  const { label, left, reset, t } = useWindowText(window);
+  const { label, left, reset, meter, t } = useWindowText(window);
   // Judged on the shown figure, so "0% left" always reads as exhausted.
   const exhausted = left !== null && Math.round(left) <= 0;
-  // An empty fill draws nothing, so an exhausted window tints its track instead.
-  const meterClasses = exhausted
-    ? { ...classes, quotaBar: `${classes.quotaBar} ${styles.trackExhausted}` }
-    : classes;
+  // A rounded "0% left" can leave a sliver unfilled, so an exhausted track is tinted too.
+  const meterClasses = {
+    ...classes,
+    quotaBar: exhausted
+      ? `${classes.quotaBar} ${styles.gaugeTrack} ${styles.trackExhausted}`
+      : `${classes.quotaBar} ${styles.gaugeTrack}`,
+  };
   return (
     <div className={styles.gauge}>
       <span className={styles.gaugeLabel}>{label}</span>
+      <QuotaMeter percent={left} classes={meterClasses} index={index} {...meter} />
       <span className={styles.gaugeFigure}>
         <span className={styles.gaugeNumber}>{left === null ? '—' : `${Math.round(left)}%`}</span>
         {left !== null && <span className={styles.gaugeUnit}>{t('quota_card.left')}</span>}
       </span>
-      <QuotaMeter percent={left} classes={meterClasses} index={index} />
       {reset && (
         <span
           className={exhausted ? `${styles.gaugeReset} ${styles.gaugeResetNow}` : styles.gaugeReset}
@@ -67,7 +81,7 @@ function SeatGauge({
   );
 }
 
-/** The binding windows, side by side at every width; dimmed when the data is not current. */
+/** The at-a-glance windows, one per line in display order; dimmed when the data is not current. */
 export function SeatGauges({
   windows,
   classes,
@@ -87,18 +101,16 @@ export function SeatGauges({
 }
 
 function SeatWindowRow({ window, classes }: { window: SeatWindow; classes: QuotaClassMap }) {
-  const { label, left, reset, t } = useWindowText(window);
+  const { label, left, figure, reset, meter } = useWindowText(window);
   return (
     <div className={styles.windowRow}>
       <div className={styles.windowRowHead}>
         <span className={styles.windowRowLabel} title={label}>
           {label}
         </span>
-        <span className={styles.windowRowFigure}>
-          {left === null ? '—' : `${Math.round(left)}% ${t('quota_card.left')}`}
-        </span>
+        <span className={styles.windowRowFigure}>{figure ?? '—'}</span>
       </div>
-      <QuotaMeter percent={left} classes={classes} />
+      <QuotaMeter percent={left} classes={classes} {...meter} />
       {reset && <span className={styles.windowRowReset}>{reset}</span>}
     </div>
   );

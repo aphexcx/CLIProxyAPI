@@ -29,15 +29,50 @@ describe('readSeatPlanTier', () => {
 describe('splitSeatWindows', () => {
   const ids = (windows: { id: string }[]) => windows.map((window) => window.id);
 
-  test('leads Claude with the 5-hour and 7-day windows the hub routes on', () => {
+  test('leads Claude with the 5-hour, 7-day and 7-day Fable windows, in that order', () => {
     const { headline, rest } = splitSeatWindows('claude', [
       { id: 'seven-day-sonnet' },
+      { id: 'seven-day-fable' },
       { id: 'seven-day' },
       { id: 'five-hour' },
+      { id: 'seven-day-opus' },
+    ]);
+    expect(ids(headline)).toEqual(['five-hour', 'seven-day', 'seven-day-fable']);
+    expect(ids(rest)).toEqual(['seven-day-sonnet', 'seven-day-opus']);
+  });
+
+  test('a Claude seat without a five-hour window leads with the two it has', () => {
+    const { headline, rest } = splitSeatWindows('claude', [
+      { id: 'seven-day' },
+      { id: 'seven-day-sonnet' },
       { id: 'seven-day-fable' },
     ]);
+    expect(ids(headline)).toEqual(['seven-day', 'seven-day-fable']);
+    expect(ids(rest)).toEqual(['seven-day-sonnet']);
+  });
+
+  test('a five-hour window with unknown usage is no window at all', () => {
+    const claude = splitSeatWindows('claude', [
+      { id: 'five-hour', usedPercent: null },
+      { id: 'seven-day', usedPercent: 41 },
+      { id: 'seven-day-fable', usedPercent: 27 },
+    ]);
+    expect(ids(claude.headline)).toEqual(['seven-day', 'seven-day-fable']);
+    expect(ids(claude.rest)).toEqual([]);
+    const codex = splitSeatWindows('codex', [
+      { id: 'five-hour', usedPercent: null },
+      { id: 'weekly', usedPercent: 71 },
+    ]);
+    expect(ids(codex.headline)).toEqual(['weekly']);
+    expect(ids(codex.rest)).toEqual([]);
+  });
+
+  test('an unknown 7-day figure still holds its place', () => {
+    const { headline } = splitSeatWindows('claude', [
+      { id: 'five-hour', usedPercent: 62 },
+      { id: 'seven-day', usedPercent: null },
+    ]);
     expect(ids(headline)).toEqual(['five-hour', 'seven-day']);
-    expect(ids(rest)).toEqual(['seven-day-sonnet', 'seven-day-fable']);
   });
 
   test('leads Codex with the primary and the weekly or monthly window', () => {
@@ -53,14 +88,30 @@ describe('splitSeatWindows', () => {
     expect(ids(team.rest)).toEqual(['code-review-five-hour']);
   });
 
-  test('a seat without either binding window leads with the windows it has', () => {
-    const scopedOnly = splitSeatWindows('claude', [
+  test('a Codex seat without a five-hour window (Pro 200) leads with its weekly window', () => {
+    const { headline, rest } = splitSeatWindows('codex', [
+      { id: 'weekly' },
+      { id: 'astra-weekly-0' },
+    ]);
+    expect(ids(headline)).toEqual(['weekly']);
+    expect(ids(rest)).toEqual(['astra-weekly-0']);
+  });
+
+  test('a seat without any headline window leads with the windows it has', () => {
+    const fableOnly = splitSeatWindows('claude', [
       { id: 'seven-day-fable' },
       { id: 'seven-day-sonnet' },
       { id: 'seven-day-opus' },
     ]);
-    expect(ids(scopedOnly.headline)).toEqual(['seven-day-fable', 'seven-day-sonnet']);
-    expect(ids(scopedOnly.rest)).toEqual(['seven-day-opus']);
+    expect(ids(fableOnly.headline)).toEqual(['seven-day-fable']);
+    expect(ids(fableOnly.rest)).toEqual(['seven-day-sonnet', 'seven-day-opus']);
+    const scopedOnly = splitSeatWindows('claude', [
+      { id: 'seven-day-sonnet' },
+      { id: 'seven-day-opus' },
+      { id: 'seven-day-cowork' },
+    ]);
+    expect(ids(scopedOnly.headline)).toEqual(['seven-day-sonnet', 'seven-day-opus']);
+    expect(ids(scopedOnly.rest)).toEqual(['seven-day-cowork']);
     const none = splitSeatWindows('codex', []);
     expect(none.headline).toEqual([]);
     expect(none.rest).toEqual([]);

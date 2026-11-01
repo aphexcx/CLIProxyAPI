@@ -2,7 +2,8 @@
  * Seat-card presentation logic for Claude and Codex quota cards.
  *
  * React-free and SCSS-free so tests can import it directly. The card leads with
- * the seat, its plan, and the two windows the hub routes on; everything else is
+ * the seat, its plan, and the windows that matter at a glance (Claude: 5-hour,
+ * 7-day, 7-day Fable; Codex: 5-hour and weekly or monthly); everything else is
  * one disclosure away.
  */
 
@@ -11,11 +12,11 @@ import { DAY_MS } from '@/utils/time/durations';
 
 export type SeatCardType = 'claude' | 'codex';
 
-type SeatWindow = { id: string };
+type SeatWindow = { id: string; usedPercent?: number | null };
 
-/** Window ids the hub routes on, in display order; Codex teams use a monthly second window. */
+/** At-a-glance window ids, in display order; Codex teams use a monthly second window. */
 const HEADLINE_WINDOW_IDS: Record<SeatCardType, readonly (readonly string[])[]> = {
-  claude: [['five-hour'], ['seven-day']],
+  claude: [['five-hour'], ['seven-day'], ['seven-day-fable']],
   codex: [['five-hour'], ['weekly', 'monthly']],
 };
 
@@ -29,21 +30,28 @@ export const readSeatPlanTier = (file: AuthFileItem): string | null => {
 };
 
 /**
- * Split windows into the binding pair (in display order) and the rest (in payload
- * order). A seat reporting neither binding window leads with the first two it has,
- * so a scoped-only snapshot never reads as empty.
+ * Split windows into the at-a-glance ones (in display order) and the rest (in
+ * payload order). A seat reporting none of the at-a-glance windows leads with the
+ * first two it has, so a scoped-only snapshot never reads as empty.
+ *
+ * Some plans have no five-hour limit (Claude Ultra, Codex Pro 200). The payload
+ * says so by leaving the window out or giving it no figure, and a five-hour entry
+ * without a figure is dropped here, so such a card shows no five-hour row at all.
  */
 export const splitSeatWindows = <T extends SeatWindow>(
   type: SeatCardType,
   windows: readonly T[]
 ): { headline: T[]; rest: T[] } => {
+  const present = windows.filter(
+    (window) => !(window.id === 'five-hour' && window.usedPercent === null)
+  );
   const headline: T[] = [];
   for (const ids of HEADLINE_WINDOW_IDS[type]) {
-    const match = windows.find((window) => ids.includes(window.id));
+    const match = present.find((window) => ids.includes(window.id));
     if (match) headline.push(match);
   }
-  if (headline.length === 0) headline.push(...windows.slice(0, 2));
-  return { headline, rest: windows.filter((window) => !headline.includes(window)) };
+  if (headline.length === 0) headline.push(...present.slice(0, 2));
+  return { headline, rest: present.filter((window) => !headline.includes(window)) };
 };
 
 /** Remaining share of a window, clamped to 0–100; null when usage is unknown. */

@@ -2,8 +2,10 @@
  * Provider quota card: identity, loading/error state, quota body, and actions.
  * Claude observations remain visible while refreshing or after a failed read.
  *
- * Claude and Codex seats lead with the account, its plan and the two windows
- * the hub routes on; everything else sits behind one "Details" disclosure.
+ * Claude and Codex seats lead with the account, its plan and the windows that
+ * matter at a glance (Claude: 5-hour when the plan has one, 7-day, 7-day Fable;
+ * Codex: 5-hour and weekly or monthly); everything else sits behind one
+ * "Details" disclosure.
  */
 
 import { useId, useState, type CSSProperties, type ReactNode } from 'react';
