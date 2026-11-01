@@ -12,7 +12,7 @@ import { DAY_MS } from '@/utils/time/durations';
 
 export type SeatCardType = 'claude' | 'codex';
 
-type SeatWindow = { id: string; usedPercent?: number | null };
+type SeatWindow = { id: string; usedPercent?: number | null; resetAtMs?: number | null };
 
 /** At-a-glance window ids, in display order; Codex teams use a monthly second window. */
 const HEADLINE_WINDOW_IDS: Record<SeatCardType, readonly (readonly string[])[]> = {
@@ -35,15 +35,18 @@ export const readSeatPlanTier = (file: AuthFileItem): string | null => {
  * first two it has, so a scoped-only snapshot never reads as empty.
  *
  * Some plans have no five-hour limit (Claude Ultra, Codex Pro 200). The payload
- * says so by leaving the window out or giving it no figure, and a five-hour entry
- * without a figure is dropped here, so such a card shows no five-hour row at all.
+ * says so by leaving the window out (the providers' builders then make no window)
+ * or by sending one with neither a figure nor a reset, which is dropped here, so
+ * such a card shows no five-hour row at all. A window with a reset but no figure
+ * is a real window whose usage is unknown, and keeps its place.
  */
 export const splitSeatWindows = <T extends SeatWindow>(
   type: SeatCardType,
   windows: readonly T[]
 ): { headline: T[]; rest: T[] } => {
   const present = windows.filter(
-    (window) => !(window.id === 'five-hour' && window.usedPercent === null)
+    (window) =>
+      !(window.id === 'five-hour' && window.usedPercent === null && window.resetAtMs == null)
   );
   const headline: T[] = [];
   for (const ids of HEADLINE_WINDOW_IDS[type]) {
@@ -57,6 +60,20 @@ export const splitSeatWindows = <T extends SeatWindow>(
 /** Remaining share of a window, clamped to 0–100; null when usage is unknown. */
 export const remainingPercent = (usedPercent: number | null): number | null =>
   usedPercent === null ? null : Math.max(0, Math.min(100, 100 - usedPercent));
+
+/**
+ * The whole "% left" a window shows and the used share its bar announces. Both
+ * come from the one rounded figure, so they always sum to 100 and never disagree
+ * (QuotaMeter's aria-valuenow follows the same rule).
+ */
+export const seatWindowFigures = (
+  usedPercent: number | null
+): { left: number; used: number } | null => {
+  const left = remainingPercent(usedPercent);
+  if (left === null) return null;
+  const shown = Math.round(left);
+  return { left: shown, used: 100 - shown };
+};
 
 const startOfDay = (ms: number): number => {
   const date = new Date(ms);

@@ -1604,7 +1604,8 @@
     "next_poll": "Следующий опрос",
     "file": "Файл",
     "failed": "Не удалось обновить · данные {{age}}",
-    "reset_passed": "Сброшено {{time}}"
+    "reset_passed": "Сброшено {{time}}",
+    "used": "Использовано {{percent}}%"
   },
   "quota_management": {
     "search_label": "Поиск аккаунтов",

@@ -8,7 +8,7 @@
 import { useTranslation } from 'react-i18next';
 import type { ClaudeQuotaWindow, CodexQuotaWindow } from '@/types';
 import { useNow } from '@/hooks/useNow';
-import { formatResetWords, remainingPercent } from '../seatCard';
+import { formatResetWords, remainingPercent, seatWindowFigures } from '../seatCard';
 import type { QuotaClassMap } from '../types';
 import { QuotaMeter } from './QuotaMeter';
 import styles from './QuotaCard.module.scss';
@@ -30,17 +30,15 @@ function useWindowText(window: SeatWindow) {
           time: formatResetWords(resetAt, now, i18n.resolvedLanguage),
         })
       : null;
-  const figure = left === null ? null : `${Math.round(left)}% ${t('quota_card.left')}`;
+  const figures = seatWindowFigures(window.usedPercent);
+  const figure = figures === null ? null : `${figures.left}% ${t('quota_card.left')}`;
   // The bar is a meter of the used share; its name carries the window and the figure.
   const meter = {
     fill: 'used' as const,
     ariaLabel: figure === null ? label : `${label}: ${figure}`,
-    ariaValueText:
-      left === null
-        ? undefined
-        : t('claude_quota.usage_utilization', { percent: 100 - Math.round(left) }),
+    ariaValueText: figures === null ? undefined : t('quota_card.used', { percent: figures.used }),
   };
-  return { label, left, figure, reset, meter, t };
+  return { label, left, figures, figure, reset, meter, t };
 }
 
 function SeatGauge({
@@ -52,9 +50,9 @@ function SeatGauge({
   classes: QuotaClassMap;
   index: number;
 }) {
-  const { label, left, reset, meter, t } = useWindowText(window);
+  const { label, left, figures, reset, meter, t } = useWindowText(window);
   // Judged on the shown figure, so "0% left" always reads as exhausted.
-  const exhausted = left !== null && Math.round(left) <= 0;
+  const exhausted = figures !== null && figures.left <= 0;
   // A rounded "0% left" can leave a sliver unfilled, so an exhausted track is tinted too.
   const meterClasses = {
     ...classes,
@@ -67,8 +65,8 @@ function SeatGauge({
       <span className={styles.gaugeLabel}>{label}</span>
       <QuotaMeter percent={left} classes={meterClasses} index={index} {...meter} />
       <span className={styles.gaugeFigure}>
-        <span className={styles.gaugeNumber}>{left === null ? '—' : `${Math.round(left)}%`}</span>
-        {left !== null && <span className={styles.gaugeUnit}>{t('quota_card.left')}</span>}
+        <span className={styles.gaugeNumber}>{figures === null ? '—' : `${figures.left}%`}</span>
+        {figures !== null && <span className={styles.gaugeUnit}>{t('quota_card.left')}</span>}
       </span>
       {reset && (
         <span

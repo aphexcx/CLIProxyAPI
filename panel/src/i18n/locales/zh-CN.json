@@ -1600,7 +1600,8 @@
     "next_poll": "下次轮询",
     "file": "文件",
     "failed": "更新失败 · 数据来自{{age}}",
-    "reset_passed": "已于{{time}}重置"
+    "reset_passed": "已于{{time}}重置",
+    "used": "已使用 {{percent}}%"
   },
   "quota_management": {
     "search_label": "搜索账号",

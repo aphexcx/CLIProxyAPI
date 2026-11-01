@@ -5,6 +5,7 @@ import {
   isSeatCardType,
   readSeatPlanTier,
   remainingPercent,
+  seatWindowFigures,
   splitSeatWindows,
 } from '@/features/quota/seatCard';
 import { DAY_MS, HOUR_MS, MINUTE_MS } from '@/utils/time/durations';
@@ -51,20 +52,28 @@ describe('splitSeatWindows', () => {
     expect(ids(rest)).toEqual(['seven-day-sonnet']);
   });
 
-  test('a five-hour window with unknown usage is no window at all', () => {
+  test('a five-hour window with neither a figure nor a reset is no window at all', () => {
     const claude = splitSeatWindows('claude', [
-      { id: 'five-hour', usedPercent: null },
+      { id: 'five-hour', usedPercent: null, resetAtMs: null },
       { id: 'seven-day', usedPercent: 41 },
       { id: 'seven-day-fable', usedPercent: 27 },
     ]);
     expect(ids(claude.headline)).toEqual(['seven-day', 'seven-day-fable']);
     expect(ids(claude.rest)).toEqual([]);
     const codex = splitSeatWindows('codex', [
-      { id: 'five-hour', usedPercent: null },
+      { id: 'five-hour', usedPercent: null, resetAtMs: null },
       { id: 'weekly', usedPercent: 71 },
     ]);
     expect(ids(codex.headline)).toEqual(['weekly']);
     expect(ids(codex.rest)).toEqual([]);
+  });
+
+  test('a five-hour window with a reset but no figure keeps its place', () => {
+    const { headline } = splitSeatWindows('codex', [
+      { id: 'five-hour', usedPercent: null, resetAtMs: 1_793_560_000_000 },
+      { id: 'weekly', usedPercent: 71 },
+    ]);
+    expect(ids(headline)).toEqual(['five-hour', 'weekly']);
   });
 
   test('an unknown 7-day figure still holds its place', () => {
@@ -135,6 +144,21 @@ describe('remainingPercent', () => {
     [null, null],
   ] as const)('%p used leaves %p', (used, left) => {
     expect(remainingPercent(used)).toBe(left);
+  });
+});
+
+describe('seatWindowFigures', () => {
+  test.each([
+    [62, 38, 62],
+    [61.5, 39, 61],
+    [99.6, 0, 100],
+    [0.4, 100, 0],
+  ] as const)('%p used shows %p%% left and announces %p%% used', (used, left, announced) => {
+    expect(seatWindowFigures(used)).toEqual({ left, used: announced });
+  });
+
+  test('unknown usage has no figures', () => {
+    expect(seatWindowFigures(null)).toBeNull();
   });
 });
 

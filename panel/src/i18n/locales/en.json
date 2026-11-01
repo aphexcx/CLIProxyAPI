@@ -1601,7 +1601,8 @@
     "next_poll": "Next poll",
     "file": "File",
     "failed": "Update failed · data from {{age}}",
-    "reset_passed": "Reset at {{time}}"
+    "reset_passed": "Reset at {{time}}",
+    "used": "{{percent}}% used"
   },
   "quota_management": {
     "search_label": "Search accounts",

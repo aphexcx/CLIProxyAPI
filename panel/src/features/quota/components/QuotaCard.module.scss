@@ -168,15 +168,16 @@
   color: var(--text-secondary);
 }
 
-/* Label over the bar, reset under it; the "% left" figure beside the bar on the right. */
+/* Label over the bar, the "% left" figure beside the bar on the right, the reset
+ * under both in an implicit row that exists only when there is a reset, so the
+ * figure sits on the bar's line and the spacing holds either way. */
 .gauge {
   grid-column: 1 / -1;
   display: grid;
   grid-template-columns: subgrid;
   grid-template-areas:
     'label figure'
-    'bar figure'
-    'reset figure';
+    'bar figure';
   row-gap: 5px;
   align-items: center;
   min-width: 0;
@@ -194,6 +195,7 @@
 
 .gaugeFigure {
   grid-area: figure;
+  align-self: end;
   display: flex;
   align-items: baseline;
   justify-content: flex-end;
@@ -215,14 +217,14 @@
   color: var(--text-secondary);
 }
 
+/* Full width and wrapping, so a long reset never loses its time. */
 .gaugeReset {
-  grid-area: reset;
+  grid-column: 1 / -1;
   min-width: 0;
   font-size: 12px;
   line-height: 1.35;
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
-  @include text-ellipsis;
 }
 
 /* Bound onto the meter's track class; scoped under .gauge to outrank the shared .quotaBar. */

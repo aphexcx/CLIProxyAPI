@@ -61,6 +61,12 @@ describe('QuotaMeter, used fill (seat cards)', () => {
     expect(exhausted).toContain('aria-valuenow="100"');
   });
 
+  test('a fractional share draws exactly and announces the rounded figure', () => {
+    const html = seatBar(38.5);
+    expect(html).toContain('width:61.5%');
+    expect(html).toContain('aria-valuenow="61"');
+  });
+
   test('unknown usage draws an empty, unnamed track', () => {
     const html = seatBar(null);
     expect(html).toContain('width:0%');

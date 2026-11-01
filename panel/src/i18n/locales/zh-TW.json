@@ -1628,7 +1628,8 @@
     "next_poll": "下次輪詢",
     "file": "檔案",
     "failed": "更新失敗 · 資料來自{{age}}",
-    "reset_passed": "已於{{time}}重置"
+    "reset_passed": "已於{{time}}重置",
+    "used": "已使用 {{percent}}%"
   },
   "quota_management": {
     "search_label": "搜尋帳號",

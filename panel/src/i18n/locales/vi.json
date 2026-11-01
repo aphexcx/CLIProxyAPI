@@ -1557,7 +1557,8 @@
     "next_poll": "Lần truy vấn tới",
     "file": "Tệp",
     "failed": "Cập nhật thất bại · dữ liệu từ {{age}}",
-    "reset_passed": "Đã đặt lại {{time}}"
+    "reset_passed": "Đã đặt lại {{time}}",
+    "used": "Đã dùng {{percent}}%"
   },
   "quota_management": {
     "title": "Quản lý Quota",
