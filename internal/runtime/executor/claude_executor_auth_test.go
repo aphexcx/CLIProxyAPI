@@ -88,6 +88,8 @@ func TestClaudeExecutorPrepareRequestAuthPopulatesCredentialIdentity(t *testing.
 		profile.Account.Email = "user@example.com"
 		profile.Organization.UUID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 		profile.Organization.Name = "Example Org"
+		profile.Organization.OrganizationType = "claude_max"
+		profile.Organization.RateLimitTier = "default_claude_max_20x"
 		return profile, nil
 	}
 	auth := &cliproxyauth.Auth{
@@ -114,6 +116,9 @@ func TestClaudeExecutorPrepareRequestAuthPopulatesCredentialIdentity(t *testing.
 	}
 	if got := prepared.Metadata["organization_uuid"]; got != "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" {
 		t.Fatalf("organization_uuid = %#v, want upstream profile organization", got)
+	}
+	if got := prepared.Metadata["plan_tier"]; got != "Max 20x" {
+		t.Fatalf("plan_tier = %#v, want the profile's tier label", got)
 	}
 	if executor.ShouldPrepareRequestAuth(prepared) {
 		t.Fatal("ShouldPrepareRequestAuth() = true after identity was populated")

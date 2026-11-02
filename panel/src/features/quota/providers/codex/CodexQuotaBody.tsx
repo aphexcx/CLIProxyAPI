@@ -5,15 +5,7 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { CodexQuotaState } from '@/types';
-import {
-  normalizePlanType,
-  resolvePlanTier,
-  PREMIUM_CODEX_PLAN_TYPES,
-  buildResetDisplay,
-  formatInstantShort,
-  parseIsoToMs,
-  resolveResetMs,
-} from '@/utils/quota';
+import { buildResetDisplay, formatInstantShort, parseIsoToMs, resolveResetMs } from '@/utils/quota';
 import { resolveTimeZoneLabel } from '@/utils/time/timezone';
 import { formatDateTimeValue } from '@/utils/format';
 import { useNow } from '@/hooks/useNow';
@@ -21,17 +13,14 @@ import { QuotaMeter } from '../../components/QuotaMeter';
 import { QuotaCacheStatus } from '../../components/QuotaCacheStatus';
 import { QuotaResetLabel } from '../../components/QuotaResetLabel';
 import { collectQuotaRowInstants, pickUrgentRowId, resetCreditRowId } from '../../resetSchedule';
-import type { QuotaBodyProps, QuotaClassMap } from '../../types';
+import type { QuotaBodyProps } from '../../types';
+import { getCodexPlanLabel, getPlanValueClass } from './planLabel';
 
-const getPlanValueClass = (planType: string | null, classes: QuotaClassMap): string => {
-  // resolvePlanTier defines the elite/premium ordering, covered by quotaPlanTier tests.
-  const tier = resolvePlanTier(planType);
-  if (tier === 'elite') return classes.elitePlanValue;
-  if (tier === 'premium') return classes.premiumPlanValue;
-  return classes.codexPlanValue;
-};
-
-export function CodexQuotaBody({ quota, classes }: QuotaBodyProps<CodexQuotaState>) {
+export function CodexQuotaBody({
+  quota,
+  classes,
+  extrasOnly = false,
+}: QuotaBodyProps<CodexQuotaState>) {
   const { t, i18n } = useTranslation();
   const now = useNow();
   const locale = i18n.resolvedLanguage;
@@ -50,23 +39,7 @@ export function CodexQuotaBody({ quota, classes }: QuotaBodyProps<CodexQuotaStat
   const rateLimitResetCredits = quota.rateLimitResetCredits ?? [];
   const rateLimitResetCreditsError = quota.rateLimitResetCreditsError ?? '';
 
-  const getPlanLabel = (pt?: string | null): string | null => {
-    const normalized = normalizePlanType(pt);
-    if (!normalized) return null;
-    if (normalized === 'self_serve_business_prolite') {
-      return t('codex_quota.plan_business_premium');
-    }
-    if (normalized === 'pro') return t('codex_quota.plan_pro');
-    if (PREMIUM_CODEX_PLAN_TYPES.has(normalized) && normalized !== 'pro') {
-      return t('codex_quota.plan_prolite');
-    }
-    if (normalized === 'plus') return t('codex_quota.plan_plus');
-    if (normalized === 'team') return t('codex_quota.plan_team');
-    if (normalized === 'free') return t('codex_quota.plan_free');
-    return pt || normalized;
-  };
-
-  const planLabel = getPlanLabel(planType);
+  const planLabel = extrasOnly ? null : getCodexPlanLabel(t, planType);
   const planValueClass = getPlanValueClass(planType, classes);
 
   // Renewal was the one date on this card in a different shape (a full
@@ -84,7 +57,7 @@ export function CodexQuotaBody({ quota, classes }: QuotaBodyProps<CodexQuotaStat
 
   return (
     <>
-      <QuotaCacheStatus quota={quota} className={classes.quotaMessage} />
+      {!extrasOnly && <QuotaCacheStatus quota={quota} className={classes.quotaMessage} />}
       {(planLabel ||
         expiryDisplay ||
         creditsUnlimited ||
@@ -172,7 +145,7 @@ export function CodexQuotaBody({ quota, classes }: QuotaBodyProps<CodexQuotaStat
           })}
         </div>
       ) : null}
-      {windows.length === 0 ? (
+      {extrasOnly ? null : windows.length === 0 ? (
         <div className={classes.quotaMessage}>{t('codex_quota.empty_windows')}</div>
       ) : (
         windows.map((window, index) => {
