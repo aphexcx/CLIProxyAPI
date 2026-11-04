@@ -50,7 +50,7 @@ func parseOAuthUsage(body []byte) (map[string]OAuthUsageWindow, error) {
 			return
 		}
 		reset, errParse := time.Parse(time.RFC3339Nano, window.ResetsAt)
-		if errParse != nil {
+		if errParse != nil && window.ResetsAt != "" {
 			return
 		}
 		windows[name] = OAuthUsageWindow{Utilization: *percent, ResetsAt: reset}

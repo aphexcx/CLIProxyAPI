@@ -251,6 +251,7 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 	type result struct {
 		windows map[string]QuotaWindow
 		usage   json.RawMessage
+		started time.Time
 		err     error
 	}
 	// A poller that finishes late after cancellation must neither retain its slot
@@ -271,7 +272,7 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 		for name, window := range windows {
 			snapshot[name] = window
 		}
-		results <- result{snapshot, append(json.RawMessage(nil), usage...), errPoll}
+		results <- result{snapshot, append(json.RawMessage(nil), usage...), started, errPoll}
 	}()
 	for {
 		select {
@@ -292,9 +293,9 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 					m.refreshClaudeQuotaRanks()
 				}
 			} else if strings.EqualFold(base.Provider, "codex") {
-				m.applyCodexQuotaUsageSnapshot(ctx, cfg, base, observed.windows, observed.usage, time.Now())
+				m.applyCodexQuotaUsageSnapshot(ctx, cfg, base, observed.windows, observed.usage, time.Now(), observed.started)
 			} else {
-				m.applyClaudeQuotaUsageSnapshot(ctx, cfg, base, observed.windows, observed.usage, time.Now())
+				m.applyClaudeQuotaUsageSnapshot(ctx, cfg, base, observed.windows, observed.usage, time.Now(), observed.started)
 			}
 			return
 		}
@@ -420,7 +421,7 @@ func (m *Manager) applyClaudeQuotaUsage(ctx context.Context, cfg *internalconfig
 	m.applyClaudeQuotaUsageSnapshot(ctx, cfg, base, windows, nil, now)
 }
 
-func (m *Manager) applyClaudeQuotaUsageSnapshot(ctx context.Context, cfg *internalconfig.Config, base *Auth, windows map[string]QuotaWindow, usage json.RawMessage, now time.Time) {
+func (m *Manager) applyClaudeQuotaUsageSnapshot(ctx context.Context, cfg *internalconfig.Config, base *Auth, windows map[string]QuotaWindow, usage json.RawMessage, now time.Time, started ...time.Time) {
 	// Fence reloads and credential replacement. Network I/O happens before these locks.
 	release, errLock := m.lockAuthMutationContext(ctx, base.ID)
 	if errLock != nil {
@@ -439,7 +440,17 @@ func (m *Manager) applyClaudeQuotaUsageSnapshot(ctx context.Context, cfg *intern
 		release()
 		return
 	}
+	fullSnapshot := recordQuotaUsageSnapshot(auth, windows, now, started...)
 	fresh := mergeClaudeQuotaWindows(auth, windows)
+	if fullSnapshot {
+		// A missing mapped window in a successful full read releases its guard.
+		// These zero observations are only for reconciliation, not the listing.
+		for name := range cfg.Claude.Quota.WithDefaults().ModelWindows {
+			if _, present := auth.Quota.Windows[name]; !present {
+				fresh[name] = QuotaWindow{ObservedAt: auth.Quota.usageObservedAt, ResetsAt: now}
+			}
+		}
+	}
 	seat := m.claudeQuotaPollSeatLocked(auth.ID)
 	seat.polledAt, seat.epoch = now, auth.RegistrationEpoch
 	seat.usage = append(json.RawMessage(nil), usage...)

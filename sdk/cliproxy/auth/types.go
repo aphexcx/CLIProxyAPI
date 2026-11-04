@@ -337,6 +337,7 @@ type QuotaState struct {
 	// CooldownAt is the failure receipt barrier, independent of later state updates.
 	CooldownAt        time.Time `json:"cooldown_at,omitempty"`
 	usagePolicy       *quotaUsagePolicy
+	usageObservedAt   time.Time // Full usage snapshot, including absent/null windows.
 	creditsAvailable  bool
 	creditsObservedAt time.Time
 	// ObservedAt is the time the current Signals snapshot was observed.

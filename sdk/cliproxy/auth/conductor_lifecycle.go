@@ -502,6 +502,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	auth.Quota.Windows = existing.Quota.Clone().Windows
 	auth.Quota.RankExpiresAt = existing.Quota.RankExpiresAt
 	auth.Quota.usagePolicy = existing.Quota.usagePolicy
+	auth.Quota.usageObservedAt = existing.Quota.usageObservedAt
 	auth.Quota.creditsAvailable = existing.Quota.creditsAvailable
 	auth.Quota.creditsObservedAt = existing.Quota.creditsObservedAt
 	if advisoryQuota(auth.Quota) && auth.Quota.CooldownAt.Equal(existing.Quota.CooldownAt) {

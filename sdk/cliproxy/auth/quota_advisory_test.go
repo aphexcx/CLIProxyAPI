@@ -97,9 +97,9 @@ func TestQuotaAdvisoryResetAndRestore(t *testing.T) {
 	}
 }
 
-func TestQuotaAdvisoryRequiresFreshCompleteRoom(t *testing.T) {
+func TestQuotaAdvisoryRequiresFreshReportedRoom(t *testing.T) {
 	for _, provider := range []string{"claude", "codex"} {
-		for _, observation := range []string{"missing", "older", "equal", "exhausted", "partial", "expired", "stale"} {
+		for _, observation := range []string{"older", "equal", "exhausted", "stale"} {
 			t.Run(provider+"/"+observation, func(t *testing.T) {
 				m, auth, model := newAdvisoryQuotaManager(t, provider)
 				delay := 2 * time.Hour
@@ -108,8 +108,6 @@ func TestQuotaAdvisoryRequiresFreshCompleteRoom(t *testing.T) {
 				at := before.UpdatedAt.Add(time.Millisecond)
 				windows := advisoryQuotaWindows(at, 0)
 				switch observation {
-				case "missing":
-					windows = nil
 				case "older":
 					windows = advisoryQuotaWindows(before.UpdatedAt.Add(-time.Second), 0)
 				case "equal":
@@ -118,13 +116,6 @@ func TestQuotaAdvisoryRequiresFreshCompleteRoom(t *testing.T) {
 					windows = advisoryQuotaWindows(at, 100)
 				case "stale":
 					at = at.Add(3 * time.Minute)
-				case "partial":
-					delete(windows, "seven_day")
-				case "expired":
-					for name, window := range windows {
-						window.ResetsAt = at.Add(-time.Second)
-						windows[name] = window
-					}
 				}
 				applyAdvisoryQuota(m, auth, windows, `{"credits":{"has_credits":false}}`, at)
 				current, _ := m.GetByID(auth.ID)
@@ -558,5 +549,107 @@ func TestQuotaAdvisoryRestrictionsSurviveRestore(t *testing.T) {
 				t.Fatal("restoration lost the independent 403 beneath advisory quota")
 			}
 		})
+	}
+}
+
+func TestQuotaAdvisoryIdleClaudeUsage(t *testing.T) {
+	for _, shape := range []string{"null", "zero_null_reset", "empty", "expired"} {
+		t.Run(shape, func(t *testing.T) {
+			m, auth, model := newAdvisoryQuotaManager(t, "claude")
+			delay := 2 * time.Hour
+			m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "claude", Model: model, CredentialScope: true, RetryAfter: &delay, Error: &Error{HTTPStatus: 429}})
+			before, _ := m.GetByID(auth.ID)
+			at := before.UpdatedAt.Add(time.Millisecond)
+			windows := advisoryQuotaWindows(at, 0)
+			delete(windows, "five_hour") // The parser omits a null five_hour member.
+			if shape == "zero_null_reset" {
+				windows["five_hour"] = QuotaWindow{ObservedAt: at}
+			} else if shape == "empty" {
+				windows = nil
+			} else if shape == "expired" {
+				windows["five_hour"] = QuotaWindow{Utilization: 100, ObservedAt: at, ResetsAt: at.Add(-time.Second)}
+			}
+			applyAdvisoryQuota(m, auth, windows, `{"five_hour":null}`, at)
+			current, _ := m.GetByID(auth.ID)
+			if blocked, _, _ := isAuthBlockedForModel(current, model, at); blocked {
+				t.Fatal("idle Claude usage retained a contradicted credential cooldown")
+			}
+		})
+	}
+}
+
+func TestQuotaAdvisoryCodexSevenDayUsage(t *testing.T) {
+	for _, retained := range []bool{false, true} {
+		t.Run(fmt.Sprint(retained), func(t *testing.T) {
+			m, auth, model := newAdvisoryQuotaManager(t, "codex")
+			if retained {
+				old := time.Now().Add(-10 * time.Minute)
+				windows := advisoryQuotaWindows(old, 100)
+				windows["additional/spark/seven_day"] = windows["seven_day"]
+				applyAdvisoryQuota(m, auth, windows, "{}", old)
+			}
+			delay := 2 * time.Hour
+			m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "codex", Model: model, CredentialScope: true, RetryAfter: &delay, Error: &Error{HTTPStatus: 429}})
+			before, _ := m.GetByID(auth.ID)
+			at := before.UpdatedAt.Add(time.Millisecond)
+			windows := map[string]QuotaWindow{"seven_day": {Utilization: 0, ObservedAt: at, ResetsAt: at.Add(24 * time.Hour)}}
+			applyAdvisoryQuota(m, auth, windows, `{"credits":{"has_credits":false}}`, at)
+			current, _ := m.GetByID(auth.ID)
+			if blocked, _, _ := isAuthBlockedForModel(current, model, at); blocked {
+				t.Fatal("Codex Pro's seven-day-only usage retained credential quota")
+			}
+			if len(current.Quota.Windows) != 1 {
+				t.Fatal("a newer full poll retained an omitted quota window")
+			}
+		})
+	}
+}
+
+func TestQuotaAdvisoryEmptyReadKeepsReceiptBarrier(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			m, auth, model := newAdvisoryQuotaManager(t, provider)
+			delay := 2 * time.Hour
+			m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: provider, Model: model, CredentialScope: true, RetryAfter: &delay, Error: &Error{HTTPStatus: 429}})
+			before, _ := m.GetByID(auth.ID)
+			at, started := before.UpdatedAt.Add(time.Second), before.UpdatedAt.Add(-time.Second)
+			cfg := m.runtimeConfig.Load().(*config.Config)
+			if provider == "claude" {
+				m.applyClaudeQuotaUsageSnapshot(context.Background(), cfg, auth, nil, nil, at, started)
+			} else {
+				m.applyCodexQuotaUsageSnapshot(context.Background(), cfg, auth, nil, nil, at, started)
+			}
+			current, _ := m.GetByID(auth.ID)
+			if blocked, _, _ := isAuthBlockedForModel(current, model, at); !blocked {
+				t.Fatal("an empty read started before the failure released it")
+			}
+			windows := map[string]QuotaWindow{"five_hour": {Utilization: 100, ObservedAt: at}}
+			applyAdvisoryQuota(m, auth, windows, "{}", at)
+			current, _ = m.GetByID(auth.ID)
+			if blocked, _, _ := isAuthBlockedForModel(current, model, at); !blocked {
+				t.Fatal("a present exhausted window with no reset was ignored")
+			}
+		})
+	}
+}
+
+func TestQuotaAdvisoryOmittedWindowCannotRearmGuard(t *testing.T) {
+	m, auth, model := newAdvisoryQuotaManager(t, "claude")
+	at := time.Now()
+	applyAdvisoryQuota(m, auth, advisoryQuotaWindows(at, 100), "{}", at)
+	current, _ := m.GetByID(auth.ID)
+	if blocked, _, _ := isAuthBlockedForModel(current, model, at); !blocked {
+		t.Fatal("fixture did not install the model cap guard")
+	}
+	next := at.Add(time.Second)
+	windows := map[string]QuotaWindow{"seven_day": {ObservedAt: next, ResetsAt: next.Add(time.Hour)}}
+	applyAdvisoryQuota(m, auth, windows, "{}", next)
+	current, _ = m.GetByID(auth.ID)
+	if blocked, _, _ := isAuthBlockedForModel(current, model, next); blocked {
+		t.Fatal("an omitted model window retained its guard")
+	}
+	mergeClaudeQuotaWindows(current, advisoryQuotaWindows(at, 100))
+	if len(current.Quota.Windows) != 1 {
+		t.Fatal("delayed observations reintroduced windows removed by a newer poll")
 	}
 }

@@ -128,7 +128,7 @@ func mergeCodexQuotaWindows(auth *Auth, windows map[string]QuotaWindow) {
 	}
 }
 
-func (m *Manager) applyCodexQuotaUsageSnapshot(ctx context.Context, cfg *internalconfig.Config, base *Auth, windows map[string]QuotaWindow, usage json.RawMessage, now time.Time) {
+func (m *Manager) applyCodexQuotaUsageSnapshot(ctx context.Context, cfg *internalconfig.Config, base *Auth, windows map[string]QuotaWindow, usage json.RawMessage, now time.Time, started ...time.Time) {
 	release, errLock := m.lockAuthMutationContext(ctx, base.ID)
 	if errLock != nil {
 		return
@@ -142,6 +142,7 @@ func (m *Manager) applyCodexQuotaUsageSnapshot(ctx context.Context, cfg *interna
 		return
 	}
 	auth := m.auths[base.ID]
+	recordQuotaUsageSnapshot(auth, windows, now, started...)
 	mergeCodexQuotaWindows(auth, windows)
 	mergeCodexUsageCredits(auth, windows, usage)
 	setQuotaUsagePolicy(auth, cfg)

@@ -48,6 +48,19 @@ func TestParseOAuthUsage(t *testing.T) {
 	}
 }
 
+func TestParseOAuthUsageNullResetRetainsUtilization(t *testing.T) {
+	for i, body := range []string{
+		`{"five_hour":{"utilization":0,"resets_at":null}}`,
+		`{"five_hour":{"utilization":100,"resets_at":null}}`,
+	} {
+		windows, errParse := parseOAuthUsage([]byte(body))
+		window, present := windows["five_hour"]
+		if errParse != nil || !present || window.Utilization != float64(i*100) || !window.ResetsAt.IsZero() {
+			t.Fatalf("null reset lost reported usage: windows=%v err=%v", windows, errParse)
+		}
+	}
+}
+
 func TestFetchOAuthUsageCurrentTokenOnly(t *testing.T) {
 	calls := 0
 	auth := &ClaudeAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {

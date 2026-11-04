@@ -55,6 +55,35 @@ func quotaFailureAt(quota QuotaState, updatedAt time.Time) time.Time {
 	return updatedAt // Legacy persisted records predate the dedicated barrier.
 }
 
+// A full poll replaces windows it no longer reports. Preserve observations
+// newer than that poll and keep a watermark so delayed headers cannot re-arm
+// omitted windows. Empty polls use the request start as a conservative receipt
+// barrier; non-empty polls carry the provider response's receipt timestamp.
+func recordQuotaUsageSnapshot(auth *Auth, windows map[string]QuotaWindow, now time.Time, started ...time.Time) bool {
+	observedAt := now
+	if len(windows) == 0 && len(started) > 0 {
+		observedAt = started[0]
+	}
+	for _, window := range windows {
+		if window.ObservedAt.IsZero() || math.IsNaN(window.Utilization) || math.IsInf(window.Utilization, 0) || window.Utilization < 0 {
+			return false
+		}
+		if window.ObservedAt.Before(observedAt) {
+			observedAt = window.ObservedAt
+		}
+	}
+	if !observedAt.After(auth.Quota.usageObservedAt) {
+		return false
+	}
+	for name, previous := range auth.Quota.Windows {
+		if _, present := windows[name]; !present && previous.ObservedAt.Before(observedAt) {
+			delete(auth.Quota.Windows, name)
+		}
+	}
+	auth.Quota.usageObservedAt = observedAt
+	return true
+}
+
 func quotaUsageShowsRoom(auth *Auth, model string, since, now time.Time) bool {
 	if !reportedQuotaProvider(auth) || since.IsZero() {
 		return false
@@ -64,6 +93,7 @@ func quotaUsageShowsRoom(auth *Auth, model string, since, now time.Time) bool {
 		policy = &quotaUsagePolicy{modelWindows: (internalconfig.ClaudeQuotaConfig{}).WithDefaults().ModelWindows, maxAge: 2 * claudeQuotaMinimumPollInterval}
 	}
 	fresh := func(at time.Time) bool { return at.After(since) && now.Sub(at) <= policy.maxAge }
+	observed := fresh(auth.Quota.usageObservedAt)
 	names := map[string]bool{"five_hour": true, "seven_day": true}
 	if strings.EqualFold(auth.Provider, "claude") {
 		for window, models := range policy.modelWindows {
@@ -74,12 +104,7 @@ func quotaUsageShowsRoom(auth *Auth, model string, since, now time.Time) bool {
 			}
 		}
 	} else {
-		// Monthly plans replace the weekly window. Additional limits must also
-		// report room; an unrelated empty pair cannot override an exhausted one.
-		if _, monthly := auth.Quota.Windows["monthly"]; monthly {
-			delete(names, "seven_day")
-			names["monthly"] = true
-		}
+		// Check every window this plan reports, including additional limits.
 		for name := range auth.Quota.Windows {
 			names[name] = true
 		}
@@ -87,8 +112,15 @@ func quotaUsageShowsRoom(auth *Auth, model string, since, now time.Time) bool {
 	credits := strings.EqualFold(auth.Provider, "codex") && auth.Quota.creditsAvailable && fresh(auth.Quota.creditsObservedAt)
 	for name := range names {
 		window, ok := auth.Quota.Windows[name]
-		if !ok || !fresh(window.ObservedAt) || !window.ResetsAt.After(now) || math.IsNaN(window.Utilization) || math.IsInf(window.Utilization, 0) || window.Utilization < 0 {
+		if !ok {
+			continue // Absent and null windows report no active usage limit.
+		}
+		if !fresh(window.ObservedAt) || math.IsNaN(window.Utilization) || math.IsInf(window.Utilization, 0) || window.Utilization < 0 {
 			return false
+		}
+		observed = true
+		if !window.ResetsAt.IsZero() && !window.ResetsAt.After(now) {
+			continue
 		}
 		limit := float64(100)
 		if capPercent, configured := policy.windowCaps[name]; configured {
@@ -98,7 +130,7 @@ func quotaUsageShowsRoom(auth *Auth, model string, since, now time.Time) bool {
 			return false
 		}
 	}
-	return true
+	return observed
 }
 
 // Clear quota failures contradicted by newer provider usage. Independent
@@ -192,7 +224,7 @@ func clearContradictedQuotaCooldowns(auth *Auth, now time.Time) bool {
 // Selection and management views also enforce the invariant on detached
 // snapshots, without mutating shared state under a read lock.
 func withReconciledQuotaUsage(auth *Auth, now time.Time) *Auth {
-	if !reportedQuotaProvider(auth) || len(auth.Quota.Windows) == 0 {
+	if !reportedQuotaProvider(auth) || (len(auth.Quota.Windows) == 0 && auth.Quota.usageObservedAt.IsZero()) {
 		return auth
 	}
 	if !advisoryQuota(auth.Quota) {

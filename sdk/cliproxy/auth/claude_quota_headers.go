@@ -53,7 +53,7 @@ func claudeQuotaHeaderWindows(headers http.Header, observedAt time.Time) map[str
 func mergeClaudeQuotaWindows(auth *Auth, windows map[string]QuotaWindow) map[string]QuotaWindow {
 	fresh := make(map[string]QuotaWindow, len(windows))
 	for name, window := range windows {
-		if window.ResetsAt.IsZero() || math.IsNaN(window.Utilization) || math.IsInf(window.Utilization, 0) || window.Utilization < 0 {
+		if window.ObservedAt.Before(auth.Quota.usageObservedAt) || math.IsNaN(window.Utilization) || math.IsInf(window.Utilization, 0) || window.Utilization < 0 {
 			continue
 		}
 		if previous, ok := auth.Quota.Windows[name]; ok {
