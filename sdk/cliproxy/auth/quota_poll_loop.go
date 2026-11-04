@@ -444,6 +444,8 @@ func (m *Manager) applyClaudeQuotaUsageSnapshot(ctx context.Context, cfg *intern
 	seat.polledAt, seat.epoch = now, auth.RegistrationEpoch
 	seat.usage = append(json.RawMessage(nil), usage...)
 	changed := m.reconcileClaudeQuotaHoldsLocked(auth, cfg, fresh, nil, now)
+	setQuotaUsagePolicy(auth, cfg)
+	changed = clearContradictedQuotaCooldowns(auth, now) || changed
 	auth.Generation++
 	auth.UpdatedAt = now
 	snapshots := m.recomputeClaudeQuotaRanksLocked(cfg, now)
@@ -456,8 +458,8 @@ func (m *Manager) applyClaudeQuotaUsageSnapshot(ctx context.Context, cfg *intern
 	}
 }
 
-// Reconcile only cooldowns owned by this guard. Missing/invalid windows never
-// release an existing hold early; other upstream failures always retain ownership.
+// Reconcile holds owned by this guard. Upstream quota failures are reconciled
+// separately against fresh reported usage; other failures retain ownership.
 func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfig.Config, observations map[string]QuotaWindow, beforeResult map[string]claudeQuotaFreshness, now time.Time) bool {
 	quota := cfg.Claude.Quota.WithDefaults()
 	enabled := quota.Enabled && claudeQuotaEligible(auth) && !quotaCooldownDisabledForAuthWithConfig(auth, cfg)
@@ -823,6 +825,7 @@ func (m *Manager) updateClaudeQuotaConfig(previous, cfg *internalconfig.Config) 
 	for _, auth := range m.auths {
 		// Reload is not a new usage observation. Reconcile only live or restored
 		// ownership so retained windows cannot revive an explicitly cleared hold.
+		setQuotaUsagePolicy(auth, cfg)
 		if m.reconcileClaudeQuotaHoldsLocked(auth, cfg, nil, nil, now) {
 			changed = true
 			auth.Generation++
@@ -831,6 +834,8 @@ func (m *Manager) updateClaudeQuotaConfig(previous, cfg *internalconfig.Config) 
 		}
 		if !cfg.Claude.Quota.Enabled {
 			auth.Quota.Windows = nil
+			auth.Quota.creditsAvailable = false
+			auth.Quota.creditsObservedAt = time.Time{}
 			if seat := m.quotaPollSeats[auth.ID]; seat != nil {
 				seat.polledAt, seat.queued = time.Time{}, false
 				seat.usage = nil

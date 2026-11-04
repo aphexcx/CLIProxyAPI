@@ -331,6 +331,11 @@ type QuotaState struct {
 	NextRecoverAt time.Time `json:"next_recover_at"`
 	// BackoffLevel stores the progressive cooldown exponent used for rate limits.
 	BackoffLevel int `json:"backoff_level,omitempty"`
+	// CooldownAt is the failure receipt barrier, independent of later state updates.
+	CooldownAt        time.Time `json:"cooldown_at,omitempty"`
+	usagePolicy       *quotaUsagePolicy
+	creditsAvailable  bool
+	creditsObservedAt time.Time
 	// ObservedAt is the time the current Signals snapshot was observed.
 	ObservedAt time.Time `json:"observed_at,omitempty"`
 	// Signals stores bounded, provider-specific quota watermark values observed

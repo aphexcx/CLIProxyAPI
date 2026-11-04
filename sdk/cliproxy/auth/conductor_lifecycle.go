@@ -501,6 +501,10 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	// refresh results. Preserve them even when an update replaces Attributes.
 	auth.Quota.Windows = existing.Quota.Clone().Windows
 	auth.Quota.RankExpiresAt = existing.Quota.RankExpiresAt
+	auth.Quota.usagePolicy = existing.Quota.usagePolicy
+	auth.Quota.creditsAvailable = existing.Quota.creditsAvailable
+	auth.Quota.creditsObservedAt = existing.Quota.creditsObservedAt
+	cooldownStateChanged = clearContradictedQuotaCooldowns(auth, now) || cooldownStateChanged
 	if auth.Attributes == nil && existing.Attributes["quota_rank"] != "" {
 		auth.Attributes = make(map[string]string)
 	}

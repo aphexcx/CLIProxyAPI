@@ -837,6 +837,7 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 }
 
 func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {
+	auth = withReconciledQuotaUsage(auth, now)
 	if auth == nil {
 		return true, blockReasonOther, time.Time{}
 	}

@@ -100,9 +100,9 @@ upstream:
 
 `five_hour` and `seven_day` are observation-only: they cannot appear in
 `model-windows`, and their `window-caps` overrides cannot be below 100. The guard
-never disables a credential. Upstream errors still use the existing retry and
-cooldown behavior. Keep `model-level-cooling: false` to preserve account-wide
-cooling for upstream 5h/7d rejections.
+never disables a credential. Keep `model-level-cooling: false` to preserve
+account-wide handling of upstream 5h/7d rejections, subject to the usage
+reconciliation rule below.
 
 Response headers also update the enabled guard. The paired
 `anthropic-ratelimit-unified-{5h,7d,7d_oi}-utilization` and `-reset` fields map
@@ -112,7 +112,26 @@ Only `model-windows` mappings can hold models (by default, `Fable` holds
 `claude-fable-5-1`). Missing or invalid pairs, status flags, the generic unified
 reset, and `Retry-After` cannot invent a usage observation. Polls and headers
 share per-window timestamps: older or repeated observations cannot re-arm a
-cleared hold. Upstream error cooldowns retain their existing behavior.
+cleared hold.
+
+Claude and Codex quota cooldowns (`quota` and `credential_quota`) are advisory.
+A poll or response observation newer than the 429 releases them when all
+required windows report room: Claude's five-hour, seven-day, and configured
+model windows; Codex's main and additional windows, including reported usable
+credits. Observations must remain within two polling intervals and precede
+their window resets. Missing, invalid, older, or stale observations cannot
+release a cooldown. Poll failures do not manufacture recovery evidence.
+The cleared state is persisted and published to selection and
+`GET /v8/management/credentials` together, so the panel's `cooldowns` listing
+also clears without a status PATCH. Restore and selection enforce the same rule.
+
+Until usage contradicts a quota failure, its reported retry/reset bounds the
+hold, including a shorter replacement reset. Without a reported reset, a fixed
+10-second probe interval applies; these providers do not use the exponential
+quota backoff ladder. A 429 schedules a usage read at the next permitted
+per-seat polling slot. This does not bypass the one-minute polling budget.
+Independent 401/403, transient failures, forced cooldown rules, and `quota_cap`
+holds retain their existing behavior.
 
 `GET /v8/management/credentials` adds `quota.windows`, keyed by `five_hour`,
 `seven_day`, and each model-window display name (such as `Fable`). Each value has

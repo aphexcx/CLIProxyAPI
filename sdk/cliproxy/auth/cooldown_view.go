@@ -23,6 +23,7 @@ type CooldownView struct {
 // expired token) also prevents execution. An empty result does not imply that
 // the credential is usable. Callers must handle unavailable/remote state separately.
 func CooldownSnapshotForAuth(auth *Auth, now time.Time) []CooldownView {
+	auth = withReconciledQuotaUsage(auth, now)
 	views := make([]CooldownView, 0)
 	if auth == nil {
 		return views

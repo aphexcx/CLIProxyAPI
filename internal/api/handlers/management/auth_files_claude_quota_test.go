@@ -1,10 +1,12 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -66,5 +68,73 @@ func TestV8CredentialsExposeClaudeQuotaWindowsRankAndHold(t *testing.T) {
 		} else if entry.Rank != nil || entry.Quota.Windows != nil {
 			t.Fatal("v8 fields leaked into deprecated response")
 		}
+	}
+}
+
+type recoveredQuotaPoller struct {
+	coreauth.ProviderExecutor
+	provider string
+}
+
+func (p *recoveredQuotaPoller) Identifier() string { return p.provider }
+func (*recoveredQuotaPoller) PollQuota(context.Context, *coreauth.Auth) (map[string]coreauth.QuotaWindow, error) {
+	now := time.Now()
+	windows := make(map[string]coreauth.QuotaWindow)
+	for _, name := range []string{"five_hour", "seven_day", "Fable"} {
+		windows[name] = coreauth.QuotaWindow{Utilization: 0, ResetsAt: now.Add(time.Hour), ObservedAt: now}
+	}
+	return windows, nil
+}
+
+func TestV8CredentialsUsageResetClearsCooldownListing(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m := coreauth.NewManager(nil, nil, nil)
+				cfg := &config.Config{AuthDir: t.TempDir()}
+				cfg.Claude.Quota.Enabled = true
+				m.SetConfig(cfg)
+				auth := &coreauth.Auth{ID: "recovered-seat", Provider: provider, Status: coreauth.StatusActive,
+					Attributes: map[string]string{"runtime_only": "true"}, Metadata: map[string]any{"access_token": "fixture", "account_id": "fixture"}}
+				registerAuthForLookupTest(t, m, auth)
+				delay := 2 * time.Hour
+				m.MarkResult(context.Background(), coreauth.Result{AuthID: auth.ID, Provider: provider, Model: "claude-fable-5-1", CredentialScope: true, RetryAfter: &delay, Error: &coreauth.Error{HTTPStatus: 429}})
+				before, _ := m.GetByID(auth.ID)
+				if len(coreauth.CooldownSnapshotForAuth(before, time.Now())) == 0 {
+					t.Fatal("missing initial cooldown")
+				}
+				<-time.After(time.Second) // synctest clock: receipt must follow the 429.
+				m.RegisterExecutor(&recoveredQuotaPoller{provider: provider})
+				m.StartQuotaPolling(context.Background())
+				defer m.StopQuotaPolling()
+				synctest.Wait()
+				h := &Handler{cfg: cfg, authManager: m}
+				rec := httptest.NewRecorder()
+				ctx, _ := gin.CreateTestContext(rec)
+				ctx.Request = httptest.NewRequest(http.MethodGet, "/v8/management/credentials", nil)
+				ctx.Set(ConfigV8ContextKey, true)
+				h.ListAuthFiles(ctx)
+				var payload struct {
+					Files []struct {
+						Unavailable bool                    `json:"unavailable"`
+						Cooldowns   []coreauth.CooldownView `json:"cooldowns"`
+						Quota       struct {
+							Windows map[string]coreauth.QuotaWindow `json:"windows"`
+						} `json:"quota"`
+					} `json:"files"`
+				}
+				if errDecode := json.Unmarshal(rec.Body.Bytes(), &payload); errDecode != nil {
+					t.Fatal(errDecode)
+				}
+				if rec.Code != http.StatusOK || len(payload.Files) != 1 {
+					t.Fatalf("unexpected listing: status=%d", rec.Code)
+				}
+				entry := payload.Files[0]
+				if entry.Unavailable || len(entry.Cooldowns) != 0 || len(entry.Quota.Windows) < 2 || entry.Quota.Windows["seven_day"].Utilization != 0 {
+					t.Fatalf("reset not reflected in listing: %+v", entry)
+				}
+			})
+		})
 	}
 }

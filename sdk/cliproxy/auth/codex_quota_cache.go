@@ -129,16 +129,33 @@ func mergeCodexQuotaWindows(auth *Auth, windows map[string]QuotaWindow) {
 }
 
 func (m *Manager) applyCodexQuotaUsageSnapshot(ctx context.Context, cfg *internalconfig.Config, base *Auth, windows map[string]QuotaWindow, usage json.RawMessage, now time.Time) {
+	release, errLock := m.lockAuthMutationContext(ctx, base.ID)
+	if errLock != nil {
+		return
+	}
+	defer release()
 	m.configCooldownMu.Lock()
 	defer m.configCooldownMu.Unlock()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if ctx.Err() != nil || m.runtimeConfig.Load() != cfg || !cfg.Claude.Quota.Enabled || !sameClaudeQuotaCredential(m.auths[base.ID], base) {
+		m.mu.Unlock()
 		return
 	}
 	auth := m.auths[base.ID]
 	mergeCodexQuotaWindows(auth, windows)
+	mergeCodexUsageCredits(auth, windows, usage)
+	setQuotaUsagePolicy(auth, cfg)
+	changed := clearContradictedQuotaCooldowns(auth, now)
 	seat := m.claudeQuotaPollSeatLocked(auth.ID)
 	seat.polledAt, seat.epoch = now, auth.RegistrationEpoch
 	seat.usage = append(json.RawMessage(nil), usage...)
+	auth.Generation++
+	auth.UpdatedAt = now
+	snapshot := auth.Clone()
+	m.mu.Unlock()
+	release()
+	m.publishClaudeQuotaSnapshots([]*Auth{snapshot})
+	if changed {
+		m.persistCooldownStatesLocked(ctx)
+	}
 }

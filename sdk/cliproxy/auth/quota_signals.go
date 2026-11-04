@@ -72,6 +72,7 @@ func cooldownFieldsOf(q QuotaState) QuotaState {
 		Reason:        q.Reason,
 		NextRecoverAt: q.NextRecoverAt,
 		BackoffLevel:  q.BackoffLevel,
+		CooldownAt:    q.CooldownAt,
 	}
 }
 
@@ -86,6 +87,7 @@ func applyCooldownFields(dst *QuotaState, cooldown QuotaState) {
 	dst.Reason = cooldown.Reason
 	dst.NextRecoverAt = cooldown.NextRecoverAt
 	dst.BackoffLevel = cooldown.BackoffLevel
+	dst.CooldownAt = cooldown.CooldownAt
 	if cooldown.Reason != "quota_cap" {
 		dst.guardWindows = nil
 	}

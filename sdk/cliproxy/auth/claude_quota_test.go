@@ -316,20 +316,25 @@ func TestClaudeQuotaMissingWindowAndIndependentCooldown(t *testing.T) {
 	}
 }
 
-func TestClaudeQuotaDoesNotEraseCredentialCooldown(t *testing.T) {
+func TestClaudeQuotaClearsContradictedCredentialCooldown(t *testing.T) {
 	m, a, _ := newClaudeQuotaManager(t)
 	now := time.Now()
 	applyTestClaudeQuota(m, a, 100, now.Add(time.Hour), now)
 	delay := 2 * time.Hour
 	m.MarkResult(context.Background(), Result{AuthID: a, Provider: "claude", Model: quotaSonnet, RetryAfter: &delay, CredentialScope: true, Error: &Error{HTTPStatus: 429}})
-	applyTestClaudeQuota(m, a, 0, now.Add(time.Hour), now.Add(time.Second))
+	base, _ := m.GetByID(a)
+	m.applyTestClaudeQuotaUsage(context.Background(), m.runtimeConfig.Load().(*config.Config), base, map[string]QuotaWindow{
+		"Fable":     {Utilization: 0, ResetsAt: now.Add(time.Hour)},
+		"five_hour": {Utilization: 0, ResetsAt: now.Add(time.Hour)},
+		"seven_day": {Utilization: 0, ResetsAt: now.Add(time.Hour)},
+	}, now.Add(time.Second))
 	auth, _ := m.GetByID(a)
-	if auth.Quota.Reason != "credential_quota" {
-		t.Fatal("credential cooldown lost")
+	if auth.Quota.Exceeded || len(CooldownSnapshotForAuth(auth, now)) != 0 {
+		t.Fatal("fresh usage with room retained the credential cooldown")
 	}
 	for _, model := range []string{quotaFable, quotaSonnet} {
-		if blocked, _, _ := isAuthBlockedForModel(auth, model, now); !blocked {
-			t.Fatalf("%s lost credential cooldown", model)
+		if picked, errPick := (&FillFirstSelector{}).Pick(context.Background(), "claude", model, cliproxyexecutor.Options{}, []*Auth{auth}); errPick != nil || picked == nil {
+			t.Fatalf("%s not selectable after reset: %v", model, errPick)
 		}
 	}
 	shadow := auth.ModelStates[quotaFable].credentialQuotaShadow
