@@ -153,7 +153,7 @@ retain the corresponding business operation's fields.
 | `/credentials/fields` | PATCH | Change credential fields. |
 | `/credentials/refresh` | POST | Refresh credentials. |
 | `/oauth/import?provider=vertex` | POST | Import a Vertex service account using a multipart `file` upload. |
-| `/oauth/auth-url?provider=<provider>` | GET | Start built-in or plugin OAuth. |
+| `/oauth/auth-url?provider=<provider>` | GET, POST | Start built-in or plugin OAuth. |
 | `/oauth/siwc/bind` | POST | Start SIWC binding to an existing file-backed Codex OAuth credential. |
 | `/oauth/siwc/status` | GET | Read local SIWC credential status (`off`, `valid`, or `invalid`). |
 | `/oauth/status?state=<state>` | GET | Get login status. |
@@ -179,6 +179,35 @@ Authorization: Bearer <management-key>
 Keep any provider-specific login parameters in the query string. The login
 response includes the authorization URL and a session `state`. Use that state
 for status queries and cancellation.
+
+For Claude (`provider=claude`, also accepted as `anthropic`), `redirect=code`
+selects `https://platform.claude.com/oauth/code/callback`, which displays a
+copyable `CODE#STATE`. This supports a hub reached through a relay where the
+customer's localhost callback cannot be served. Omitting `redirect`, passing an
+empty string, or using `redirect=localhost` keeps the existing
+`http://localhost:54545/callback` redirect. The response includes
+`"redirect":"code"` or `"redirect":"localhost"`, and the subsequent token exchange
+uses the same redirect as the authorization URL.
+
+For POST, put `provider` and `redirect` in the JSON body:
+
+```http
+POST /v8/management/oauth/auth-url
+Authorization: Bearer <management-key>
+Content-Type: application/json
+
+{"provider":"claude","redirect":"code"}
+```
+
+The legacy `GET /v0/management/anthropic-auth-url?redirect=code` accepts the same
+option. Other redirect values return HTTP 400 with
+`{"error":"redirect must be code or localhost"}`; a non-string JSON value also
+returns 400. Combining `redirect=code` with `is_webui=true` returns HTTP 400 because
+the localhost callback forwarder is not used for the code page. Other providers
+ignore this option. The CLI and device login flows retain their existing behavior.
+Submit the copied value with the returned state, for example
+`{"provider":"anthropic","code":"CODE#STATE","state":"STATE"}` to the callback
+endpoint, then poll login status as usual.
 
 Callbacks accept `provider`, `state`, `code`, and `error` as GET query parameters
 or POST JSON fields. POST also accepts `redirect_url` containing the complete

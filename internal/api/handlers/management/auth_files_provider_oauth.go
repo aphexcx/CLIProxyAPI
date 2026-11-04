@@ -41,7 +41,29 @@ type antigravityOAuthService interface {
 	FetchProjectID(ctx context.Context, accessToken string) (string, error)
 }
 
+var newClaudeOAuthService = claude.NewClaudeAuthWithProxyURL
+
 func (h *Handler) RequestAnthropicToken(c *gin.Context) {
+	isWebUI := isWebUIRequest(c)
+	redirect := c.Query("redirect")
+	if _, exists := c.Get(oauthSessionRedirectContextKey); exists {
+		redirect = c.GetString(oauthSessionRedirectContextKey)
+	}
+	redirectURI := claude.RedirectURI
+	switch redirect {
+	case "", "localhost":
+		redirect = "localhost"
+	case "code":
+		if isWebUI {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "redirect=code cannot be combined with is_webui"})
+			return
+		}
+		redirectURI = claude.CodePageRedirectURI
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "redirect must be code or localhost"})
+		return
+	}
+
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
 
@@ -66,9 +88,9 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 	sessionProxyURL := oauthSessionProxyURLFromContext(c)
 	cfg := h.oauthConfigWithProxy(sessionProxyURL)
 	// Initialize Claude auth service
-	anthropicAuth := claude.NewClaudeAuthWithProxyURL(cfg, sessionProxyURL)
+	anthropicAuth := newClaudeOAuthService(cfg, sessionProxyURL, claude.WithRedirectURI(redirectURI))
 
-	// Generate authorization URL (then override redirect_uri to reuse server port)
+	// Keep the selected redirect on this instance for the later code exchange.
 	authURL, state, err := anthropicAuth.GenerateAuthURL(state, pkceCodes)
 	if err != nil {
 		log.Errorf("Failed to generate authorization URL: %v", err)
@@ -78,7 +100,6 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 
 	RegisterOAuthSessionWithProxy(state, "anthropic", sessionProxyURL)
 
-	isWebUI := isWebUIRequest(c)
 	var forwarder *callbackForwarder
 	if isWebUI {
 		targetURL, errTarget := h.managementCallbackURL("/anthropic/callback")
@@ -205,7 +226,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		CompleteOAuthSession(state)
 	}()
 
-	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
+	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state, "redirect": redirect})
 }
 
 func (h *Handler) RequestCodexToken(c *gin.Context) {
