@@ -115,12 +115,16 @@ share per-window timestamps: older or repeated observations cannot re-arm a
 cleared hold.
 
 Claude and Codex quota cooldowns (`quota` and `credential_quota`) are advisory.
-A poll or response observation newer than the 429 releases them when all
-required windows report room: Claude's five-hour, seven-day, and configured
-model windows; Codex's main and additional windows, including reported usable
-credits. Observations must remain within two polling intervals and precede
-their window resets. Missing, invalid, older, or stale observations cannot
-release a cooldown. Poll failures do not manufacture recovery evidence.
+A poll or response observation newer than the 429 releases them when the
+reported windows show room: Claude's account and configured model windows,
+bounded by configured caps; Codex's reported main and additional windows,
+including reported usable credits. Observations must remain within two
+polling intervals. A successful full usage read treats absent or null windows
+as room and removes windows omitted by that read; partial response headers
+retain other windows. A missing reset does not discard reported utilization,
+and an expired reset reports room. Older or stale observations cannot release
+a cooldown, and poll failures do not manufacture recovery evidence. Empty
+reads use their request start to fence failures that occurred while in flight.
 The cleared state is persisted and published to selection and
 `GET /v8/management/credentials` together, so the panel's `cooldowns` listing
 also clears without a status PATCH. Restore and selection enforce the same rule.

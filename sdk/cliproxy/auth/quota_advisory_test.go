@@ -46,7 +46,7 @@ func applyAdvisoryQuota(m *Manager, auth *Auth, windows map[string]QuotaWindow, 
 		delete(windows, "Fable")
 		m.applyCodexQuotaUsageSnapshot(context.Background(), cfg, auth, windows, json.RawMessage(usage), now)
 	} else {
-		m.applyClaudeQuotaUsageSnapshot(context.Background(), cfg, auth, windows, nil, now)
+		m.applyClaudeQuotaUsageSnapshot(context.Background(), cfg, auth, windows, json.RawMessage(usage), now)
 	}
 }
 
@@ -615,9 +615,9 @@ func TestQuotaAdvisoryEmptyReadKeepsReceiptBarrier(t *testing.T) {
 			at, started := before.UpdatedAt.Add(time.Second), before.UpdatedAt.Add(-time.Second)
 			cfg := m.runtimeConfig.Load().(*config.Config)
 			if provider == "claude" {
-				m.applyClaudeQuotaUsageSnapshot(context.Background(), cfg, auth, nil, nil, at, started)
+				m.applyClaudeQuotaUsageSnapshot(context.Background(), cfg, auth, nil, json.RawMessage(`{}`), at, started)
 			} else {
-				m.applyCodexQuotaUsageSnapshot(context.Background(), cfg, auth, nil, nil, at, started)
+				m.applyCodexQuotaUsageSnapshot(context.Background(), cfg, auth, nil, json.RawMessage(`{}`), at, started)
 			}
 			current, _ := m.GetByID(auth.ID)
 			if blocked, _, _ := isAuthBlockedForModel(current, model, at); !blocked {

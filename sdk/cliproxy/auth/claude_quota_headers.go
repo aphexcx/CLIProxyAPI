@@ -50,10 +50,11 @@ func claudeQuotaHeaderWindows(headers http.Header, observedAt time.Time) map[str
 // Retain the newest valid observation per window, including expired windows as
 // watermarks. Deleting an expired watermark would let an older response with a
 // longer reset become fresh again. Only newly accepted observations may arm holds.
-func mergeClaudeQuotaWindows(auth *Auth, windows map[string]QuotaWindow) map[string]QuotaWindow {
+func mergeClaudeQuotaWindows(auth *Auth, windows map[string]QuotaWindow, fullUsage ...bool) map[string]QuotaWindow {
 	fresh := make(map[string]QuotaWindow, len(windows))
 	for name, window := range windows {
-		if window.ObservedAt.Before(auth.Quota.usageObservedAt) || math.IsNaN(window.Utilization) || math.IsInf(window.Utilization, 0) || window.Utilization < 0 {
+		allowMissingReset := len(fullUsage) > 0 && fullUsage[0]
+		if (!allowMissingReset && window.ResetsAt.IsZero()) || window.ObservedAt.Before(auth.Quota.usageObservedAt) || math.IsNaN(window.Utilization) || math.IsInf(window.Utilization, 0) || window.Utilization < 0 {
 			continue
 		}
 		if previous, ok := auth.Quota.Windows[name]; ok {

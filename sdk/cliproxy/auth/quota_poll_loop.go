@@ -440,8 +440,10 @@ func (m *Manager) applyClaudeQuotaUsageSnapshot(ctx context.Context, cfg *intern
 		release()
 		return
 	}
-	fullSnapshot := recordQuotaUsageSnapshot(auth, windows, now, started...)
-	fresh := mergeClaudeQuotaWindows(auth, windows)
+	// Legacy window-only observations may be partial. Only a complete usage
+	// body is authoritative about omitted windows.
+	fullSnapshot := usage != nil && recordQuotaUsageSnapshot(auth, windows, now, started...)
+	fresh := mergeClaudeQuotaWindows(auth, windows, usage != nil)
 	if fullSnapshot {
 		// A missing mapped window in a successful full read releases its guard.
 		// These zero observations are only for reconciliation, not the listing.

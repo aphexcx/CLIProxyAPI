@@ -92,8 +92,8 @@ func codexQuotaLimitIdentity(name string) string {
 }
 
 // Retain newer response windows even when an earlier poll body arrives later.
-func mergeCodexQuotaWindows(auth *Auth, windows map[string]QuotaWindow) {
-	mergeClaudeQuotaWindows(auth, windows)
+func mergeCodexQuotaWindows(auth *Auth, windows map[string]QuotaWindow, fullUsage ...bool) {
+	mergeClaudeQuotaWindows(auth, windows, fullUsage...)
 	// Bound groups across observations too; rotating additional names must not
 	// evict the main or code-review windows, even when those are older.
 	names := make([]string, 0, len(auth.Quota.Windows))
@@ -142,8 +142,10 @@ func (m *Manager) applyCodexQuotaUsageSnapshot(ctx context.Context, cfg *interna
 		return
 	}
 	auth := m.auths[base.ID]
-	recordQuotaUsageSnapshot(auth, windows, now, started...)
-	mergeCodexQuotaWindows(auth, windows)
+	if usage != nil {
+		recordQuotaUsageSnapshot(auth, windows, now, started...)
+	}
+	mergeCodexQuotaWindows(auth, windows, usage != nil)
 	mergeCodexUsageCredits(auth, windows, usage)
 	setQuotaUsagePolicy(auth, cfg)
 	changed := clearContradictedQuotaCooldowns(auth, now)
