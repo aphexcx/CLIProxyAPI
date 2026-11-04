@@ -30,10 +30,11 @@ const (
 	UsageURL        = "https://api.anthropic.com/api/oauth/usage"
 	// RolesURL is the claude_cli role endpoint the native client queries right
 	// after a successful token exchange, alongside the profile lookup.
-	RolesURL         = "https://api.anthropic.com/api/oauth/claude_cli/roles"
-	ClientID         = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-	RedirectURI      = "http://localhost:54545/callback"
-	ClaudeOAuthScope = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
+	RolesURL            = "https://api.anthropic.com/api/oauth/claude_cli/roles"
+	ClientID            = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	RedirectURI         = "http://localhost:54545/callback"
+	CodePageRedirectURI = "https://platform.claude.com/oauth/code/callback"
+	ClaudeOAuthScope    = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
 
 	claudeRefreshMinBackoff       = 5 * time.Second
 	claudeRefreshMaxBackoff       = 5 * time.Minute
@@ -178,7 +179,33 @@ type OAuthProfile struct {
 // It provides methods for generating authorization URLs, exchanging codes for tokens,
 // and refreshing expired tokens using PKCE for enhanced security.
 type ClaudeAuth struct {
-	httpClient *http.Client
+	httpClient  *http.Client
+	redirectURI string
+}
+
+// AuthOption configures a Claude OAuth client before its login flow starts.
+type AuthOption func(*ClaudeAuth)
+
+// WithRedirectURI selects the same redirect for authorization and code exchange.
+// An empty value preserves the default localhost redirect.
+func WithRedirectURI(redirectURI string) AuthOption {
+	return func(auth *ClaudeAuth) { auth.redirectURI = redirectURI }
+}
+
+// WithHTTPClient overrides the HTTP client used for OAuth requests.
+func WithHTTPClient(client *http.Client) AuthOption {
+	return func(auth *ClaudeAuth) {
+		if client != nil {
+			auth.httpClient = client
+		}
+	}
+}
+
+func (o *ClaudeAuth) oauthRedirectURI() string {
+	if o.redirectURI == "" {
+		return RedirectURI
+	}
+	return o.redirectURI
 }
 
 // NewClaudeAuth creates a new Anthropic authentication service.
@@ -190,13 +217,13 @@ type ClaudeAuth struct {
 //
 // Returns:
 //   - *ClaudeAuth: A new Claude authentication service instance
-func NewClaudeAuth(cfg *config.Config) *ClaudeAuth {
-	return NewClaudeAuthWithProxyURL(cfg, "")
+func NewClaudeAuth(cfg *config.Config, options ...AuthOption) *ClaudeAuth {
+	return NewClaudeAuthWithProxyURL(cfg, "", options...)
 }
 
 // NewClaudeAuthWithProxyURL creates a new Anthropic authentication service with a proxy override.
 // proxyURL takes precedence over cfg.ProxyURL when non-empty.
-func NewClaudeAuthWithProxyURL(cfg *config.Config, proxyURL string) *ClaudeAuth {
+func NewClaudeAuthWithProxyURL(cfg *config.Config, proxyURL string, options ...AuthOption) *ClaudeAuth {
 	effectiveProxyURL := strings.TrimSpace(proxyURL)
 	var sdkCfg *config.SDKConfig
 	if cfg != nil {
@@ -213,9 +240,14 @@ func NewClaudeAuthWithProxyURL(cfg *config.Config, proxyURL string) *ClaudeAuth 
 
 	// Use custom HTTP client with Firefox TLS fingerprint to bypass
 	// Cloudflare's bot detection on Anthropic domains.
-	return &ClaudeAuth{
-		httpClient: NewAnthropicHttpClient(sdkCfg),
+	auth := &ClaudeAuth{
+		httpClient:  NewAnthropicHttpClient(sdkCfg),
+		redirectURI: RedirectURI,
 	}
+	for _, option := range options {
+		option(auth)
+	}
+	return auth
 }
 
 func applyClaudeOAuthAxiosHeaders(req *http.Request) {
@@ -365,7 +397,7 @@ func (o *ClaudeAuth) GenerateAuthURL(state string, pkceCodes *PKCECodes) (string
 		"code":                  {"true"},
 		"client_id":             {ClientID},
 		"response_type":         {"code"},
-		"redirect_uri":          {RedirectURI},
+		"redirect_uri":          {o.oauthRedirectURI()},
 		"scope":                 {ClaudeOAuthScope},
 		"code_challenge":        {pkceCodes.CodeChallenge},
 		"code_challenge_method": {"S256"},
@@ -419,7 +451,7 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 	reqBody := authorizationCodeExchangeRequest{
 		GrantType:    "authorization_code",
 		Code:         newCode,
-		RedirectURI:  RedirectURI,
+		RedirectURI:  o.oauthRedirectURI(),
 		ClientID:     ClientID,
 		CodeVerifier: pkceCodes.CodeVerifier,
 		State:        state,

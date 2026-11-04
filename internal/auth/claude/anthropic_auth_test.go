@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,72 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 func TestNewAnthropicHttpClientDoesNotSetRequestTimeout(t *testing.T) {
 	if got := NewAnthropicHttpClient(nil).Timeout; got != 0 {
 		t.Fatalf("HTTP client timeout = %s, want zero", got)
+	}
+}
+
+func TestClaudeAuthRedirectURL(t *testing.T) {
+	for _, withProxy := range []bool{false, true} {
+		for _, redirect := range []string{"", RedirectURI, CodePageRedirectURI} {
+			auth := NewClaudeAuth(nil, WithRedirectURI(redirect))
+			if withProxy {
+				auth = NewClaudeAuthWithProxyURL(nil, "direct", WithRedirectURI(redirect))
+			}
+			wantRedirect := redirect
+			if wantRedirect == "" {
+				wantRedirect = RedirectURI
+			}
+			got, state, err := auth.GenerateAuthURL("state-value", &PKCECodes{CodeChallenge: "challenge"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := AuthURL + "?client_id=" + ClientID + "&code=true&code_challenge=challenge&code_challenge_method=S256&redirect_uri=" + url.QueryEscape(wantRedirect) + "&response_type=code&scope=" + url.QueryEscape(ClaudeOAuthScope) + "&state=state-value"
+			if got != want || state != "state-value" {
+				t.Fatalf("proxy=%v redirect=%q: URL/state = %q/%q, want %q/state-value", withProxy, redirect, got, state, want)
+			}
+		}
+	}
+	defaultAuth := NewClaudeAuth(nil)
+	proxyAuth := NewClaudeAuthWithProxyURL(nil, "direct")
+	if defaultAuth.redirectURI != RedirectURI || proxyAuth.redirectURI != RedirectURI {
+		t.Fatal("both constructors must default to the localhost redirect")
+	}
+}
+
+func TestExchangeCodeForTokensCodePageControlPlaneShape(t *testing.T) {
+	var tokenBody string
+	var order []string
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		order = append(order, req.URL.String())
+		switch req.URL.String() {
+		case TokenURL:
+			body, errRead := io.ReadAll(req.Body)
+			if errRead != nil {
+				return nil, errRead
+			}
+			tokenBody = string(body)
+			return jsonResponse(req, `{"access_token":"access","refresh_token":"refresh","expires_in":28800}`), nil
+		case ProfileURL:
+			return jsonResponse(req, `{"account":{"uuid":"account-code","email":"code@example.test"}}`), nil
+		case RolesURL:
+			return jsonResponse(req, `{"roles":["claude_code_user"]}`), nil
+		default:
+			return nil, errors.New("unexpected OAuth endpoint")
+		}
+	})}
+	auth := NewClaudeAuth(nil, WithRedirectURI(CodePageRedirectURI), WithHTTPClient(client))
+	bundle, errExchange := auth.ExchangeCodeForTokens(t.Context(), "auth-code#fragment-state", "state-value", &PKCECodes{CodeVerifier: "verifier"})
+	if errExchange != nil {
+		t.Fatal(errExchange)
+	}
+	wantBody := `{"grant_type":"authorization_code","code":"auth-code","redirect_uri":"https://platform.claude.com/oauth/code/callback","client_id":"` + ClientID + `","code_verifier":"verifier","state":"fragment-state"}`
+	if tokenBody != wantBody {
+		t.Fatalf("exchange body = %q, want %q", tokenBody, wantBody)
+	}
+	if strings.Join(order, ",") != strings.Join([]string{TokenURL, ProfileURL, RolesURL}, ",") {
+		t.Fatalf("unexpected request order: %v", order)
+	}
+	if bundle.TokenData.Email != "code@example.test" {
+		t.Fatalf("email = %q", bundle.TokenData.Email)
 	}
 }
 

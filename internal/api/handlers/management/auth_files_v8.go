@@ -19,6 +19,7 @@ const (
 	oauthSessionProviderContextKey = "management.oauth.provider"
 	oauthSessionDomainContextKey   = "management.oauth.domain"
 	oauthSessionIsWebUIContextKey  = "management.oauth.is_webui"
+	oauthSessionRedirectContextKey = "management.oauth.redirect"
 	oauthSessionMetadataContextKey = "management.oauth.metadata"
 )
 
@@ -232,10 +233,21 @@ func (h *Handler) StartOAuthV8(c *gin.Context) {
 				}
 			}
 
+			if strings.EqualFold(provider, "claude") || strings.EqualFold(provider, "anthropic") {
+				if rawRedirect, exists := bodyMap["redirect"]; exists {
+					redirect, ok := rawRedirect.(string)
+					if !ok {
+						c.JSON(http.StatusBadRequest, gin.H{"error": "redirect must be code or localhost"})
+						return
+					}
+					c.Set(oauthSessionRedirectContextKey, redirect)
+				}
+			}
+
 			extraMeta := make(map[string]any)
 			for k, v := range bodyMap {
 				switch k {
-				case "provider", "proxy_url", "proxy-url", "is_webui":
+				case "provider", "proxy_url", "proxy-url", "is_webui", "redirect":
 					continue
 				default:
 					extraMeta[k] = v
@@ -252,7 +264,7 @@ func (h *Handler) StartOAuthV8(c *gin.Context) {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "":
 		c.JSON(http.StatusBadRequest, gin.H{"error": "provider is required"})
-	case "claude":
+	case "claude", "anthropic":
 		h.RequestAnthropicToken(c)
 	case "codex":
 		h.RequestCodexToken(c)
