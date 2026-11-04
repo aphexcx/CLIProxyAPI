@@ -344,3 +344,104 @@ func TestQuotaAdvisoryPreservesLaterCredentialFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestQuotaAdvisoryRound2ConfiguredCap(t *testing.T) {
+	for _, override := range []bool{false, true} {
+		t.Run(fmt.Sprint(override), func(t *testing.T) {
+			m, auth, model := newAdvisoryQuotaManager(t, "claude")
+			cfg := &config.Config{}
+			cfg.Claude.Quota.Enabled = true
+			capPercent := float64(80)
+			cfg.Claude.Quota.CapPercent = &capPercent
+			if override {
+				capPercent = 100
+				cfg.Claude.Quota.WindowCaps = map[string]float64{"Fable": 80}
+			}
+			m.SetConfig(cfg)
+			m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "claude", Model: model, Error: &Error{HTTPStatus: 429}})
+			before, _ := m.GetByID(auth.ID)
+			at := before.UpdatedAt.Add(time.Millisecond)
+			applyAdvisoryQuota(m, auth, advisoryQuotaWindows(at, 90), "{}", at)
+			current, _ := m.GetByID(auth.ID)
+			if blocked, _, _ := isAuthBlockedForModel(current, model, at); !blocked {
+				t.Fatal("usage at 90 percent released a model capped at 80 percent")
+			}
+			at = at.Add(time.Second)
+			applyAdvisoryQuota(m, auth, advisoryQuotaWindows(at, 70), "{}", at)
+			current, _ = m.GetByID(auth.ID)
+			if blocked, _, _ := isAuthBlockedForModel(current, model, at); blocked {
+				t.Fatal("usage below the configured cap did not release quota")
+			}
+		})
+	}
+}
+
+func TestQuotaAdvisoryRound2ForcedThenOrdinary(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			m, auth, model := newAdvisoryQuotaManager(t, provider)
+			delay := time.Hour
+			m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: provider, Model: model, RetryAfter: &delay, Error: &Error{HTTPStatus: 429, Code: ErrorCodeForceCooldown}})
+			before, _ := m.GetByID(auth.ID)
+			deadline := before.ModelStates[model].NextRetryAfter
+			m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: provider, Model: model, Error: &Error{HTTPStatus: 429}})
+			failed, _ := m.GetByID(auth.ID)
+			at := failed.UpdatedAt.Add(time.Millisecond)
+			applyAdvisoryQuota(m, auth, advisoryQuotaWindows(at, 0), "{}", at)
+			current, _ := m.GetByID(auth.ID)
+			state := current.ModelStates[model]
+			if blocked, _, _ := isAuthBlockedForModel(current, model, at); !blocked || !state.NextRetryAfter.Equal(deadline) || state.LastError == nil || state.LastError.Code != ErrorCodeForceCooldown {
+				t.Fatal("ordinary 429 and fresh usage replaced the forced one-hour restriction")
+			}
+		})
+	}
+}
+
+func TestQuotaAdvisoryRound2ScopeChange(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		for _, sibling := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/sibling=%t", provider, sibling), func(t *testing.T) {
+				m, auth, model := newAdvisoryQuotaManager(t, provider)
+				m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: provider, Model: model, Error: &Error{HTTPStatus: 403}})
+				before, _ := m.GetByID(auth.ID)
+				deadline := before.ModelStates[model].NextRetryAfter
+				m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: provider, Model: model, Error: &Error{HTTPStatus: 429}})
+				reportingModel := model
+				if sibling {
+					reportingModel = "other-model"
+				}
+				m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: provider, Model: reportingModel, CredentialScope: true, Error: &Error{HTTPStatus: 429}})
+				failed, _ := m.GetByID(auth.ID)
+				at := failed.UpdatedAt.Add(time.Millisecond)
+				applyAdvisoryQuota(m, auth, advisoryQuotaWindows(at, 0), "{}", at)
+				current, _ := m.GetByID(auth.ID)
+				state := current.ModelStates[model]
+				if blocked, _, _ := isAuthBlockedForModel(current, model, at); !blocked || !state.NextRetryAfter.Equal(deadline) || state.LastError == nil || state.LastError.HTTPStatus != 403 {
+					t.Fatal("model-to-credential quota transition lost the independent 403")
+				}
+			})
+		}
+	}
+}
+
+func TestQuotaAdvisoryRound2AuthDeadline(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			m, auth, model := newAdvisoryQuotaManager(t, provider)
+			m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: provider, Error: &Error{HTTPStatus: 403}})
+			before, _ := m.GetByID(auth.ID)
+			deadline := before.NextRetryAfter
+			m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: provider, Error: &Error{HTTPStatus: 429}})
+			failed, _ := m.GetByID(auth.ID)
+			if !failed.NextRetryAfter.Equal(deadline) {
+				t.Error("ordinary auth-level 429 shortened the independent 403 deadline")
+			}
+			at := failed.UpdatedAt.Add(time.Millisecond)
+			applyAdvisoryQuota(m, auth, advisoryQuotaWindows(at, 0), "{}", at)
+			current, _ := m.GetByID(auth.ID)
+			if blocked, _, _ := isAuthBlockedForModel(current, model, at); !blocked || !current.NextRetryAfter.Equal(deadline) || current.LastError == nil || current.LastError.HTTPStatus != 403 {
+				t.Fatal("fresh usage released the independent auth-level 403")
+			}
+		})
+	}
+}

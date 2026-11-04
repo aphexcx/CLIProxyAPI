@@ -14,6 +14,7 @@ import (
 // Immutable runtime policy travels with snapshots used by selectors.
 type quotaUsagePolicy struct {
 	modelWindows map[string][]string
+	windowCaps   map[string]float64
 	maxAge       time.Duration
 }
 
@@ -28,6 +29,15 @@ func setQuotaUsagePolicy(auth *Auth, cfg *internalconfig.Config) {
 	quota := cfg.Claude.Quota.WithDefaults()
 	interval, _ := time.ParseDuration(quota.PollInterval)
 	auth.Quota.usagePolicy = &quotaUsagePolicy{modelWindows: quota.ModelWindows, maxAge: 2 * max(interval, claudeQuotaMinimumPollInterval)}
+	if strings.EqualFold(auth.Provider, "claude") && quota.Enabled && !quotaCooldownDisabledForAuthWithConfig(auth, cfg) {
+		caps := make(map[string]float64, len(quota.ModelWindows))
+		for window := range quota.ModelWindows {
+			if window != "five_hour" && window != "seven_day" {
+				caps[window] = quota.CapFor(window)
+			}
+		}
+		auth.Quota.usagePolicy.windowCaps = caps
+	}
 }
 
 func advisoryQuota(quota QuotaState) bool {
@@ -80,11 +90,28 @@ func quotaUsageShowsRoom(auth *Auth, model string, since, now time.Time) bool {
 		if !ok || !fresh(window.ObservedAt) || !window.ResetsAt.After(now) || math.IsNaN(window.Utilization) || math.IsInf(window.Utilization, 0) || window.Utilization < 0 {
 			return false
 		}
-		if window.Utilization >= 100 && !credits {
+		limit := float64(100)
+		if capPercent, configured := policy.windowCaps[name]; configured {
+			limit = capPercent
+		}
+		if window.Utilization >= limit && !credits {
 			return false
 		}
 	}
 	return true
+}
+
+// Model quota and credential quota share one advisory layer. When changing
+// scope, carry the independent restriction directly rather than wrapping an
+// advisory layer whose shallow copy would lose its own shadow.
+func independentQuotaShadow(state *ModelState) *ModelState {
+	if state == nil {
+		return nil
+	}
+	if advisoryQuota(state.Quota) && quotaFailureOnly(state.LastError) && state.credentialQuotaShadow != nil {
+		return state.credentialQuotaShadow.cloneShallow()
+	}
+	return state.cloneShallow()
 }
 
 // Clear quota failures contradicted by newer provider usage. Independent

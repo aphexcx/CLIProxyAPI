@@ -1304,7 +1304,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 									if prior != nil {
 										if prior.credentialQuotaShadow != nil {
 											state.credentialQuotaShadow = prior.credentialQuotaShadow.cloneShallow()
-										} else if !advisoryQuota(prior.Quota) && !isClaudeQuotaHold(prior) && isModelStateActiveCooldown(prior, now) {
+										} else if (!advisoryQuota(prior.Quota) || !quotaFailureOnly(prior.LastError)) && !isClaudeQuotaHold(prior) && isModelStateActiveCooldown(prior, now) {
 											state.credentialQuotaShadow = prior.cloneShallow()
 										}
 									}
@@ -1317,8 +1317,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								// state must never be snapshotted as independence.
 								priorIndependent := prevModelRetryAfter.After(now) && !isDevinQuotaExhaustionMessage(devinStateErrorText(savedOuterState))
 								if priorIndependent {
-									preserved := savedOuterState.cloneShallow()
-									preserved.NextRetryAfter = prevModelRetryAfter
+									preserved := independentQuotaShadow(savedOuterState)
 									preserved.Unavailable = true
 									preserved.Status = StatusError
 									state.credentialQuotaShadow = preserved
@@ -1350,7 +1349,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 											otherState.Quota.Reason == "credential_quota"
 										if !alreadyPropagated {
 											if isModelStateActiveCooldown(otherState, now) && !isDevinQuotaExhaustionMessage(devinStateErrorText(otherState)) {
-												otherState.credentialQuotaShadow = otherState.cloneShallow()
+												otherState.credentialQuotaShadow = independentQuotaShadow(otherState)
 											} else {
 												otherState.credentialQuotaShadow = nil
 											}
@@ -3024,6 +3023,12 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	prevAuthRetryAfter := auth.NextRetryAfter
 	reportedFailure := reportedQuotaProvider(auth) && statusCodeFromResult(resultErr) == 429 && quotaFailureOnly(resultErr)
 	if shouldSkipCredentialCooldown(resultErr) {
+		return
+	}
+	// A model-less quota report has no independent model layer to restore.
+	// Keep an existing live auth restriction intact; usage can only release
+	// cooldowns that were themselves advisory quota failures.
+	if reportedFailure && !disableCooling && prevAuthRetryAfter.After(now) && (!advisoryQuota(auth.Quota) || !quotaFailureOnly(auth.LastError)) {
 		return
 	}
 	defer func() {
