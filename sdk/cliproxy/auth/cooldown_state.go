@@ -31,6 +31,9 @@ type CooldownStateRecord struct {
 	// auth-level credential-quota layer so a restart cannot lose the
 	// distinction and quota restoration keeps reinstate-exactly semantics.
 	IndependentState *ModelState `json:"independent_state,omitempty"`
+	// IndependentLayers preserves deeper restrictions when credential quota
+	// wraps model quota that already has an independent failure beneath it.
+	IndependentLayers []*ModelState `json:"independent_layers,omitempty"`
 	// CredentialQuotaPropagated preserves wrap provenance for models that
 	// carry no independent layer (e.g. the reporting model itself).
 	CredentialQuotaPropagated bool `json:"credential_quota_propagated,omitempty"`

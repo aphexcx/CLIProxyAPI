@@ -445,3 +445,118 @@ func TestQuotaAdvisoryRound2AuthDeadline(t *testing.T) {
 		})
 	}
 }
+
+func TestQuotaAdvisoryScopeChangeRetainsLongerQuota(t *testing.T) {
+	for _, sibling := range []bool{false, true} {
+		t.Run(fmt.Sprint(sibling), func(t *testing.T) {
+			m, auth, model := newAdvisoryQuotaManager(t, "codex")
+			m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "codex", Model: model, Error: &Error{HTTPStatus: 403}})
+			before, _ := m.GetByID(auth.ID)
+			deadline := before.ModelStates[model].NextRetryAfter
+			delay := 2 * time.Hour
+			m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "codex", Model: model, RetryAfter: &delay, Error: &Error{HTTPStatus: 429}})
+			reportingModel := model
+			if sibling {
+				reportingModel = "other-model"
+			}
+			m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "codex", Model: reportingModel, CredentialScope: true, Error: &Error{HTTPStatus: 429}})
+			failed, _ := m.GetByID(auth.ID)
+			if blocked, _, _ := isAuthBlockedForModel(failed, model, deadline.Add(time.Minute)); !blocked {
+				t.Fatal("scope change dropped the longer model quota without a usage observation")
+			}
+			at := failed.UpdatedAt.Add(time.Millisecond)
+			applyAdvisoryQuota(m, auth, advisoryQuotaWindows(at, 0), "{}", at)
+			current, _ := m.GetByID(auth.ID)
+			state := current.ModelStates[model]
+			if state.LastError == nil || state.LastError.HTTPStatus != 403 || !state.NextRetryAfter.Equal(deadline) {
+				t.Fatal("usage did not restore the exact independent 403 restriction")
+			}
+		})
+	}
+}
+
+func TestQuotaAdvisoryAuthRetainsLongerQuota(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			m, auth, model := newAdvisoryQuotaManager(t, provider)
+			m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: provider, Error: &Error{HTTPStatus: 403}})
+			before, _ := m.GetByID(auth.ID)
+			deadline := before.NextRetryAfter
+			delay := 2 * time.Hour
+			m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: provider, RetryAfter: &delay, Error: &Error{HTTPStatus: 429}})
+			failed, _ := m.GetByID(auth.ID)
+			if blocked, _, _ := isAuthBlockedForModel(failed, model, deadline.Add(time.Minute)); !blocked {
+				t.Fatal("independent auth failure discarded the longer incoming quota")
+			}
+			at := failed.UpdatedAt.Add(time.Millisecond)
+			applyAdvisoryQuota(m, auth, advisoryQuotaWindows(at, 0), "{}", at)
+			current, _ := m.GetByID(auth.ID)
+			if current.LastError == nil || current.LastError.HTTPStatus != 403 || !current.NextRetryAfter.Equal(deadline) {
+				t.Fatal("usage did not restore the exact independent auth restriction")
+			}
+		})
+	}
+}
+
+func TestQuotaAdvisoryRestrictionsSurviveRestore(t *testing.T) {
+	for _, authLevel := range []bool{false, true} {
+		t.Run(fmt.Sprint(authLevel), func(t *testing.T) {
+			m, auth, model := newAdvisoryQuotaManager(t, "codex")
+			failureModel := model
+			if authLevel {
+				failureModel = ""
+			}
+			m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "codex", Model: failureModel, Error: &Error{HTTPStatus: 403}})
+			before, _ := m.GetByID(auth.ID)
+			deadline := before.NextRetryAfter
+			if !authLevel {
+				deadline = before.ModelStates[model].NextRetryAfter
+			}
+			delay := 2 * time.Hour
+			m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "codex", Model: failureModel, RetryAfter: &delay, Error: &Error{HTTPStatus: 429}})
+			if !authLevel {
+				m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "codex", Model: model, CredentialScope: true, Error: &Error{HTTPStatus: 429}})
+			}
+			encoded, errMarshal := json.Marshal(m.cooldownStateRecordsSnapshot())
+			if errMarshal != nil {
+				t.Fatal(errMarshal)
+			}
+			var records []CooldownStateRecord
+			if errDecode := json.Unmarshal(encoded, &records); errDecode != nil {
+				t.Fatal(errDecode)
+			}
+			restored := NewManager(nil, &FillFirstSelector{}, nil)
+			restored.SetConfig(m.runtimeConfig.Load().(*config.Config))
+			restoredAuth, errRegister := restored.Register(context.Background(), auth.Clone())
+			if errRegister != nil {
+				t.Fatal(errRegister)
+			}
+			restored.SetCooldownStateStore(&recordingCooldownStateStore{load: records})
+			if errRestore := restored.RestoreCooldownStates(context.Background()); errRestore != nil {
+				t.Fatal(errRestore)
+			}
+			current, _ := restored.GetByID(auth.ID)
+			if blocked, _, _ := isAuthBlockedForModel(current, model, deadline.Add(time.Minute)); !blocked {
+				t.Fatal("restoration lost the longer quota deadline")
+			}
+			// File/refresh snapshots do not carry private runtime provenance.
+			// An update retaining the same quota must keep its independent layer.
+			current.quotaFailureShadow = nil
+			updated, errUpdate := restored.Update(context.Background(), current)
+			if errUpdate != nil {
+				t.Fatal(errUpdate)
+			}
+			current = updated
+			at := current.UpdatedAt.Add(time.Millisecond)
+			applyAdvisoryQuota(restored, restoredAuth, advisoryQuotaWindows(at, 0), "{}", at)
+			current, _ = restored.GetByID(auth.ID)
+			lastError, next := current.LastError, current.NextRetryAfter
+			if !authLevel {
+				lastError, next = current.ModelStates[model].LastError, current.ModelStates[model].NextRetryAfter
+			}
+			if lastError == nil || lastError.HTTPStatus != 403 || !next.Equal(deadline) {
+				t.Fatal("restoration lost the independent 403 beneath advisory quota")
+			}
+		})
+	}
+}

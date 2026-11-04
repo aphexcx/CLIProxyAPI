@@ -101,19 +101,6 @@ func quotaUsageShowsRoom(auth *Auth, model string, since, now time.Time) bool {
 	return true
 }
 
-// Model quota and credential quota share one advisory layer. When changing
-// scope, carry the independent restriction directly rather than wrapping an
-// advisory layer whose shallow copy would lose its own shadow.
-func independentQuotaShadow(state *ModelState) *ModelState {
-	if state == nil {
-		return nil
-	}
-	if advisoryQuota(state.Quota) && quotaFailureOnly(state.LastError) && state.credentialQuotaShadow != nil {
-		return state.credentialQuotaShadow.cloneShallow()
-	}
-	return state.cloneShallow()
-}
-
 // Clear quota failures contradicted by newer provider usage. Independent
 // failures and quota_cap shadows retain ownership of their own restrictions.
 func clearContradictedQuotaCooldowns(auth *Auth, now time.Time) bool {
@@ -144,12 +131,15 @@ func clearContradictedQuotaCooldowns(auth *Auth, now time.Time) bool {
 		}
 	}
 	changed := false
+	var restoredAuthFailure *ModelState
 	credential := auth.Quota.Reason == "credential_quota"
-	if advisoryQuota(auth.Quota) && (credential || len(auth.ModelStates) == 0) &&
+	if advisoryQuota(auth.Quota) && (credential || len(auth.ModelStates) == 0 || auth.quotaFailureShadow != nil) &&
 		(credential || quotaFailureOnly(auth.LastError)) && quotaUsageShowsRoom(auth, "", quotaFailureAt(auth.Quota, auth.UpdatedAt), now) {
 		applyCooldownFields(&auth.Quota, QuotaState{})
 		auth.NextRetryAfter = time.Time{}
 		auth.Unavailable = false
+		restoredAuthFailure = auth.quotaFailureShadow
+		auth.quotaFailureShadow = nil
 		changed = true
 	}
 	for model, state := range auth.ModelStates {
@@ -158,7 +148,7 @@ func clearContradictedQuotaCooldowns(auth *Auth, now time.Time) bool {
 		}
 		if shadow := state.credentialQuotaShadow; shadow != nil && advisoryQuota(shadow.Quota) && quotaFailureOnly(shadow.LastError) && quotaUsageShowsRoom(auth, model, quotaFailureAt(shadow.Quota, shadow.UpdatedAt), now) {
 			if independent := shadow.credentialQuotaShadow; independent != nil && isModelStateActiveCooldown(independent, now) {
-				*shadow = *independent.cloneShallow()
+				*shadow = *independent.Clone()
 			} else {
 				resetModelState(shadow, now)
 			}
@@ -172,7 +162,7 @@ func clearContradictedQuotaCooldowns(auth *Auth, now time.Time) bool {
 			continue
 		}
 		if shadow := state.credentialQuotaShadow; shadow != nil && isModelStateActiveCooldown(shadow, now) {
-			*state = *shadow.cloneShallow()
+			*state = *shadow.Clone()
 		} else {
 			resetModelState(state, now)
 		}
@@ -186,6 +176,14 @@ func clearContradictedQuotaCooldowns(auth *Auth, now time.Time) bool {
 		}
 		if !auth.Unavailable && !hasModelError(auth, now) && quotaFailureOnly(auth.LastError) {
 			auth.Status, auth.StatusMessage, auth.LastError = StatusActive, "", nil
+		}
+		if isModelStateActiveCooldown(restoredAuthFailure, now) {
+			auth.Unavailable = true
+			auth.Status = restoredAuthFailure.Status
+			auth.StatusMessage = restoredAuthFailure.StatusMessage
+			auth.LastError = cloneError(restoredAuthFailure.LastError)
+			auth.NextRetryAfter = restoredAuthFailure.NextRetryAfter
+			applyCooldownFields(&auth.Quota, restoredAuthFailure.Quota)
 		}
 	}
 	return changed
