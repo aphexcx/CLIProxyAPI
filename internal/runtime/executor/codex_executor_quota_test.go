@@ -51,6 +51,35 @@ func TestCodexQuotaPollUsesOuterSeatAndSanitizesUsage(t *testing.T) {
 	}
 }
 
+func TestCodexQuotaPollDoesNotDropRejectedWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name, primary string
+		wantError     bool
+	}{
+		{"null reset", `{"used_percent":100,"limit_window_seconds":18000,"reset_at":null}`, false},
+		{"invalid reset", `{"used_percent":100,"limit_window_seconds":18000,"reset_at":"invalid"}`, true},
+		{"missing utilization", `{"limit_window_seconds":18000,"reset_at":1893456000}`, true},
+		{"invalid utilization", `{"used_percent":"invalid","limit_window_seconds":18000,"reset_at":1893456000}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"rate_limit":{"primary_window":` + tc.primary + `,"secondary_window":{"used_percent":0,"limit_window_seconds":604800,"reset_at":1893456000}}}`
+			rt := codexQuotaFixtureTransport(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}, nil
+			})
+			ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", rt)
+			auth := &cliproxyauth.Auth{Provider: "codex", Metadata: map[string]any{"access_token": "fixture", "account_id": "account"}}
+			windows, _, errPoll := NewCodexExecutor(&config.Config{}).PollQuotaUsage(ctx, auth)
+			if tc.wantError {
+				if errPoll == nil {
+					t.Fatal("a rejected main window was treated as omitted from a full read")
+				}
+			} else if errPoll != nil || len(windows) != 2 || windows["five_hour"].Utilization != 100 || !windows["five_hour"].ResetsAt.IsZero() {
+				t.Fatalf("a null reset discarded the exhausted window: %v err=%v", windows, errPoll)
+			}
+		})
+	}
+}
+
 func TestCodexQuotaPollErrorsDoNotRetainUpstreamBody(t *testing.T) {
 	for _, status := range []int{200, 302, 401, 429, 500} {
 		t.Run(http.StatusText(status), func(t *testing.T) {

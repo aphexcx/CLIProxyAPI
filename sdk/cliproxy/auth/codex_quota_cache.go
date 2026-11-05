@@ -18,7 +18,7 @@ const maxCodexQuotaWindows = 20 // Main, code review and eight additional pairs.
 // CodexQuotaWindows normalizes poll and response headers at receipt time.
 // Percentages and resets must come from the same observation; no cooldown state
 // is inferred from these informational windows.
-func CodexQuotaWindows(headers http.Header, observedAt time.Time) map[string]QuotaWindow {
+func CodexQuotaWindows(headers http.Header, observedAt time.Time, fullUsage ...bool) map[string]QuotaWindow {
 	if observedAt.IsZero() {
 		return nil
 	}
@@ -56,6 +56,9 @@ func CodexQuotaWindows(headers http.Header, observedAt time.Time) map[string]Quo
 			reset = time.Unix(resetSeconds, 0)
 		} else if after, errAfter := strconv.ParseInt(headers.Get(prefix+"Reset-After-Seconds"), 10, 64); errAfter == nil && after >= 0 && after <= 366*24*60*60 {
 			reset = observedAt.Add(time.Duration(after) * time.Second)
+		} else if len(fullUsage) > 0 && fullUsage[0] && headers.Get(prefix+"Reset-At") == "" && headers.Get(prefix+"Reset-After-Seconds") == "" {
+			// Full polls may report a utilization without an active reset.
+			reset = time.Time{}
 		} else {
 			continue
 		}
