@@ -45,12 +45,18 @@ func parseOAuthUsage(body []byte) (map[string]OAuthUsageWindow, error) {
 		return nil, fmt.Errorf("parse Claude OAuth usage: invalid response")
 	}
 	windows := make(map[string]OAuthUsageWindow)
+	invalidWindow := false
 	add := func(name string, window *usageWindow, percent *float64) {
-		if window == nil || percent == nil || math.IsNaN(*percent) || math.IsInf(*percent, 0) || *percent < 0 {
+		if window == nil {
+			return
+		}
+		if percent == nil || math.IsNaN(*percent) || math.IsInf(*percent, 0) || *percent < 0 {
+			invalidWindow = true
 			return
 		}
 		reset, errParse := time.Parse(time.RFC3339Nano, window.ResetsAt)
 		if errParse != nil && window.ResetsAt != "" {
+			invalidWindow = true
 			return
 		}
 		windows[name] = OAuthUsageWindow{Utilization: *percent, ResetsAt: reset}
@@ -74,6 +80,9 @@ func parseOAuthUsage(body []byte) (map[string]OAuthUsageWindow, error) {
 			percent = window.Utilization
 		}
 		add(name, &window, percent)
+	}
+	if invalidWindow {
+		return nil, fmt.Errorf("parse Claude OAuth usage: invalid window")
 	}
 	return windows, nil
 }

@@ -122,8 +122,9 @@ including reported usable credits. Observations must remain within two
 polling intervals. A successful full usage read treats absent or null windows
 as room and removes windows omitted by that read; partial response headers
 retain other windows. A missing reset does not discard reported utilization,
-and an expired reset reports room. Older or stale observations cannot release
-a cooldown, and poll failures do not manufacture recovery evidence. Empty
+and an expired reset reports room. Malformed windows fail the read. Older or
+stale observations cannot release a cooldown, and poll failures do not
+manufacture recovery evidence. Empty
 reads use their request start to fence failures that occurred while in flight.
 The cleared state is persisted and published to selection and
 `GET /v8/management/credentials` together, so the panel's `cooldowns` listing

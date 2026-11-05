@@ -113,6 +113,9 @@ func quotaUsageShowsRoom(auth *Auth, model string, since, now time.Time) bool {
 	for name := range names {
 		window, ok := auth.Quota.Windows[name]
 		if !ok {
+			if !fresh(auth.Quota.usageObservedAt) {
+				return false // Partial headers cannot prove a window is absent.
+			}
 			continue // Absent and null windows report no active usage limit.
 		}
 		if !fresh(window.ObservedAt) || math.IsNaN(window.Utilization) || math.IsInf(window.Utilization, 0) || window.Utilization < 0 {

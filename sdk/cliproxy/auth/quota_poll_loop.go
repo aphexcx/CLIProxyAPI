@@ -847,6 +847,7 @@ func (m *Manager) updateClaudeQuotaConfig(previous, cfg *internalconfig.Config) 
 		}
 		if !cfg.Claude.Quota.Enabled {
 			auth.Quota.Windows = nil
+			auth.Quota.usageObservedAt = time.Time{}
 			auth.Quota.creditsAvailable = false
 			auth.Quota.creditsObservedAt = time.Time{}
 			if seat := m.quotaPollSeats[auth.ID]; seat != nil {

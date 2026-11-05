@@ -653,3 +653,33 @@ func TestQuotaAdvisoryOmittedWindowCannotRearmGuard(t *testing.T) {
 		t.Fatal("delayed observations reintroduced windows removed by a newer poll")
 	}
 }
+
+func TestQuotaAdvisoryPartialHeaderNeedsCompletePoll(t *testing.T) {
+	m, auth, model := newAdvisoryQuotaManager(t, "codex")
+	delay := 2 * time.Hour
+	m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "codex", Model: model, CredentialScope: true, RetryAfter: &delay, Error: &Error{HTTPStatus: 429}})
+	current, _ := m.GetByID(auth.ID)
+	at := current.UpdatedAt.Add(time.Millisecond)
+	current.Quota.Windows = map[string]QuotaWindow{"five_hour": {ObservedAt: at, ResetsAt: at.Add(time.Hour)}}
+	if blocked, _, _ := isAuthBlockedForModel(current, model, at); !blocked {
+		t.Fatal("a partial header treated unknown weekly usage as room")
+	}
+}
+
+func TestQuotaAdvisoryDisablePollingDoesNotRecover(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			m, auth, model := newAdvisoryQuotaManager(t, provider)
+			delay := 2 * time.Hour
+			m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: provider, Model: model, CredentialScope: true, RetryAfter: &delay, Error: &Error{HTTPStatus: 429}})
+			before, _ := m.GetByID(auth.ID)
+			at := before.UpdatedAt.Add(time.Millisecond)
+			applyAdvisoryQuota(m, auth, advisoryQuotaWindows(at, 100), "{}", at)
+			m.SetConfig(&config.Config{})
+			current, _ := m.GetByID(auth.ID)
+			if blocked, _, _ := isAuthBlockedForModel(current, model, at); !blocked {
+				t.Fatal("discarding the usage cache fabricated a recovery observation")
+			}
+		})
+	}
+}
