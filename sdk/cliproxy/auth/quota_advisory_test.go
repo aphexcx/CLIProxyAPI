@@ -666,6 +666,21 @@ func TestQuotaAdvisoryPartialHeaderNeedsCompletePoll(t *testing.T) {
 	}
 }
 
+func TestQuotaAdvisoryMonthlyHeadersShowRoom(t *testing.T) {
+	m, auth, model := newAdvisoryQuotaManager(t, "codex")
+	delay := 2 * time.Hour
+	m.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "codex", Model: model, CredentialScope: true, RetryAfter: &delay, Error: &Error{HTTPStatus: 429}})
+	current, _ := m.GetByID(auth.ID)
+	at := current.UpdatedAt.Add(time.Millisecond)
+	current.Quota.Windows = map[string]QuotaWindow{
+		"five_hour": {ObservedAt: at, ResetsAt: at.Add(time.Hour)},
+		"monthly":   {ObservedAt: at, ResetsAt: at.Add(30 * 24 * time.Hour)},
+	}
+	if blocked, _, _ := isAuthBlockedForModel(current, model, at); blocked {
+		t.Fatal("a monthly plan incorrectly required a weekly header window")
+	}
+}
+
 func TestQuotaAdvisoryDisablePollingDoesNotRecover(t *testing.T) {
 	for _, provider := range []string{"claude", "codex"} {
 		t.Run(provider, func(t *testing.T) {

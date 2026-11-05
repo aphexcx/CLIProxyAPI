@@ -105,6 +105,10 @@ func quotaUsageShowsRoom(auth *Auth, model string, since, now time.Time) bool {
 		}
 	} else {
 		// Check every window this plan reports, including additional limits.
+		if _, monthly := auth.Quota.Windows["monthly"]; monthly {
+			delete(names, "seven_day")
+			names["monthly"] = true
+		}
 		for name := range auth.Quota.Windows {
 			names[name] = true
 		}

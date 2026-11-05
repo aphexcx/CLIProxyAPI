@@ -97,9 +97,17 @@ func parseCodexQuotaHeaders(root gjson.Result, fullUsage ...bool) http.Header {
 
 	additional := firstCodexQuotaResult(root, "additional_rate_limits", "additionalRateLimits")
 	additionalCount := 0
+	var identifiers map[string]bool
+	if complete {
+		identifiers = make(map[string]bool)
+		if additional.Exists() && !additional.IsObject() && !additional.IsArray() {
+			return nil
+		}
+	}
 	if additional.Exists() && (additional.IsObject() || additional.IsArray()) {
 		additional.ForEach(func(key, value gjson.Result) bool {
 			if additionalCount >= maxCodexAdditionalRateLimits {
+				valid = !complete // A truncated read cannot prove omissions.
 				return false
 			}
 			limitName := strings.TrimSpace(key.String())
@@ -107,9 +115,21 @@ func parseCodexQuotaHeaders(root gjson.Result, fullUsage ...bool) http.Header {
 				limitName = firstCodexQuotaResultString(value, "limit_name", "limitName", "name")
 			}
 			if limitName == "" {
+				if complete {
+					valid = false
+					return false
+				}
 				return true
 			}
 			identifier := normalizeCodexQuotaHeaderIdentifier(limitName)
+			if complete {
+				key := strings.ToLower(identifier)
+				if key == "" || identifiers[key] || !validCodexQuotaEventText(limitName) || strings.IndexFunc(limitName, func(char rune) bool { return char < 32 || char == 127 }) >= 0 {
+					valid = false
+					return false
+				}
+				identifiers[key] = true
+			}
 			if identifier == "" {
 				return true
 			}
@@ -229,6 +249,7 @@ func addCodexQuotaRateLimitHeaders(headers http.Header, prefix string, rateInfo 
 	}
 
 	changed := false
+	windowsReported := 0
 	if setCodexQuotaScalarHeaderFromResult(headers, prefix+"Allowed", rateInfo, "allowed") {
 		changed = true
 	}
@@ -296,6 +317,14 @@ func addCodexQuotaRateLimitHeaders(headers http.Header, prefix string, rateInfo 
 			setCodexQuotaScalarHeaderFromResult(headers, windowPrefix+"Reset-At", window, "reset_at", "resetAt")
 		}
 		changed = true
+		windowsReported++
+	}
+	if fullUsage && windowsReported == 0 {
+		allowed := firstCodexQuotaResult(rateInfo, "allowed")
+		reached := firstCodexQuotaResult(rateInfo, "limit_reached", "limitReached")
+		if (allowed.Exists() && !allowed.Bool()) || reached.Bool() {
+			return false, false // Exhaustion with no usable window is not room.
+		}
 	}
 	return changed, true
 }
