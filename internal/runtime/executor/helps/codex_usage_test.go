@@ -20,13 +20,20 @@ func TestCodexUsageBoundsAdditionalLimits(t *testing.T) {
 	for i := range 100 {
 		limits = append(limits, map[string]any{"limit_name": fmt.Sprintf("limit-%02d", i), "rate_limit": map[string]any{"primary_window": map[string]any{"used_percent": 1, "limit_window_seconds": 18000, "reset_at": 1893456000}}})
 	}
-	body, errMarshal := json.Marshal(map[string]any{"additional_rate_limits": limits})
+	body, errMarshal := json.Marshal(map[string]any{"additional_rate_limits": limits[:8]})
 	if errMarshal != nil {
 		t.Fatal(errMarshal)
 	}
 	headers := ParseCodexUsageHeaders(body)
 	if len(headers) != 8*4 {
 		t.Fatalf("unbounded additional limits: %d headers", len(headers))
+	}
+	body, errMarshal = json.Marshal(map[string]any{"additional_rate_limits": limits})
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	if ParseCodexUsageHeaders(body) != nil {
+		t.Fatal("accepted a truncated usage snapshot as complete")
 	}
 	if ParseCodexUsageHeaders([]byte(`{"rate_limit":`)) != nil {
 		t.Fatal("accepted malformed usage")
