@@ -28,9 +28,10 @@ func TestParseOAuthUsage(t *testing.T) {
 		{"top-level name skipped with account windows retained", `{"five_hour":{"utilization":12.5,"resets_at":"2026-11-02T02:59:00Z"},"seven_day":{"utilization":100,"resets_at":"2026-11-02T02:59:00Z"},"limits":[{"display_name":"Fable","percent":100.5,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"five_hour": {Utilization: 12.5, ResetsAt: reset}, "seven_day": {Utilization: 100, ResetsAt: reset}}, false},
 		{"top-level zero skipped", `{"limits":[{"display_name":"Fable","percent":0,"resets_at":"2026-11-02T02:59:00.000Z"}]}`, map[string]OAuthUsageWindow{}, false},
 		{"zero is valid", `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":0,"resets_at":"2026-11-02T02:59:00.000Z"}]}`, map[string]OAuthUsageWindow{"Fable": {Utilization: 0, ResetsAt: reset}}, false},
-		{"missing is not zero", `{"five_hour":null,"limits":[{"scope":{"model":{"display_name":"Fable"}},"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}, false},
-		{"invalid reset and negative usage", `{"five_hour":{"utilization":99,"resets_at":"invalid"},"seven_day":{"utilization":-1,"resets_at":"2026-11-02T02:59:00Z"}}`, map[string]OAuthUsageWindow{}, false},
-		{"invalid longer model window is omitted", `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":100,"resets_at":"2026-11-02T02:59:00Z"},{"scope":{"model":{"display_name":"Additional"}},"percent":100,"resets_at":"invalid"}]}`, map[string]OAuthUsageWindow{"Fable": {Utilization: 100, ResetsAt: reset}}, false},
+		{"missing utilization is not room", `{"five_hour":null,"limits":[{"scope":{"model":{"display_name":"Fable"}},"resets_at":"2026-11-02T02:59:00Z"}]}`, nil, true},
+		{"invalid reset and negative usage", `{"five_hour":{"utilization":99,"resets_at":"invalid"},"seven_day":{"utilization":-1,"resets_at":"2026-11-02T02:59:00Z"}}`, nil, true},
+		{"invalid longer model window rejects the snapshot", `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":100,"resets_at":"2026-11-02T02:59:00Z"},{"scope":{"model":{"display_name":"Additional"}},"percent":100,"resets_at":"invalid"}]}`, nil, true},
+		{"invalid percent does not fall back", `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":-1,"utilization":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, nil, true},
 		{"reserved name", `{"limits":[{"scope":{"model":{"display_name":"five_hour"}},"percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}, false},
 		{"malformed", `{"secret":`, nil, true},
 		{"null", `null`, nil, true},
@@ -45,6 +46,38 @@ func TestParseOAuthUsage(t *testing.T) {
 				t.Fatal("body leaked into error")
 			}
 		})
+	}
+}
+
+func TestParseOAuthUsageNullResetRetainsUtilization(t *testing.T) {
+	for i, body := range []string{
+		`{"five_hour":{"utilization":0,"resets_at":null}}`,
+		`{"five_hour":{"utilization":100,"resets_at":null}}`,
+	} {
+		windows, errParse := parseOAuthUsage([]byte(body))
+		window, present := windows["five_hour"]
+		if errParse != nil || !present || window.Utilization != float64(i*100) || !window.ResetsAt.IsZero() {
+			t.Fatalf("null reset lost reported usage: windows=%v err=%v", windows, errParse)
+		}
+	}
+}
+
+func TestFetchOAuthUsageRejectsInvalidWindow(t *testing.T) {
+	for _, body := range []string{
+		`{"five_hour":{"resets_at":"2026-11-02T02:59:00Z"}}`,
+		`{"five_hour":{"utilization":100,"resets_at":"invalid-secret"}}`,
+		`{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":-1,"utilization":100}]}`,
+	} {
+		auth := &ClaudeAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(req, body), nil
+		})}}
+		windows, _, errFetch := auth.FetchOAuthUsageSnapshot(context.Background(), "fixture")
+		if errFetch == nil || windows != nil {
+			t.Fatal("invalid usage was accepted as a complete recovery observation")
+		}
+		if strings.Contains(errFetch.Error(), "secret") {
+			t.Fatal("usage body leaked into parser error")
+		}
 	}
 }
 
@@ -160,7 +193,6 @@ func TestParseOAuthUsageScopedModel(t *testing.T) {
 		{"utilization fallback", `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"utilization":99.5,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"Fable": {Utilization: 99.5, ResetsAt: reset}}},
 		{"top-level name with utilization is skipped", `{"limits":[{"display_name":"Fable","utilization":99.5,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}},
 		{"zero percent wins over utilization", `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":0,"utilization":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{"Fable": {ResetsAt: reset}}},
-		{"invalid percent does not fall back", `{"limits":[{"scope":{"model":{"display_name":"Fable"}},"percent":-1,"utilization":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}},
 		{"nested reserved name", `{"limits":[{"scope":{"model":{"display_name":" five_hour "}},"percent":100,"resets_at":"2026-11-02T02:59:00Z"}]}`, map[string]OAuthUsageWindow{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

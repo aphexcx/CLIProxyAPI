@@ -251,6 +251,7 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 	type result struct {
 		windows map[string]QuotaWindow
 		usage   json.RawMessage
+		started time.Time
 		err     error
 	}
 	// A poller that finishes late after cancellation must neither retain its slot
@@ -271,7 +272,7 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 		for name, window := range windows {
 			snapshot[name] = window
 		}
-		results <- result{snapshot, append(json.RawMessage(nil), usage...), errPoll}
+		results <- result{snapshot, append(json.RawMessage(nil), usage...), started, errPoll}
 	}()
 	for {
 		select {
@@ -292,9 +293,9 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 					m.refreshClaudeQuotaRanks()
 				}
 			} else if strings.EqualFold(base.Provider, "codex") {
-				m.applyCodexQuotaUsageSnapshot(ctx, cfg, base, observed.windows, observed.usage, time.Now())
+				m.applyCodexQuotaUsageSnapshot(ctx, cfg, base, observed.windows, observed.usage, time.Now(), observed.started)
 			} else {
-				m.applyClaudeQuotaUsageSnapshot(ctx, cfg, base, observed.windows, observed.usage, time.Now())
+				m.applyClaudeQuotaUsageSnapshot(ctx, cfg, base, observed.windows, observed.usage, time.Now(), observed.started)
 			}
 			return
 		}
@@ -420,7 +421,7 @@ func (m *Manager) applyClaudeQuotaUsage(ctx context.Context, cfg *internalconfig
 	m.applyClaudeQuotaUsageSnapshot(ctx, cfg, base, windows, nil, now)
 }
 
-func (m *Manager) applyClaudeQuotaUsageSnapshot(ctx context.Context, cfg *internalconfig.Config, base *Auth, windows map[string]QuotaWindow, usage json.RawMessage, now time.Time) {
+func (m *Manager) applyClaudeQuotaUsageSnapshot(ctx context.Context, cfg *internalconfig.Config, base *Auth, windows map[string]QuotaWindow, usage json.RawMessage, now time.Time, started ...time.Time) {
 	// Fence reloads and credential replacement. Network I/O happens before these locks.
 	release, errLock := m.lockAuthMutationContext(ctx, base.ID)
 	if errLock != nil {
@@ -439,11 +440,25 @@ func (m *Manager) applyClaudeQuotaUsageSnapshot(ctx context.Context, cfg *intern
 		release()
 		return
 	}
-	fresh := mergeClaudeQuotaWindows(auth, windows)
+	// Legacy window-only observations may be partial. Only a complete usage
+	// body is authoritative about omitted windows.
+	fullSnapshot := usage != nil && recordQuotaUsageSnapshot(auth, windows, now, started...)
+	fresh := mergeClaudeQuotaWindows(auth, windows, usage != nil)
+	if fullSnapshot {
+		// A missing mapped window in a successful full read releases its guard.
+		// These zero observations are only for reconciliation, not the listing.
+		for name := range cfg.Claude.Quota.WithDefaults().ModelWindows {
+			if _, present := auth.Quota.Windows[name]; !present {
+				fresh[name] = QuotaWindow{ObservedAt: auth.Quota.usageObservedAt, ResetsAt: now}
+			}
+		}
+	}
 	seat := m.claudeQuotaPollSeatLocked(auth.ID)
 	seat.polledAt, seat.epoch = now, auth.RegistrationEpoch
 	seat.usage = append(json.RawMessage(nil), usage...)
 	changed := m.reconcileClaudeQuotaHoldsLocked(auth, cfg, fresh, nil, now)
+	setQuotaUsagePolicy(auth, cfg)
+	changed = clearContradictedQuotaCooldowns(auth, now) || changed
 	auth.Generation++
 	auth.UpdatedAt = now
 	snapshots := m.recomputeClaudeQuotaRanksLocked(cfg, now)
@@ -456,8 +471,8 @@ func (m *Manager) applyClaudeQuotaUsageSnapshot(ctx context.Context, cfg *intern
 	}
 }
 
-// Reconcile only cooldowns owned by this guard. Missing/invalid windows never
-// release an existing hold early; other upstream failures always retain ownership.
+// Reconcile holds owned by this guard. Upstream quota failures are reconciled
+// separately against fresh reported usage; other failures retain ownership.
 func (m *Manager) reconcileClaudeQuotaHoldsLocked(auth *Auth, cfg *internalconfig.Config, observations map[string]QuotaWindow, beforeResult map[string]claudeQuotaFreshness, now time.Time) bool {
 	quota := cfg.Claude.Quota.WithDefaults()
 	enabled := quota.Enabled && claudeQuotaEligible(auth) && !quotaCooldownDisabledForAuthWithConfig(auth, cfg)
@@ -823,6 +838,7 @@ func (m *Manager) updateClaudeQuotaConfig(previous, cfg *internalconfig.Config) 
 	for _, auth := range m.auths {
 		// Reload is not a new usage observation. Reconcile only live or restored
 		// ownership so retained windows cannot revive an explicitly cleared hold.
+		setQuotaUsagePolicy(auth, cfg)
 		if m.reconcileClaudeQuotaHoldsLocked(auth, cfg, nil, nil, now) {
 			changed = true
 			auth.Generation++
@@ -831,6 +847,9 @@ func (m *Manager) updateClaudeQuotaConfig(previous, cfg *internalconfig.Config) 
 		}
 		if !cfg.Claude.Quota.Enabled {
 			auth.Quota.Windows = nil
+			auth.Quota.usageObservedAt = time.Time{}
+			auth.Quota.creditsAvailable = false
+			auth.Quota.creditsObservedAt = time.Time{}
 			if seat := m.quotaPollSeats[auth.ID]; seat != nil {
 				seat.polledAt, seat.queued = time.Time{}, false
 				seat.usage = nil

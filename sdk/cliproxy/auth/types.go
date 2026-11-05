@@ -105,6 +105,9 @@ type Auth struct {
 	NextRetryAfter time.Time `json:"next_retry_after"`
 	// ModelStates tracks per-model runtime availability data.
 	ModelStates map[string]*ModelState `json:"model_states,omitempty"`
+	// quotaFailureShadow retains an independent auth failure beneath advisory quota.
+	// CooldownStateRecord owns its persisted representation.
+	quotaFailureShadow *ModelState
 
 	// Runtime carries non-serialisable data used during execution (in-memory only).
 	Runtime any `json:"-"`
@@ -331,6 +334,12 @@ type QuotaState struct {
 	NextRecoverAt time.Time `json:"next_recover_at"`
 	// BackoffLevel stores the progressive cooldown exponent used for rate limits.
 	BackoffLevel int `json:"backoff_level,omitempty"`
+	// CooldownAt is the failure receipt barrier, independent of later state updates.
+	CooldownAt        time.Time `json:"cooldown_at,omitempty"`
+	usagePolicy       *quotaUsagePolicy
+	usageObservedAt   time.Time // Full usage snapshot, including absent/null windows.
+	creditsAvailable  bool
+	creditsObservedAt time.Time
 	// ObservedAt is the time the current Signals snapshot was observed.
 	ObservedAt time.Time `json:"observed_at,omitempty"`
 	// Signals stores bounded, provider-specific quota watermark values observed
@@ -480,6 +489,7 @@ func (a *Auth) Clone() *Auth {
 	}
 	copyAuth := *a
 	copyAuth.Quota = a.Quota.Clone()
+	copyAuth.quotaFailureShadow = a.quotaFailureShadow.Clone()
 	if a.Attributes != nil {
 		copyAuth.Attributes = make(map[string]string, len(a.Attributes))
 		for key, value := range a.Attributes {
@@ -655,12 +665,12 @@ func (m *ModelState) Clone() *ModelState {
 		}
 	}
 	if m.credentialQuotaShadow != nil {
-		copyState.credentialQuotaShadow = m.credentialQuotaShadow.cloneShallow()
+		copyState.credentialQuotaShadow = m.credentialQuotaShadow.Clone()
 	}
 	return &copyState
 }
 
-// cloneShallow copies a shadow state one level deep; shadows never nest.
+// cloneShallow copies one layer, excluding any underlying restrictions.
 func (m *ModelState) cloneShallow() *ModelState {
 	if m == nil {
 		return nil

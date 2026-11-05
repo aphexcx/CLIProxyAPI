@@ -9,8 +9,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
-// Later failure writes must never shorten a still-live cooldown; they may only
-// extend it (#5501). A deliberate zero write (disableCooling) still clears.
+// Independent failures retain their live deadlines (#5501). Claude/Codex
+// quota failures instead honor the newest provider reset.
 
 func newCooldownMonotonicManager(t *testing.T, models ...string) (*Manager, *Auth) {
 	t.Helper()
@@ -344,7 +344,6 @@ func TestManager_MarkResult_CredentialScopeDoesNotInheritModelQuotaDeadline(t *t
 				t.Fatalf("model-only cooldown was not retained for Fable: blocked=%v next=%v", fableBlocked, fableNext)
 			}
 
-			credentialDeadline := updated.Quota.NextRecoverAt
 			shorterCredentialRetry := 30 * time.Minute
 			m.MarkResult(ctx, Result{
 				AuthID: auth.ID, Provider: auth.Provider, Model: "claude-sonnet-4",
@@ -352,15 +351,14 @@ func TestManager_MarkResult_CredentialScopeDoesNotInheritModelQuotaDeadline(t *t
 				Error: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "shorter shared window rejection"},
 			})
 			updated, _ = m.GetByID(auth.ID)
-			if !updated.Quota.NextRecoverAt.Equal(credentialDeadline) {
-				t.Fatalf("later credential-scoped cooldown shortened the active credential deadline: got=%v want=%v",
-					updated.Quota.NextRecoverAt, credentialDeadline)
+			if !updated.Quota.NextRecoverAt.Equal(updated.Quota.CooldownAt.Add(shorterCredentialRetry)) {
+				t.Fatalf("later credential-scoped cooldown ignored the shorter reported reset: %v", updated.Quota.NextRecoverAt)
 			}
 		})
 	}
 }
 
-func TestManager_MarkResult_CredentialScopeBackoffPersistsAcrossWindows(t *testing.T) {
+func TestManager_MarkResult_ClaudeCredentialQuotaDoesNotEscalate(t *testing.T) {
 	withQuotaCooldownEnabled(t)
 
 	m, auth := newCooldownMonotonicManager(t, "model-a", "model-b")
@@ -371,8 +369,8 @@ func TestManager_MarkResult_CredentialScopeBackoffPersistsAcrossWindows(t *testi
 	})
 
 	updated, _ := m.GetByID(auth.ID)
-	if updated.Quota.BackoffLevel != 1 {
-		t.Fatalf("first credential quota failure did not retain backoff level 1: quota=%+v", updated.Quota)
+	if updated.Quota.BackoffLevel != 0 {
+		t.Fatalf("Claude credential quota used backoff: quota=%+v", updated.Quota)
 	}
 
 	expired := time.Now().Add(-time.Minute)
@@ -388,18 +386,17 @@ func TestManager_MarkResult_CredentialScopeBackoffPersistsAcrossWindows(t *testi
 	}
 	m.mu.Unlock()
 
-	secondFailureAt := time.Now()
 	m.MarkResult(ctx, Result{
 		AuthID: auth.ID, Provider: auth.Provider, Model: "model-b", CredentialScope: true,
 		Error: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "credential quota exceeded again"},
 	})
 
 	updated, _ = m.GetByID(auth.ID)
-	if updated.Quota.BackoffLevel != 2 {
-		t.Fatalf("second credential quota failure did not advance backoff to level 2: quota=%+v", updated.Quota)
+	if updated.Quota.BackoffLevel != 0 {
+		t.Fatalf("Claude credential quota escalated backoff: quota=%+v", updated.Quota)
 	}
-	if updated.Quota.NextRecoverAt.Before(secondFailureAt.Add(2 * quotaBackoffBase)) {
-		t.Fatalf("second credential quota failure did not use the next backoff window: deadline=%v", updated.Quota.NextRecoverAt)
+	if got := updated.Quota.NextRecoverAt.Sub(updated.Quota.CooldownAt); got != minQuotaCooldownFloor {
+		t.Fatalf("expected fixed probe interval, got %v", got)
 	}
 }
 
@@ -413,7 +410,7 @@ func TestManager_MarkResult_CredentialScopeDoesNotInheritModelBackoffLevel(t *te
 		wantBackoffLevel     int
 		wantCooldownDuration time.Duration
 	}{
-		{name: "without_retry_hint", wantBackoffLevel: 1, wantCooldownDuration: quotaBackoffBase},
+		{name: "without_retry_hint", wantCooldownDuration: minQuotaCooldownFloor},
 		{name: "with_retry_hint", retryAfter: &retryAfter, wantCooldownDuration: retryAfter},
 	}
 	for _, testCase := range tests {
@@ -427,7 +424,7 @@ func TestManager_MarkResult_CredentialScopeDoesNotInheritModelBackoffLevel(t *te
 
 			modelOnlyAuth, _ := m.GetByID(auth.ID)
 			modelState := existingModelState(modelOnlyAuth, canonicalModelKey("model-a"))
-			if modelOnlyAuth.Quota.Reason != "quota" || modelState == nil || modelState.Quota.BackoffLevel != 1 {
+			if modelOnlyAuth.Quota.Reason != "quota" || modelState == nil || modelState.Quota.BackoffLevel != 0 {
 				t.Fatalf("precondition failed: model-only quota/backoff missing: auth=%+v state=%+v", modelOnlyAuth.Quota, modelState)
 			}
 

@@ -18,7 +18,7 @@ const maxCodexQuotaWindows = 20 // Main, code review and eight additional pairs.
 // CodexQuotaWindows normalizes poll and response headers at receipt time.
 // Percentages and resets must come from the same observation; no cooldown state
 // is inferred from these informational windows.
-func CodexQuotaWindows(headers http.Header, observedAt time.Time) map[string]QuotaWindow {
+func CodexQuotaWindows(headers http.Header, observedAt time.Time, fullUsage ...bool) map[string]QuotaWindow {
 	if observedAt.IsZero() {
 		return nil
 	}
@@ -56,6 +56,9 @@ func CodexQuotaWindows(headers http.Header, observedAt time.Time) map[string]Quo
 			reset = time.Unix(resetSeconds, 0)
 		} else if after, errAfter := strconv.ParseInt(headers.Get(prefix+"Reset-After-Seconds"), 10, 64); errAfter == nil && after >= 0 && after <= 366*24*60*60 {
 			reset = observedAt.Add(time.Duration(after) * time.Second)
+		} else if len(fullUsage) > 0 && fullUsage[0] && headers.Get(prefix+"Reset-At") == "" && headers.Get(prefix+"Reset-After-Seconds") == "" {
+			// Full polls may report a utilization without an active reset.
+			reset = time.Time{}
 		} else {
 			continue
 		}
@@ -92,8 +95,8 @@ func codexQuotaLimitIdentity(name string) string {
 }
 
 // Retain newer response windows even when an earlier poll body arrives later.
-func mergeCodexQuotaWindows(auth *Auth, windows map[string]QuotaWindow) {
-	mergeClaudeQuotaWindows(auth, windows)
+func mergeCodexQuotaWindows(auth *Auth, windows map[string]QuotaWindow, fullUsage ...bool) {
+	mergeClaudeQuotaWindows(auth, windows, fullUsage...)
 	// Bound groups across observations too; rotating additional names must not
 	// evict the main or code-review windows, even when those are older.
 	names := make([]string, 0, len(auth.Quota.Windows))
@@ -128,17 +131,37 @@ func mergeCodexQuotaWindows(auth *Auth, windows map[string]QuotaWindow) {
 	}
 }
 
-func (m *Manager) applyCodexQuotaUsageSnapshot(ctx context.Context, cfg *internalconfig.Config, base *Auth, windows map[string]QuotaWindow, usage json.RawMessage, now time.Time) {
+func (m *Manager) applyCodexQuotaUsageSnapshot(ctx context.Context, cfg *internalconfig.Config, base *Auth, windows map[string]QuotaWindow, usage json.RawMessage, now time.Time, started ...time.Time) {
+	release, errLock := m.lockAuthMutationContext(ctx, base.ID)
+	if errLock != nil {
+		return
+	}
+	defer release()
 	m.configCooldownMu.Lock()
 	defer m.configCooldownMu.Unlock()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if ctx.Err() != nil || m.runtimeConfig.Load() != cfg || !cfg.Claude.Quota.Enabled || !sameClaudeQuotaCredential(m.auths[base.ID], base) {
+		m.mu.Unlock()
 		return
 	}
 	auth := m.auths[base.ID]
-	mergeCodexQuotaWindows(auth, windows)
+	if usage != nil {
+		recordQuotaUsageSnapshot(auth, windows, now, started...)
+	}
+	mergeCodexQuotaWindows(auth, windows, usage != nil)
+	mergeCodexUsageCredits(auth, windows, usage)
+	setQuotaUsagePolicy(auth, cfg)
+	changed := clearContradictedQuotaCooldowns(auth, now)
 	seat := m.claudeQuotaPollSeatLocked(auth.ID)
 	seat.polledAt, seat.epoch = now, auth.RegistrationEpoch
 	seat.usage = append(json.RawMessage(nil), usage...)
+	auth.Generation++
+	auth.UpdatedAt = now
+	snapshot := auth.Clone()
+	m.mu.Unlock()
+	release()
+	m.publishClaudeQuotaSnapshots([]*Auth{snapshot})
+	if changed {
+		m.persistCooldownStatesLocked(ctx)
+	}
 }

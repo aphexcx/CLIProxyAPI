@@ -32,7 +32,7 @@ func quotaResult(authID, model string) Result {
 	}
 }
 
-func TestMarkResultQuotaBackoffEscalatesOncePerWindow(t *testing.T) {
+func TestMarkResultCodexQuotaUsesFixedProbeInterval(t *testing.T) {
 	withQuotaCooldownEnabled(t)
 
 	manager := NewManager(nil, nil, nil)
@@ -51,8 +51,8 @@ func TestMarkResultQuotaBackoffEscalatesOncePerWindow(t *testing.T) {
 		t.Fatalf("expected model state after first failure")
 	}
 	firstState := first.ModelStates["gpt-5"]
-	if firstState.Quota.BackoffLevel != 1 {
-		t.Fatalf("expected BackoffLevel 1 after first failure, got %d", firstState.Quota.BackoffLevel)
+	if firstState.Quota.BackoffLevel != 0 {
+		t.Fatalf("Codex must not use the backoff ladder, got %d", firstState.Quota.BackoffLevel)
 	}
 	if !firstState.Quota.NextRecoverAt.After(time.Now()) {
 		t.Fatalf("expected open cooldown window after first failure, got %v", firstState.Quota.NextRecoverAt)
@@ -65,18 +65,18 @@ func TestMarkResultQuotaBackoffEscalatesOncePerWindow(t *testing.T) {
 		t.Fatalf("expected model state after second failure")
 	}
 	secondState := second.ModelStates["gpt-5"]
-	if secondState.Quota.BackoffLevel != 1 {
-		t.Fatalf("expected BackoffLevel to stay 1 for in-window failure, got %d", secondState.Quota.BackoffLevel)
+	if secondState.Quota.BackoffLevel != 0 {
+		t.Fatalf("Codex must not escalate backoff, got %d", secondState.Quota.BackoffLevel)
 	}
-	if !secondState.Quota.NextRecoverAt.Equal(firstState.Quota.NextRecoverAt) {
-		t.Fatalf("expected NextRecoverAt to stay %v for in-window failure, got %v", firstState.Quota.NextRecoverAt, secondState.Quota.NextRecoverAt)
+	if got := secondState.Quota.NextRecoverAt.Sub(secondState.Quota.CooldownAt); got != minQuotaCooldownFloor {
+		t.Fatalf("expected fixed probe interval, got %v", got)
 	}
-	if !secondState.NextRetryAfter.Equal(firstState.NextRetryAfter) {
-		t.Fatalf("expected NextRetryAfter to stay %v for in-window failure, got %v", firstState.NextRetryAfter, secondState.NextRetryAfter)
+	if !secondState.NextRetryAfter.Equal(secondState.Quota.NextRecoverAt) {
+		t.Fatal("retry deadline differs from probe deadline")
 	}
 }
 
-func TestMarkResultQuotaBackoffEscalatesAfterWindowExpiry(t *testing.T) {
+func TestMarkResultCodexQuotaDropsLegacyBackoffAfterExpiry(t *testing.T) {
 	withQuotaCooldownEnabled(t)
 
 	expired := time.Now().Add(-time.Second)
@@ -104,8 +104,8 @@ func TestMarkResultQuotaBackoffEscalatesAfterWindowExpiry(t *testing.T) {
 		t.Fatalf("expected model state after failure")
 	}
 	state := updated.ModelStates["gpt-5"]
-	if state.Quota.BackoffLevel != 4 {
-		t.Fatalf("expected BackoffLevel 4 after post-window failure, got %d", state.Quota.BackoffLevel)
+	if state.Quota.BackoffLevel != 0 {
+		t.Fatalf("expected legacy backoff to clear, got %d", state.Quota.BackoffLevel)
 	}
 	if !state.Quota.NextRecoverAt.After(time.Now()) {
 		t.Fatalf("expected a fresh cooldown window, got %v", state.Quota.NextRecoverAt)

@@ -65,7 +65,7 @@ func (e *CodexExecutor) PollQuotaUsage(ctx context.Context, auth *cliproxyauth.A
 		return nil, nil, fmt.Errorf("codex quota: invalid usage body")
 	}
 	headers := helps.ParseCodexUsageHeaders(body)
-	windows := cliproxyauth.CodexQuotaWindows(headers, observedAt)
+	windows := cliproxyauth.CodexQuotaWindows(headers, observedAt, true)
 	if len(windows) == 0 {
 		return nil, nil, fmt.Errorf("codex quota: no valid usage windows")
 	}
