@@ -23,6 +23,9 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 		}{
 			{name: "newer", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400"},
 			{name: "newer cloaked body", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", noMetadata: true},
+			{name: "newer cloaked fast override", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", noMetadata: true, rule: "fast"},
+			{name: "newer native fast override", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", rule: "fast"},
+			{name: "newer cloaked filtered features", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", noMetadata: true, rule: "filter-features"},
 			{name: "older", ua: "claude-cli/2.1.100 (external, cli)", want: "2.1.321"},
 			{name: "curl", ua: "curl/8.0", want: "2.1.321"},
 			{name: "management", ua: "Mozilla/5.0", want: "2.1.321"},
@@ -47,6 +50,10 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 					cfg.Payload.Override = []config.PayloadRule{{Models: models, Params: map[string]any{"system.0.text": "operator billing override"}}}
 				} else if tc.rule == "filter" {
 					cfg.Payload.Filter = []config.PayloadFilterRule{{Models: models, Params: []string{"system"}}}
+				} else if tc.rule == "fast" {
+					cfg.Payload.Override = []config.PayloadRule{{Models: models, Params: map[string]any{"speed": "fast"}}}
+				} else if tc.rule == "filter-features" {
+					cfg.Payload.Filter = []config.PayloadFilterRule{{Models: models, Params: []string{"fallbacks", "diagnostics"}}}
 				}
 				betas := "claude-code-20250219,oauth-2025-04-20,effort-2025-11-24,new-client-feature-2026-11-09,extended-cache-ttl-2025-04-11"
 				if path == "count_tokens" {
@@ -117,8 +124,42 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 				wantPackage, wantRuntime := "0.128.0", "v26.12.1"
 				if tc.want == "2.1.400" {
 					wantPackage, wantRuntime = "0.140.0", "v27.0.0"
-					if got := helps.HeaderValueCaseInsensitive(seenHeaders, "Anthropic-Beta"); got != betas {
+					got := helps.HeaderValueCaseInsensitive(seenHeaders, "Anthropic-Beta")
+					for _, beta := range strings.Split(betas, ",") {
+						if !strings.Contains(","+got+",", ","+beta+",") {
+							t.Fatalf("caller beta %s lost: %s", beta, got)
+						}
+					}
+					if !tc.noMetadata && tc.rule != "fast" && got != betas {
 						t.Fatalf("betas = %q, want %q", got, betas)
+					}
+					if tc.rule == "fast" && (ojson.GetBytes(seenBody, "speed").String() != "fast" || !strings.Contains(got, claudeFastModeBeta)) {
+						t.Fatalf("fast override lacks required beta: %s", got)
+					}
+					if tc.noMetadata && path != "count_tokens" {
+						if tc.rule == "filter-features" {
+							for _, field := range []string{"fallbacks", "diagnostics"} {
+								if ojson.GetBytes(seenBody, field).Exists() {
+									t.Fatalf("filtered %s restored", field)
+								}
+							}
+							for _, beta := range []string{claudeServerSideFallbackBeta, claudeFallbackCreditBeta, claudeCacheDiagnosisBeta} {
+								if strings.Contains(got, beta) {
+									t.Fatalf("filtered feature beta restored: %s", beta)
+								}
+							}
+						} else {
+							for _, field := range []string{"fallbacks", "diagnostics"} {
+								if !ojson.GetBytes(seenBody, field).Exists() {
+									t.Fatalf("cloak did not inject %s", field)
+								}
+							}
+							for _, beta := range []string{claudeServerSideFallbackBeta, claudeFallbackCreditBeta, claudeCacheDiagnosisBeta} {
+								if !strings.Contains(got, beta) {
+									t.Fatalf("cloaked body lacks %s: %s", beta, got)
+								}
+							}
+						}
 					}
 				}
 				if seenHeaders.Get("X-Stainless-Package-Version") != wantPackage || seenHeaders.Get("X-Stainless-Runtime-Version") != wantRuntime {
