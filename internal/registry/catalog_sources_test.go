@@ -79,7 +79,9 @@ func TestGeneralCatalogRefreshPreservesForkModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(data) }))
+	var response atomic.Value
+	response.Store(data)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(response.Load().([]byte)) }))
 	defer server.Close()
 	originalURLs := modelsURLs
 	modelsURLs = []string{server.URL}
@@ -112,6 +114,7 @@ func TestGeneralCatalogRefreshPreservesForkModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	response.Store(data)
 	fetched, _, errFetch := fetchGeneralCatalogWithSource(context.Background(), "")
 	if errFetch != nil || string(fetched) != string(data) {
 		t.Fatalf("official model metadata was replaced: %v", errFetch)

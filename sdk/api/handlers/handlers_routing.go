@@ -10,6 +10,7 @@ import (
 
 	. "github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -206,6 +207,20 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	// custom model registrations that include thinking suffixes.
 	if len(providers) == 0 && baseModel != resolvedModelName {
 		providers = util.GetProviderName(resolvedModelName)
+	}
+	// A native one-million-token Claude model needs no alternate upstream ID
+	// for the CLI's [1m] spelling. Keep explicit registrations authoritative.
+	if len(providers) == 0 && strings.HasPrefix(baseModel, "claude-") && strings.HasSuffix(baseModel, "[1m]") {
+		canonical := strings.TrimSuffix(baseModel, "[1m]")
+		if info := registry.LookupStaticModelInfo(canonical); info != nil && info.ContextLength >= 1000000 {
+			providers = util.GetProviderName(canonical)
+			if len(providers) > 0 {
+				resolvedModelName = canonical
+				if parsed.HasSuffix {
+					resolvedModelName += "(" + parsed.RawSuffix + ")"
+				}
+			}
+		}
 	}
 
 	if len(providers) == 0 {

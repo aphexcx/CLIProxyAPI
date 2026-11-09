@@ -75,11 +75,6 @@ func TestApplyThinking_ClaudeSonnet55DisabledUsesBetweenTools(t *testing.T) {
 	}
 }
 
-// Anthropic rejects thinking.type="disabled" on claude-opus-5-5, claude-fable-5,
-// and claude-fable-5-1. Turning thinking off must fall back to adaptive thinking
-// at the lowest supported effort ("low") with display="omitted", and keep an
-// explicit {"type":"disabled"} block (without display, budget_tokens, or
-// block_binding) on models that accept disabled.
 func TestApplyThinking_Fable52XHigh(t *testing.T) {
 	for _, model := range []string{"claude-fable-5-2", "claude-fable-5-2[1m]"} {
 		t.Run(model, func(t *testing.T) {
@@ -98,6 +93,8 @@ func TestApplyThinking_Fable52XHigh(t *testing.T) {
 	}
 }
 
+// Adaptive-only models fall back to the lowest effort when thinking is disabled.
+// Other models keep an explicit disabled block without adaptive-only fields.
 func TestApplyThinking_ClaudeDisabledFallsBackOnAdaptiveOnlyModels(t *testing.T) {
 	tests := []struct {
 		model        string

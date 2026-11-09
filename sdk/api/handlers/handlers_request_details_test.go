@@ -123,6 +123,30 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 	}
 }
 
+func TestGetRequestDetailsClaudeNativeMillionTokenVariant(t *testing.T) {
+	r := registry.GetGlobalRegistry()
+	clientID := "test-fable52-context-variant"
+	r.RegisterClient(clientID, "claude", []*registry.ModelInfo{{ID: "claude-fable-5-2"}, {ID: "claude-unknown"}})
+	t.Cleanup(func() { r.UnregisterClient(clientID) })
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+	for _, suffix := range []string{"", "(xhigh)"} {
+		providers, model, errMsg := handler.getRequestDetails("claude-fable-5-2[1m]" + suffix)
+		if errMsg != nil || !reflect.DeepEqual(providers, []string{"claude"}) || model != "claude-fable-5-2"+suffix {
+			t.Fatalf("variant routing: providers=%v model=%q err=%v", providers, model, errMsg)
+		}
+	}
+	if _, _, errMsg := handler.getRequestDetails("claude-unknown[1m]"); errMsg == nil {
+		t.Fatal("unknown context capability was treated as native 1m")
+	}
+	customID := "test-fable52-explicit-variant"
+	r.RegisterClient(customID, "custom", []*registry.ModelInfo{{ID: "claude-fable-5-2[1m]"}})
+	t.Cleanup(func() { r.UnregisterClient(customID) })
+	providers, model, errMsg := handler.getRequestDetails("claude-fable-5-2[1m](xhigh)")
+	if errMsg != nil || !reflect.DeepEqual(providers, []string{"custom"}) || model != "claude-fable-5-2[1m](xhigh)" {
+		t.Fatalf("explicit variant was overwritten: providers=%v model=%q err=%v", providers, model, errMsg)
+	}
+}
+
 // TestGetRequestDetails_UnknownModelErrorResistsJSONInjection pins the unroutable
 // model error body against client-controlled model names. The name is echoed into
 // the body, so formatting it into a JSON literal would let a caller corrupt the
