@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -70,13 +71,10 @@ func TestCatalogFetcherSources(t *testing.T) {
 
 func TestGeneralCatalogRefreshPreservesForkModel(t *testing.T) {
 	const modelID = "claude-fable-5-2"
-	var catalog staticModelsJSON
-	if err := json.Unmarshal(embeddedModelsJSON, &catalog); err != nil {
-		t.Fatal(err)
-	}
-	catalog.Claude = slices.DeleteFunc(catalog.Claude, func(model *ModelInfo) bool { return model.ID == modelID })
-	data, err := json.Marshal(catalog)
-	if err != nil {
+	// Use wire JSON: ModelInfo intentionally hides these fields when marshaled.
+	data := []byte(`{"claude":[{"id":"claude-existing","native_capabilities":{"web_search":true},"future_field":"keep"}],"codex-pro":[{"id":"gpt-existing","support_configuration_update":true}],"future_section":{"keep":true}}`)
+	var original map[string]any
+	if err := json.Unmarshal(data, &original); err != nil {
 		t.Fatal(err)
 	}
 	var response atomic.Value
@@ -107,13 +105,19 @@ func TestGeneralCatalogRefreshPreservesForkModel(t *testing.T) {
 			if present != tc.wantModel {
 				t.Fatalf("model present = %v, want %v", present, tc.wantModel)
 			}
+			if tc.source != embeddedCatalogSource {
+				var wire map[string]any
+				if errUnmarshal := json.Unmarshal(fetched, &wire); errUnmarshal != nil {
+					t.Fatal(errUnmarshal)
+				}
+				wire["claude"] = slices.DeleteFunc(wire["claude"].([]any), func(model any) bool { return model.(map[string]any)["id"] == modelID })
+				if !reflect.DeepEqual(wire, original) {
+					t.Fatal("refresh changed existing capability metadata or unknown catalog fields")
+				}
+			}
 		})
 	}
-	catalog.Claude = append(catalog.Claude, &ModelInfo{ID: modelID, Object: "model", OwnedBy: "anthropic", Type: "claude", DisplayName: "Official Fable 5.2"})
-	data, err = json.Marshal(catalog)
-	if err != nil {
-		t.Fatal(err)
-	}
+	data = []byte(`{"claude":[{"id":"claude-fable-5-2","display_name":"Official Fable 5.2","native_capabilities":{"web_search":true}}]}`)
 	response.Store(data)
 	fetched, _, errFetch := fetchGeneralCatalogWithSource(context.Background(), "")
 	if errFetch != nil || string(fetched) != string(data) {

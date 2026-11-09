@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -357,24 +358,17 @@ func fetchGeneralCatalogWithSource(ctx context.Context, source string) ([]byte, 
 		return data, resolved, errFetch
 	}
 	const modelID = "claude-fable-5-2"
-	var catalog staticModelsJSON
-	if errUnmarshal := json.Unmarshal(data, &catalog); errUnmarshal != nil {
-		return nil, resolved, errUnmarshal
-	}
-	for _, model := range catalog.Claude {
-		if model != nil && model.ID == modelID {
+	for _, model := range ojson.GetBytes(data, "claude").Array() {
+		if model.Get("id").String() == modelID {
 			return data, resolved, nil
 		}
 	}
-	var embedded staticModelsJSON
-	if errUnmarshal := json.Unmarshal(embeddedModelsJSON, &embedded); errUnmarshal != nil {
-		return nil, resolved, errUnmarshal
-	}
-	for _, model := range embedded.Claude {
-		if model != nil && model.ID == modelID {
-			catalog.Claude = append(catalog.Claude, model)
-			merged, errMarshal := json.Marshal(catalog)
-			return merged, resolved, errMarshal
+	for _, model := range ojson.GetBytes(embeddedModelsJSON, "claude").Array() {
+		if model.Get("id").String() == modelID {
+			// ModelInfo's response serialization hides internal capabilities.
+			// Append to the wire JSON so every existing field stays intact.
+			merged, errSet := ojson.SetRawBytes(data, "claude.-1", []byte(model.Raw))
+			return merged, resolved, errSet
 		}
 	}
 	return nil, resolved, fmt.Errorf("embedded catalog is missing fork model %s", modelID)
