@@ -51,21 +51,18 @@ func scopedUsageFixture(t *testing.T, percent float64, reset time.Time, includeF
 	if errRead != nil {
 		t.Fatal(errRead)
 	}
+	doc := ojson.NewDoc(body)
 	for path, value := range map[string]any{"limits.0.percent": percent, "limits.0.resets_at": reset.Format(time.RFC3339Nano)} {
-		var errSet error
-		body, errSet = ojson.SetBytes(body, path, value)
-		if errSet != nil {
+		if errSet := doc.Set(path, value); errSet != nil {
 			t.Fatal(errSet)
 		}
 	}
 	if !includeFable {
-		var errDelete error
-		body, errDelete = ojson.DeleteBytes(body, "limits")
-		if errDelete != nil {
+		if errDelete := doc.Delete("limits"); errDelete != nil {
 			t.Fatal(errDelete)
 		}
 	}
-	return string(body)
+	return doc.String()
 }
 
 func usageResponse(req *http.Request, body string) *http.Response {

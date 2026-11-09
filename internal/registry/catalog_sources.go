@@ -367,8 +367,11 @@ func fetchGeneralCatalogWithSource(ctx context.Context, source string) ([]byte, 
 		if model.Get("id").String() == modelID {
 			// ModelInfo's response serialization hides internal capabilities.
 			// Append to the wire JSON so every existing field stays intact.
-			merged, errSet := ojson.SetRawBytes(data, "claude.-1", []byte(model.Raw))
-			return merged, resolved, errSet
+			doc := ojson.NewDoc(data)
+			if errSet := doc.SetRawBytes("claude.-1", []byte(model.Raw)); errSet != nil {
+				return nil, resolved, errSet
+			}
+			return doc.Bytes(), resolved, nil
 		}
 	}
 	return nil, resolved, fmt.Errorf("embedded catalog is missing fork model %s", modelID)
