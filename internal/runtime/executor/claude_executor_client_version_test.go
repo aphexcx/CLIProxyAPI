@@ -20,12 +20,16 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 		for _, tc := range []struct {
 			name, ua, want, rule             string
 			off, spoof, override, noMetadata bool
+			adaptive                         bool
 		}{
 			{name: "newer", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400"},
 			{name: "newer cloaked body", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", noMetadata: true},
 			{name: "newer cloaked fast override", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", noMetadata: true, rule: "fast"},
 			{name: "newer native fast override", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", rule: "fast"},
 			{name: "newer cloaked filtered features", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", noMetadata: true, rule: "filter-features"},
+			{name: "newer cloaked adaptive", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", noMetadata: true, adaptive: true},
+			{name: "newer filtered context management", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", noMetadata: true, adaptive: true, rule: "filter-context"},
+			{name: "newer missing CLI beta", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", noMetadata: true, rule: "missing-cli-beta"},
 			{name: "older", ua: "claude-cli/2.1.100 (external, cli)", want: "2.1.321"},
 			{name: "curl", ua: "curl/8.0", want: "2.1.321"},
 			{name: "management", ua: "Mozilla/5.0", want: "2.1.321"},
@@ -54,10 +58,15 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 					cfg.Payload.Override = []config.PayloadRule{{Models: models, Params: map[string]any{"speed": "fast"}}}
 				} else if tc.rule == "filter-features" {
 					cfg.Payload.Filter = []config.PayloadFilterRule{{Models: models, Params: []string{"fallbacks", "diagnostics"}}}
+				} else if tc.rule == "filter-context" {
+					cfg.Payload.Filter = []config.PayloadFilterRule{{Models: models, Params: []string{"context_management"}}}
 				}
 				betas := "claude-code-20250219,oauth-2025-04-20,effort-2025-11-24,new-client-feature-2026-11-09,extended-cache-ttl-2025-04-11"
 				if path == "count_tokens" {
 					betas += ",token-counting-2024-11-01"
+				}
+				if tc.rule == "missing-cli-beta" {
+					betas = strings.TrimPrefix(betas, "claude-code-20250219,")
 				}
 				headers := claudeNativeHelperHeaders(betas, "gzip, deflate, br, zstd")
 				headers.Set("User-Agent", tc.ua)
@@ -69,6 +78,11 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 				payload := []byte(`{"model":"claude-fable-5-2","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"metadata":{"user_id":"` + strings.ReplaceAll(claudeNativeHelperUserID, `"`, `\"`) + `"}}`)
 				if tc.noMetadata {
 					payload, _ = ojson.DeleteBytes(payload, "metadata")
+				}
+				if tc.adaptive {
+					doc := ojson.NewDoc(payload)
+					_ = doc.Set("thinking.type", "adaptive")
+					payload = doc.Bytes()
 				}
 				if !tc.noMetadata {
 					doc := ojson.NewDoc(payload)
@@ -137,6 +151,19 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 						t.Fatalf("fast override lacks required beta: %s", got)
 					}
 					if tc.noMetadata && path != "count_tokens" {
+						if tc.adaptive {
+							contextPresent := ojson.GetBytes(seenBody, "context_management.edits").IsArray()
+							contextBeta := strings.Contains(got, "context-management-2025-06-27")
+							if contextPresent != (tc.rule != "filter-context") || contextBeta != contextPresent {
+								t.Fatalf("context body/beta mismatch: present=%v, betas=%s", contextPresent, got)
+							}
+							if !strings.Contains(got, "interleaved-thinking-2025-05-14") {
+								t.Fatal("adaptive thinking lost its beta")
+							}
+						}
+						if !strings.Contains(got, claudeCodeBeta) {
+							t.Fatal("injected CLI identity lost its beta")
+						}
 						if tc.rule == "filter-features" {
 							for _, field := range []string{"fallbacks", "diagnostics"} {
 								if ojson.GetBytes(seenBody, field).Exists() {
@@ -183,6 +210,26 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestClaudeBodyRequiredBetasConstantFeatures(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"no feature", `{}`, ""},
+		{"adaptive thinking", `{"thinking":{"type":"adaptive"}}`, "interleaved-thinking-2025-05-14"},
+		{"disabled thinking", `{"thinking":{"type":"disabled"}}`, ""},
+		{"context edits", `{"context_management":{"edits":[]}}`, "context-management-2025-06-27"},
+		{"top cache scope", `{"cache_control":{"type":"ephemeral","scope":"global"}}`, "prompt-caching-scope-2026-01-05"},
+		{"tool cache scope", `{"tools":[{"cache_control":{"type":"ephemeral","scope":"global"}}]}`, "prompt-caching-scope-2026-01-05"},
+		{"system cache scope", `{"system":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":"global"}}]}`, "prompt-caching-scope-2026-01-05"},
+		{"content cache scope", `{"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":"global"}}]}]}`, "prompt-caching-scope-2026-01-05"},
+		{"unrelated scope", `{"scope":"global","system":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := claudeBodyRequiredBetas([]byte(tc.body), false); got != tc.want {
+				t.Fatalf("required betas = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

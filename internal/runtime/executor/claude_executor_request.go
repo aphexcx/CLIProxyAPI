@@ -206,7 +206,18 @@ func claudeCodeBetas(body []byte, requested map[string]bool, oauthToken, bodyOnl
 	redactThinking := !claudeThinkingDisplaySet(body)
 	for _, beta := range claudeCodeCLIConstantBetas {
 		if bodyOnly {
-			break
+			required := false
+			switch beta {
+			case "interleaved-thinking-2025-05-14":
+				required = claudeThinkingAcceptsClearThinking(body) || claudeBodyHasSignedThinkingBlock(body)
+			case "context-management-2025-06-27":
+				required = ojson.GetBytesNoCopy(body, "context_management").IsObject()
+			case "prompt-caching-scope-2026-01-05":
+				required = claudePayloadHasCacheScope(body)
+			}
+			if !required {
+				continue
+			}
 		}
 		if beta == claudeRedactThinkingBeta && !redactThinking {
 			continue
@@ -304,6 +315,27 @@ func claudeCodeBetas(body []byte, requested map[string]bool, oauthToken, bodyOnl
 		betas = append(betas, claudeCacheDiagnosisBeta)
 	}
 	return strings.Join(betas, ",")
+}
+
+func claudePayloadHasCacheScope(body []byte) bool {
+	if ojson.GetBytesNoCopy(body, "cache_control.scope").Exists() {
+		return true
+	}
+	for _, path := range []string{"tools", "system"} {
+		for _, block := range ojson.GetBytesNoCopy(body, path).Array() {
+			if block.Get("cache_control.scope").Exists() {
+				return true
+			}
+		}
+	}
+	for _, message := range ojson.GetBytesNoCopy(body, "messages").Array() {
+		for _, block := range message.Get("content").Array() {
+			if block.Get("cache_control.scope").Exists() {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isClaudeHaikuModel(model string) bool {
@@ -1398,6 +1430,9 @@ func applyClaudeHeadersWithNativeProfile(
 			baseBetas = withClaudeBetaAppended(baseBetas, claudeThinkingBindingBeta)
 		}
 		if passthroughVersion {
+			if wirePolicy.Cloak {
+				baseBetas = withClaudeBetaAppended(baseBetas, claudeCodeBeta)
+			}
 			for _, beta := range strings.Split(claudeBodyRequiredBetas(body, useOAuthBetas), ",") {
 				baseBetas = withClaudeBetaAppended(baseBetas, beta)
 			}
