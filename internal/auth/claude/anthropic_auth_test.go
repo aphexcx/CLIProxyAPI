@@ -40,7 +40,7 @@ func TestClaudeAuthRedirectURL(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := AuthURL + "?client_id=" + ClientID + "&code=true&code_challenge=challenge&code_challenge_method=S256&redirect_uri=" + url.QueryEscape(wantRedirect) + "&response_type=code&scope=" + url.QueryEscape(ClaudeOAuthScope) + "&state=state-value"
+			want := AuthURL + "?client_id=" + ClientID + "&code=true&code_challenge=challenge&code_challenge_method=S256&redirect_uri=" + url.QueryEscape(wantRedirect) + "&response_type=code&scope=" + url.QueryEscape(claudeOAuthAuthorizeScope) + "&state=state-value"
 			if got != want || state != "state-value" {
 				t.Fatalf("proxy=%v redirect=%q: URL/state = %q/%q, want %q/state-value", withProxy, redirect, got, state, want)
 			}

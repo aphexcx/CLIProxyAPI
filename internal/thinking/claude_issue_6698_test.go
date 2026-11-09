@@ -80,6 +80,24 @@ func TestApplyThinking_ClaudeSonnet55DisabledUsesBetweenTools(t *testing.T) {
 // at the lowest supported effort ("low") with display="omitted", and keep an
 // explicit {"type":"disabled"} block (without display, budget_tokens, or
 // block_binding) on models that accept disabled.
+func TestApplyThinking_Fable52XHigh(t *testing.T) {
+	for _, model := range []string{"claude-fable-5-2", "claude-fable-5-2[1m]"} {
+		t.Run(model, func(t *testing.T) {
+			body := []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`)
+			out, err := thinking.ApplyThinking(body, model+"(xhigh)", "claude", "claude", "claude")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ojson.GetBytes(out, "thinking.type").String() != "adaptive" || ojson.GetBytes(out, "output_config.effort").String() != "xhigh" {
+				t.Fatalf("expected adaptive xhigh thinking: %s", out)
+			}
+			if ojson.GetBytes(out, "thinking.budget_tokens").Exists() {
+				t.Fatalf("adaptive-only model received a budget: %s", out)
+			}
+		})
+	}
+}
+
 func TestApplyThinking_ClaudeDisabledFallsBackOnAdaptiveOnlyModels(t *testing.T) {
 	tests := []struct {
 		model        string
@@ -93,6 +111,8 @@ func TestApplyThinking_ClaudeDisabledFallsBackOnAdaptiveOnlyModels(t *testing.T)
 		{model: "claude-fable-5[1m]", wantThinking: "adaptive", wantEffort: "low"},
 		{model: "claude-fable-5-1", wantThinking: "adaptive", wantEffort: "low"},
 		{model: "claude-fable-5-1[1m]", wantThinking: "adaptive", wantEffort: "low"},
+		{model: "claude-fable-5-2", wantThinking: "adaptive", wantEffort: "low"},
+		{model: "claude-fable-5-2[1m]", wantThinking: "adaptive", wantEffort: "low"},
 		{model: "claude-opus-5", wantThinking: "disabled"},
 		{model: "claude-sonnet-5", wantThinking: "disabled"},
 		{model: "claude-haiku-5-5", wantThinking: "disabled"},
@@ -183,6 +203,8 @@ func TestApplyThinking_ClaudeAdaptiveOnlyModelsConvertBudgetAndAuto(t *testing.T
 		"claude-opus-4-8",
 		"claude-fable-5",
 		"claude-fable-5-1",
+		"claude-fable-5-2",
+		"claude-fable-5-2[1m]",
 	}
 	for _, model := range adaptiveOnlyModels {
 		t.Run(model+"/native_budget_tokens", func(t *testing.T) {

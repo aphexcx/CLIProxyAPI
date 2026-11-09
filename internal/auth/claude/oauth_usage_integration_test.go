@@ -13,13 +13,13 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/tidwall/sjson"
 )
 
 type usageRoundTripper func(*http.Request) (*http.Response, error)
@@ -53,14 +53,14 @@ func scopedUsageFixture(t *testing.T, percent float64, reset time.Time, includeF
 	}
 	for path, value := range map[string]any{"limits.0.percent": percent, "limits.0.resets_at": reset.Format(time.RFC3339Nano)} {
 		var errSet error
-		body, errSet = sjson.SetBytes(body, path, value)
+		body, errSet = ojson.SetBytes(body, path, value)
 		if errSet != nil {
 			t.Fatal(errSet)
 		}
 	}
 	if !includeFable {
 		var errDelete error
-		body, errDelete = sjson.DeleteBytes(body, "limits")
+		body, errDelete = ojson.DeleteBytes(body, "limits")
 		if errDelete != nil {
 			t.Fatal(errDelete)
 		}
@@ -114,6 +114,7 @@ func TestClaudeQuotaScopedUsagePollV8Credentials(t *testing.T) {
 		m := coreauth.NewManager(nil, nil, nil)
 		cfg := &config.Config{RequestRetry: 3, AuthDir: t.TempDir()}
 		cfg.Claude.Quota.Enabled, cfg.Claude.Quota.PriorityAtReset = true, true
+		cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {"claude-fable-5-1"}}
 		m.SetConfig(cfg)
 		m.RegisterExecutor(&usagePoller{client: client})
 		for id := range bodies {

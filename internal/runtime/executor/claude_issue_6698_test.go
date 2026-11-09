@@ -94,7 +94,7 @@ func TestClaudeExecutor_AdaptiveOnlyThinkingOffKeepsThinkingHidden(t *testing.T)
 		{name: "openai chat", format: sdktranslator.FormatOpenAI, payload: `{"model":"MODEL","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`},
 		{name: "openai responses", format: sdktranslator.FormatOpenAIResponse, payload: `{"model":"MODEL","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"reasoning":{"effort":"none"}}`},
 	}
-	for _, model := range []string{"claude-opus-5-5", "claude-opus-5-5[1m]", "claude-fable-5", "claude-fable-5-1"} {
+	for _, model := range []string{"claude-opus-5-5", "claude-opus-5-5[1m]", "claude-fable-5", "claude-fable-5-1", "claude-fable-5-2", "claude-fable-5-2[1m]"} {
 		for _, source := range sources {
 			t.Run(model+" "+source.name, func(t *testing.T) {
 				var upstreamBody []byte
@@ -132,7 +132,7 @@ func TestClaudeExecutor_AdaptiveOnlyThinkingOffKeepsThinkingHidden(t *testing.T)
 }
 
 func TestClaudeExecutor_AdaptiveOnlyGeminiBudgetAndAuto(t *testing.T) {
-	for _, model := range []string{"claude-opus-4-7", "claude-opus-4-8", "claude-fable-5", "claude-fable-5-1"} {
+	for _, model := range []string{"claude-opus-4-7", "claude-opus-4-8", "claude-fable-5", "claude-fable-5-1", "claude-fable-5-2", "claude-fable-5-2[1m]"} {
 		t.Run(model+" gemini budget 64000 maps to xhigh", func(t *testing.T) {
 			var upstreamBody []byte
 			transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {

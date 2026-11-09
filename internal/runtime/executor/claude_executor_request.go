@@ -314,12 +314,12 @@ func isClaudeHaiku55Model(model string) bool {
 	return model == "claude-haiku-5-5" || strings.HasPrefix(model, "claude-haiku-5-5-") || strings.HasPrefix(model, "claude-haiku-5-5[") || model == "claude-haiku-5.5" || strings.HasPrefix(model, "claude-haiku-5.5-") || strings.HasPrefix(model, "claude-haiku-5.5[")
 }
 
-// isClaudeFable51OnlyModel reports Fable 5.1 specifically, excluding Mythos
+// isClaudeFable51OnlyModel reports Fable 5.1 and 5.2, excluding Mythos
 // 5.1, which shares the fable family checks elsewhere but does not run the
 // preserved-thinking prefix check.
 func isClaudeFable51OnlyModel(model string) bool {
 	m := claudeCanonicalModel(model)
-	for _, target := range []string{"fable-5-1", "fable-5.1"} {
+	for _, target := range []string{"fable-5-1", "fable-5.1", "fable-5-2", "fable-5.2"} {
 		idx := strings.Index(m, target)
 		if idx != -1 {
 			nextIdx := idx + len(target)
@@ -468,7 +468,8 @@ func applyClaudeCloakThinkingDisplayDoc(doc *ojson.Doc, callerOwned bool) bool {
 }
 
 func claudeModelHasPerTurnEffort(model string) bool {
-	return isClaudeOpus55Model(model) || strings.HasPrefix(claudeCanonicalModel(model), "claude-fable-5-1")
+	model = claudeCanonicalModel(model)
+	return isClaudeOpus55Model(model) || strings.HasPrefix(model, "claude-fable-5-1") || strings.HasPrefix(model, "claude-fable-5-2")
 }
 
 // claudeModelHasPerTurnTiming reports models whose catalog lists per_turn_timing.

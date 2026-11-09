@@ -10,12 +10,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestClaudeQuotaFable429FailsOverAndSonnetKeepsFirstSeat(t *testing.T) {
@@ -27,7 +27,7 @@ func TestClaudeQuotaFable429FailsOverAndSonnetKeepsFirstSeat(t *testing.T) {
 			http.Error(w, "read failed", 400)
 			return
 		}
-		model := gjson.GetBytes(body, "model").String()
+		model := ojson.GetBytes(body, "model").String()
 		seat := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		attempts <- seat + ":" + model
 		w.Header().Set("Content-Type", "application/json")

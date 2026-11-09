@@ -7,7 +7,7 @@ import (
 )
 
 func TestReconcileClaudeCloakDisplayAfterThinkingOverride(t *testing.T) {
-	for _, model := range []string{"claude-opus-5-5", "claude-sonnet-5", "claude-fable-5-1"} {
+	for _, model := range []string{"claude-opus-5-5", "claude-sonnet-5", "claude-fable-5-1", "claude-fable-5-2", "claude-fable-5-2[1m]"} {
 		t.Run(model, func(t *testing.T) {
 			for _, tc := range []struct {
 				name     string
@@ -45,5 +45,13 @@ func TestReconcileClaudeCloakDisplayRemovesSyntheticDisplayForNonProgressModel(t
 	out := reconcileClaudeCodeFableModelAfterPayload(body, claudeCodeFableState{injectedDisplay: true}, false, false, true, false)
 	if display := ojson.GetBytes(out, "thinking.display"); display.Exists() {
 		t.Fatalf("synthetic display survived for non-progress model: %s", out)
+	}
+}
+
+func TestFable52PerTurnCapabilities(t *testing.T) {
+	for _, model := range []string{"claude-fable-5-2", "claude-fable-5-2[1m]"} {
+		if !claudeModelHasPerTurnEffort(model) || !claudeModelHasPerTurnTiming(model) {
+			t.Errorf("%s lost Fable per-turn capabilities", model)
+		}
 	}
 }

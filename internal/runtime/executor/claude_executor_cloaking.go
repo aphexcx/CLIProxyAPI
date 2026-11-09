@@ -719,11 +719,11 @@ func checkSystemInstructionsWithSigningModeDoc(doc *ojson.Doc, strictMode bool, 
 	return checkSystemInstructionsWithSigningModeAtDoc(doc, strictMode, cchSigning, version, entrypoint, workload, claudeCodeLocalDate(time.Now()), false, "", "", keepAtTopLevel, "")
 }
 
-// isClaudeFable51Model reports whether the model is specifically Fable 5.1 / Mythos 5.1,
-// matching native Claude Code 2.1.258 family/major/minor checks (AFo = {major:5, minor:1}).
+// isClaudeFable51Model reports models sharing the Fable 5.1 request behavior:
+// Fable 5.1, Fable 5.2, and Mythos 5.1.
 func isClaudeFable51Model(model string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
-	for _, target := range []string{"fable-5-1", "fable-5.1", "mythos-5-1", "mythos-5.1"} {
+	for _, target := range []string{"fable-5-1", "fable-5.1", "fable-5-2", "fable-5.2", "mythos-5-1", "mythos-5.1"} {
 		idx := strings.Index(m, target)
 		if idx != -1 {
 			nextIdx := idx + len(target)

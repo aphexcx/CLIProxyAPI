@@ -35,7 +35,7 @@ func (q ClaudeQuotaConfig) WithDefaults() ClaudeQuotaConfig {
 		q.WindowCaps = map[string]float64{}
 	}
 	if q.ModelWindows == nil {
-		q.ModelWindows = map[string][]string{"Fable": {"claude-fable-5-1"}}
+		q.ModelWindows = map[string][]string{"Fable": {"claude-fable-5-1", "claude-fable-5-2"}}
 	}
 	return q
 }

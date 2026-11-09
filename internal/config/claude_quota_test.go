@@ -17,7 +17,7 @@ func TestClaudeQuotaDefaultsAndV8RoundTrip(t *testing.T) {
 		t.Fatal(errParse)
 	}
 	q := defaults.Claude.Quota
-	if q.Enabled || q.PriorityAtReset || q.PollInterval != "1m" || q.CapFor("Fable") != 100 || !reflect.DeepEqual(q.ModelWindows, map[string][]string{"Fable": {"claude-fable-5-1"}}) {
+	if q.Enabled || q.PriorityAtReset || q.PollInterval != "1m" || q.CapFor("Fable") != 100 || !reflect.DeepEqual(q.ModelWindows, map[string][]string{"Fable": {"claude-fable-5-1", "claude-fable-5-2"}}) {
 		t.Fatalf("defaults=%+v", q)
 	}
 	data := []byte(`upstream:

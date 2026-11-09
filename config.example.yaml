@@ -487,7 +487,7 @@ upstream:
       window-caps: {}
       # Map usage display names to models; account-wide windows cannot be pre-held.
       model-windows:
-        Fable: [claude-fable-5-1]
+        Fable: [claude-fable-5-1, claude-fable-5-2]
       # Add a runtime rank of 1 to the priority of the soonest-resetting usable seat.
       priority-at-reset: false
 
