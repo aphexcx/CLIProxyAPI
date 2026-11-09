@@ -101,6 +101,7 @@ func renderToolSearchExecutorGolden(t *testing.T) map[string]string {
 // the executor at origin/dev d739485df, before Codex tool_search support. With
 // upstream.claude.tool-search off every request path must reproduce it, even
 // for credentials that would otherwise use native tool search.
+// Its billing version and fingerprint track the current measured CLI baseline.
 func TestClaudeExecutor_ToolSearchDisabledMatchesDevGolden(t *testing.T) {
 	enableClaudeToolSearchForTest(t, false)
 	if NewClaudeExecutor(&config.Config{}).SupportsNativeToolSearch(nativeToolSearchAuth(nil), "claude-sonnet-4-5") {

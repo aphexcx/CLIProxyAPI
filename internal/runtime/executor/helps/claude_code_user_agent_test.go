@@ -13,10 +13,10 @@ func TestDetectClaudeCodeRequestAcceptsUserAgentFields(t *testing.T) {
 	for _, testCase := range []struct {
 		name, userAgent, sdkVersion string
 	}{
-		{name: "cron", userAgent: "claude-cli/2.1.312 (external, cli, workload/cron)"},
-		{name: "field before SDK", userAgent: "claude-cli/2.1.312 (external, cli, workload/cron, agent-sdk/0.2.133)", sdkVersion: "0.2.133"},
-		{name: "field after SDK", userAgent: "claude-cli/2.1.312 (external, cli, agent-sdk/0.2.133, workload/cron)", sdkVersion: "0.2.133"},
-		{name: "unknown fields", userAgent: "claude-cli/2.1.312 (external, cli, future-feature/value, workload/background)"},
+		{name: "cron", userAgent: "claude-cli/2.1.322 (external, cli, workload/cron)"},
+		{name: "field before SDK", userAgent: "claude-cli/2.1.322 (external, cli, workload/cron, agent-sdk/0.2.133)", sdkVersion: "0.2.133"},
+		{name: "field after SDK", userAgent: "claude-cli/2.1.322 (external, cli, agent-sdk/0.2.133, workload/cron)", sdkVersion: "0.2.133"},
+		{name: "unknown fields", userAgent: "claude-cli/2.1.322 (external, cli, future-feature/value, workload/background)"},
 	} {
 		for _, countTokens := range []bool{false, true} {
 			path := "messages"
@@ -101,17 +101,17 @@ func TestDetectClaudeCodeRequestUserAgentFieldsKeepNativeGuards(t *testing.T) {
 	}{
 		{name: "old patch", userAgent: "claude-cli/2.1.279 (external, cli, workload/cron)"},
 		{name: "unknown release line", userAgent: "claude-cli/2.2.0 (external, cli, workload/cron)"},
-		{name: "unknown entrypoint", userAgent: "claude-cli/2.1.312 (external, other-client, workload/cron)"},
+		{name: "unknown entrypoint", userAgent: "claude-cli/2.1.322 (external, other-client, workload/cron)"},
 		{name: "missing app", missingHeader: "X-App"},
 		{name: "missing beta", missingHeader: "Anthropic-Beta"},
 		{name: "missing metadata", missingMetadata: true},
-		{name: "configured entrypoint", userAgent: "claude-cli/2.1.312 (external, other-client, workload/cron)", allowEntrypoint: true, wantConfirmed: true},
+		{name: "configured entrypoint", userAgent: "claude-cli/2.1.322 (external, other-client, workload/cron)", allowEntrypoint: true, wantConfirmed: true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			headers := confirmedClaudeCodeHeaders()
 			userAgent := testCase.userAgent
 			if userAgent == "" {
-				userAgent = "claude-cli/2.1.312 (external, cli, workload/cron)"
+				userAgent = "claude-cli/2.1.322 (external, cli, workload/cron)"
 			}
 			headers.Set("User-Agent", userAgent)
 			headers.Del(testCase.missingHeader)
@@ -143,12 +143,12 @@ func TestClaudeDeviceProfileUserAgentFieldsStayRequestScoped(t *testing.T) {
 			client := newFakeClaudeDeviceProfileKVClient()
 			useFakeClaudeDeviceProfileKVClient(t, client, homeMode, nil)
 			auth := &cliproxyauth.Auth{ID: "request-fields-" + name}
-			baseUA := "claude-cli/2.1.280 (external, cli, agent-sdk/0.2.133)"
-			cronUA := "claude-cli/2.1.280 (external, cli, workload/cron, agent-sdk/0.2.133, future-feature/value)"
+			baseUA := "claude-cli/2.1.321 (external, cli, agent-sdk/0.2.133)"
+			cronUA := "claude-cli/2.1.321 (external, cli, workload/cron, agent-sdk/0.2.133, future-feature/value)"
 			for _, testCase := range []struct{ userAgent, want string }{
-				{userAgent: cronUA, want: "claude-cli/2.1.280 (external, cli, agent-sdk/0.2.133, workload/cron, future-feature/value)"},
+				{userAgent: cronUA, want: "claude-cli/2.1.321 (external, cli, agent-sdk/0.2.133, workload/cron, future-feature/value)"},
 				{userAgent: baseUA, want: baseUA},
-				{userAgent: "claude-cli/2.1.280 (external, cli, future-feature/next)", want: "claude-cli/2.1.280 (external, cli, agent-sdk/0.2.133, future-feature/next)"},
+				{userAgent: "claude-cli/2.1.321 (external, cli, future-feature/next)", want: "claude-cli/2.1.321 (external, cli, agent-sdk/0.2.133, future-feature/next)"},
 				{want: baseUA},
 			} {
 				headers := claudeDeviceHeaders(testCase.userAgent)
@@ -174,12 +174,14 @@ func TestClaudeDeviceProfileUserAgentFieldsStayRequestScoped(t *testing.T) {
 
 func TestApplyClaudeDeviceProfileHeadersKeepsCurrentUserAgentFields(t *testing.T) {
 	profile := defaultClaudeDeviceProfile(nil)
-	profile.UserAgent = "claude-cli/2.1.280 (external, cli, agent-sdk/0.3.220)"
+	profile.UserAgent = "claude-cli/2.1.321 (external, cli, agent-sdk/0.3.220)"
 	for _, testCase := range []struct {
 		name, userAgent, want string
 	}{
-		{name: "current fields", userAgent: "claude-cli/2.1.312 (external, cli, workload/cron, agent-sdk/0.2.133, future-feature/value)", want: "claude-cli/2.1.280 (external, cli, agent-sdk/0.3.220, workload/cron, future-feature/value)"},
-		{name: "next request fields", userAgent: "claude-cli/2.1.312 (external, cli, future-feature/next)", want: "claude-cli/2.1.280 (external, cli, agent-sdk/0.3.220, future-feature/next)"},
+		{name: "current fields", userAgent: "claude-cli/2.1.312 (external, cli, workload/cron, agent-sdk/0.2.133, future-feature/value)", want: "claude-cli/2.1.321 (external, cli, agent-sdk/0.3.220, workload/cron, future-feature/value)"},
+		{name: "old baseline fields", userAgent: "claude-cli/2.1.280 (external, cli, workload/cron)", want: "claude-cli/2.1.321 (external, cli, agent-sdk/0.3.220, workload/cron)"},
+		{name: "newer client fields", userAgent: "claude-cli/2.1.322 (external, cli, workload/cron)", want: "claude-cli/2.1.321 (external, cli, agent-sdk/0.3.220, workload/cron)"},
+		{name: "next request fields", userAgent: "claude-cli/2.1.312 (external, cli, future-feature/next)", want: "claude-cli/2.1.321 (external, cli, agent-sdk/0.3.220, future-feature/next)"},
 		{name: "ordinary request", userAgent: "claude-cli/2.1.312 (external, cli)", want: profile.UserAgent},
 		{name: "malformed request", userAgent: "claude-cli/2.1.312 (external, cli, foo)", want: profile.UserAgent},
 		{name: "no request", want: profile.UserAgent},

@@ -53,6 +53,7 @@ const (
 	claudePromptCachingEvictBeta     = "prompt-caching-evict-2026-05-12"
 	claudeCacheDiagnosisBeta         = "cache-diagnosis-2026-04-07"
 	claudeRedactThinkingBeta         = "redact-thinking-2026-02-12"
+	claudeThinkingTokenCountBeta     = "thinking-token-count-2026-05-13"
 	claudeAFKModeBeta                = "afk-mode-2026-01-31"
 )
 
@@ -66,7 +67,6 @@ const (
 var claudeCodeCLIConstantBetas = []string{
 	"interleaved-thinking-2025-05-14",
 	claudeRedactThinkingBeta,
-	"thinking-token-count-2026-05-13",
 	"context-management-2025-06-27",
 	"prompt-caching-scope-2026-01-05",
 }
@@ -111,6 +111,7 @@ var claudeManagedBetaSet = func() map[string]bool {
 		claudePromptCachingEvictBeta,
 		claudeCacheDiagnosisBeta,
 		claudeRedactThinkingBeta,
+		claudeThinkingTokenCountBeta,
 		claudeAFKModeBeta,
 	}
 	managed = append(managed, claudeCodeCLIConstantBetas...)
@@ -127,7 +128,7 @@ func isManagedClaudeBeta(beta string) bool {
 }
 
 // claudeCodeCLIBetas assembles the Anthropic-Beta baseline the way Claude Code
-// 2.1.280 does: the list is per-request, not a fixed string. requested holds the
+// 2.1.321 does: the list is per-request, not a fixed string. requested holds the
 // betas the caller asked for, which decide the capability flags below.
 //
 // Verified against api.anthropic.com with native 2.1.258 captures on interactive,
@@ -136,37 +137,40 @@ func isManagedClaudeBeta(beta string) bool {
 // mid-conversation-tool-changes immediately after mid-conversation-system on the
 // same non-legacy models. The betas named in issue #6054 are feature-gated in
 // that binary, so they are emitted only for the model capability or body shape
-// that actually sends them, in the same relative order:
+// that actually sends them. The 2.1.321 capture and bundled B1/G1 request
+// builders (measured 2026-11-09) move thinking-token-count after advisor and
+// omit the now generally available mid-conversation-system header. The
+// interactive cli profile retains redact-thinking and first-party
+// prompt-caching-scope, unlike the sdk-cli loopback capture. Wire order:
 //
 //	 1 claude-code-20250219
 //	 2 oauth-2025-04-20                  OAuth credentials only
 //	 3 context-1m-2025-08-07             [1m] model variants only
 //	 4 interleaved-thinking-2025-05-14
 //	 5 redact-thinking-2026-02-12        cli entrypoint, no thinking.display
-//	 6 thinking-token-count-2026-05-13
-//	 7 context-management-2025-06-27
-//	 8 prompt-caching-scope-2026-01-05
-//	 9 mid-conversation-system-2026-04-07  models accepting a role=system turn
-//	10 per-turn-control-2026-07-01        opus-5-5 and fable-5-1, or requested
-//	11 timing-2026-09-09                  per-turn timing body, or requested
-//	12 mid-conversation-tool-changes-2026-07-01  same models as mid-conversation-system
-//	13 inline-tools-2026-09-15            inline tool_addition blocks, or requested
-//	14 advisor-tool-2026-03-01            requests declaring advisor tools or requesting advisor beta
-//	15 advanced-tool-use-2025-11-20       requests using tool search or another advanced tool-use feature
-//	16 mid-conversation-system-clear-at-2026-08-21  messages with clear_at, or requested
-//	17 dangerous-tool-use-2026-09-03      safeguards body, or requested
-//	18 effort-2025-11-24                  effort-supporting models with active thinking
-//	19 server-side-fallback-2026-06-01    requests with fallbacks or requested
-//	20 fallback-credit-2026-06-01         requests with fallback tokens, fallbacks, or requested
-//	21 structured-outputs-2025-12-15      structured output requests
-//	22 thinking-binding-controls-2026-08-01  thinking.block_binding, or requested
-//	23 thinking-display-updates-2026-08-18 requests with thinking.display=updates
-//	24 thinking-resumption-2026-07-17     requested only; the 2.1.280 flag defaults off
-//	25 fast-mode-2026-02-01               speed:fast requests only
-//	26 afk-mode-2026-01-31                auto-mode sessions, forwarded when the caller sends it
-//	27 extended-cache-ttl-2025-04-11      OAuth credentials (omitted on subagent & probe)
-//	28 prompt-caching-evict-2026-05-12    evict_on_complete, or requested
-//	29 cache-diagnosis-2026-04-07         requests with diagnostics only
+//	 6 context-management-2025-06-27
+//	 7 prompt-caching-scope-2026-01-05
+//	 8 per-turn-control-2026-07-01        opus-5-5 and fable-5-1/5-2, or requested
+//	 9 timing-2026-09-09                  per-turn timing body, or requested
+//	10 mid-conversation-tool-changes-2026-07-01  models accepting a role=system turn
+//	11 inline-tools-2026-09-15            inline tool_addition blocks, or requested
+//	12 advisor-tool-2026-03-01            requests declaring advisor tools or requesting advisor beta
+//	13 thinking-token-count-2026-05-13
+//	14 advanced-tool-use-2025-11-20       requests using tool search or another advanced tool-use feature
+//	15 mid-conversation-system-clear-at-2026-08-21  messages with clear_at, or requested
+//	16 effort-2025-11-24                  effort-supporting models with active thinking
+//	17 server-side-fallback-2026-06-01    requests with fallbacks or requested
+//	18 fallback-credit-2026-06-01         requests with fallback tokens, fallbacks, or requested
+//	19 structured-outputs-2025-12-15      structured output requests
+//	20 dangerous-tool-use-2026-09-03      safeguards body, or requested
+//	21 thinking-binding-controls-2026-08-01  thinking.block_binding, or requested
+//	22 thinking-display-updates-2026-08-18 requests with thinking.display=updates
+//	23 thinking-resumption-2026-07-17     requested only
+//	24 fast-mode-2026-02-01               speed:fast requests only
+//	25 afk-mode-2026-01-31                auto-mode sessions, forwarded when the caller sends it
+//	26 extended-cache-ttl-2025-04-11      OAuth credentials (omitted on subagent & probe)
+//	27 prompt-caching-evict-2026-05-12    evict_on_complete, or requested
+//	28 cache-diagnosis-2026-04-07         requests with diagnostics only
 //
 // An empty body keeps the optimistic role=system default, matching the cloaking
 // policy for unknown and future model IDs.
@@ -187,7 +191,6 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 		betas = append(betas, beta)
 	}
 	if !claudeUsesLegacySystemReminder(body) {
-		betas = append(betas, claudeMidConvSystemBeta)
 		if claudeIncludePerTurnControl(body, requested) {
 			betas = append(betas, claudePerTurnControlBeta)
 		}
@@ -213,14 +216,12 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 	if requested[claudeAdvisorToolBeta] || claudeBodyHasAdvisorTool(body) {
 		betas = append(betas, claudeAdvisorToolBeta)
 	}
+	betas = append(betas, claudeThinkingTokenCountBeta)
 	if requested[claudeAdvancedToolUseBeta] || claudeBodyUsesAdvancedToolUse(body) {
 		betas = append(betas, claudeAdvancedToolUseBeta)
 	}
 	if !claudeUsesLegacySystemReminder(body) && claudeIncludeMidConvClearAt(body, requested) {
 		betas = append(betas, claudeMidConvSystemClearAtBeta)
-	}
-	if requested[claudeDangerousToolUseBeta] || ojson.GetBytesNoCopy(body, "safeguards").Exists() {
-		betas = append(betas, claudeDangerousToolUseBeta)
 	}
 	if claudeRequestSupportsEffort(body, requested) {
 		betas = append(betas, claudeEffortBeta)
@@ -242,6 +243,9 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 		if requested[beta] {
 			betas = append(betas, beta)
 		}
+	}
+	if requested[claudeDangerousToolUseBeta] || ojson.GetBytesNoCopy(body, "safeguards").Exists() {
+		betas = append(betas, claudeDangerousToolUseBeta)
 	}
 	thinkingType := ojson.GetBytesNoCopy(body, "thinking.type").String()
 	if requested[claudeThinkingBindingBeta] || ojson.GetBytesNoCopy(body, "thinking.block_binding").Exists() ||
@@ -289,7 +293,7 @@ func claudeCanonicalModel(model string) string {
 	return model
 }
 
-// claudeModelHasPerTurnEffort reports models whose 2.1.280 catalog capability
+// claudeModelHasPerTurnEffort reports models whose 2.1.321 catalog capability
 // per_turn_effort puts per-turn-control-2026-07-01 on every first-party request.
 func isClaudeOpus55Model(model string) bool {
 	model = claudeCanonicalModel(model)
@@ -432,7 +436,7 @@ func applyClaudePreservedThinkingBindingDoc(doc *ojson.Doc) bool {
 	return doc.Set("thinking.block_binding.prefix_mismatch_behavior", "drop_block") == nil
 }
 
-// claudeModelUsesProgressDisplay reports the 2.1.280 interactive CLI models that
+// claudeModelUsesProgressDisplay reports the 2.1.321 interactive CLI models that
 // send thinking.display=updates unless the caller already chose a display mode.
 func claudeModelUsesProgressDisplay(model string) bool {
 	return isClaudeOpus55Model(model) || isClaudeFable51Model(model) || isClaudeSonnet5Model(model) || isClaudeSonnet55Model(model)
@@ -1333,7 +1337,7 @@ func applyClaudeHeadersWithNativeProfile(
 				baseBetas = withoutClaudeBeta(baseBetas, claudeExtendedCacheTTLBeta)
 			}
 		}
-		// Enforce strict native Claude Code 2.1.280 model & turn beta gating:
+		// Enforce strict native Claude Code 2.1.321 model & turn beta gating:
 		if !claudeRequestSupportsEffort(body, nil) {
 			baseBetas = withoutClaudeBeta(baseBetas, claudeEffortBeta)
 		}
@@ -1457,7 +1461,7 @@ func applyClaudeHeadersWithNativeProfile(
 	identityHeader("Anthropic-Version", "2023-06-01")
 	identityHeader("Anthropic-Dangerous-Direct-Browser-Access", "true")
 	identityHeader("X-App", "cli")
-	// Values below match Claude Code 2.1.280 / @anthropic-ai/sdk 0.112.1.
+	// Values below match Claude Code 2.1.321 / @anthropic-ai/sdk 0.128.0.
 	identityHeader("X-Stainless-Retry-Count", "0")
 	identityHeader("X-Stainless-Runtime", "node")
 	identityHeader("X-Stainless-Lang", "js")

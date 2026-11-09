@@ -523,8 +523,9 @@ upstream:
     disable-cloaking-model-list: false
 
     # Anthropic-Beta is assembled per request rather than sent as a fixed list, matching
-    # Claude Code: context-1m sits right after claude-code, mid-conversation-system
-    # is added only for models that accept a role=system turn, advanced-tool-use only when
+    # Claude Code 2.1.321: context-1m sits right after claude-code; the now generally
+    # available mid-conversation-system header is omitted. Thinking-token-count follows
+    # per-turn/tool-change/advisor betas; advanced-tool-use is added only when
     # the request uses tool search (deferred tools) or another advanced tool-use feature,
     # afk-mode sits between fast-mode and extended-cache-ttl, and server-side-fallback / fallback-credit /
     # structured-outputs trail effort. On direct api.anthropic.com a caller may only ask for
@@ -532,7 +533,9 @@ upstream:
     # anything else is dropped so the outgoing set stays one a real client could produce.
     # Other Anthropic-compatible upstreams still forward caller betas verbatim.
     #
-    # Shared Claude CLI fingerprint defaults. Update only after measuring a new Claude Code release.
+    # Shared Claude CLI fingerprint defaults, measured from 2.1.321 on 2026-11-09.
+    # The cloak uses interactive cli identity; a non-interactive -p capture uses sdk-cli.
+    # Update only after measuring a new Claude Code release.
     # Unconfirmed clients use this CLI baseline. Verified native Claude Code CLI, sdk-cli,
     # sdk-ts, and VSCode requests preserve their measured entrypoint when the Claude Code version is a
     # patch release in the configured major/minor line at or above this baseline. Older versions
@@ -543,9 +546,9 @@ upstream:
     # the same exact software baseline rather than learning newer client versions (unless the
     # credential resolves to cloak_mode: never, which preserves the confirmed caller's headers).
     # header-defaults:
-    #   user-agent: "claude-cli/2.1.280 (external, cli)"
-    #   package-version: "0.112.1"
-    #   runtime-version: "v26.3.0"
+    #   user-agent: "claude-cli/2.1.321 (external, cli)"
+    #   package-version: "0.128.0"
+    #   runtime-version: "v26.12.1"
     #   os: "MacOS"
     #   arch: "arm64"
     #   timeout: "600"
