@@ -158,10 +158,9 @@ func (c ClaudeConfig) SessionDatePinRetention() time.Duration {
 }
 
 // ClaudeHeaderDefaults configures the measured Claude Code software baseline.
-// Verified native requests preserve their entrypoint and software shape only when their
-// Claude Code, package, and runtime versions exactly match this baseline; unmeasured
-// versions use the configured values. Timeout remains a fallback. Stabilized profiles
-// also pin OS and Arch and never learn newer software versions automatically.
+// Verified newer clients may supply request-local software versions; cached profiles
+// retain the configured baseline. Timeout remains a fallback, and stabilized profiles
+// still pin OS and Arch.
 // NativeEntrypoints extends the built-in native Claude Code entrypoint allowlist.
 // AnthropicBetaStrip and AnthropicBetaAppend are exact-name operator overrides applied
 // to the final Anthropic-Beta set; InjectDiagnostics and ClientRequestID tune the
@@ -175,6 +174,7 @@ type ClaudeHeaderDefaults struct {
 	Timeout                string   `yaml:"timeout" json:"timeout"`
 	Timezone               string   `yaml:"timezone" json:"timezone"`
 	StabilizeDeviceProfile *bool    `yaml:"stabilize-device-profile,omitempty" json:"stabilize-device-profile,omitempty"`
+	PassthroughNewerClient *bool    `yaml:"passthrough-newer-client,omitempty" json:"passthrough-newer-client,omitempty"`
 	NativeEntrypoints      []string `yaml:"native-entrypoints,omitempty" json:"native-entrypoints,omitempty"`
 	AnthropicBetaStrip     []string `yaml:"anthropic-beta-strip,omitempty" json:"anthropic-beta-strip,omitempty"`
 	AnthropicBetaAppend    []string `yaml:"anthropic-beta-append,omitempty" json:"anthropic-beta-append,omitempty"`

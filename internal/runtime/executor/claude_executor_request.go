@@ -1213,6 +1213,8 @@ func applyClaudeHeadersWithNativeProfile(
 
 	incomingBetas := strings.TrimSpace(strings.Join(helps.HeaderValuesCaseInsensitive(incomingHeaders, "Anthropic-Beta"), ","))
 	countTokens := r.URL != nil && strings.HasSuffix(r.URL.Path, "/count_tokens")
+	software := helps.DetectClaudeCodeRequest(incomingHeaders, body, countTokens, cfg)
+	passthroughVersion := !wirePolicy.Uncloak && software.PassthroughVersion != ""
 	if !confirmedClaudeCode && !wirePolicy.Cloak && wirePolicy.ExplicitNever && !wirePolicy.Uncloak {
 		det := helps.DetectClaudeCodeRequest(incomingHeaders, body, countTokens, cfg)
 		if det.ConfirmedShape {
@@ -1233,7 +1235,7 @@ func applyClaudeHeadersWithNativeProfile(
 			}
 		}
 	}
-	if confirmedClaudeCode && incomingBetas != "" {
+	if confirmedClaudeCode && incomingBetas != "" && (!software.NormalizeVersion || wirePolicy.ExplicitNever) {
 		baseBetas = incomingBetas
 		if advisorNeeded {
 			baseBetas = withClaudeAdvisorToolBeta(baseBetas)
@@ -1366,6 +1368,11 @@ func applyClaudeHeadersWithNativeProfile(
 		// mode (cloaked, caller-owned, and confirmed passthrough alike).
 		if ojson.GetBytesNoCopy(body, "thinking.block_binding").Exists() {
 			baseBetas = withClaudeBetaAppended(baseBetas, claudeThinkingBindingBeta)
+		}
+		// A verified newer client owns its beta set, including features unknown
+		// to the pinned baseline. Keep operator overrides as the final authority.
+		if passthroughVersion {
+			baseBetas = incomingBetas
 		}
 		// Operator overrides get the last word over the derived and caller betas:
 		// strip filters without re-sorting, append adds missing names at the end.
@@ -1585,6 +1592,9 @@ func applyClaudeHeadersWithNativeProfile(
 		}
 	} else {
 		helps.ApplyClaudeLegacyDeviceHeaders(r, incomingHeaders, cfg, confirmedClaudeCode)
+	}
+	if !wirePolicy.ExplicitNever {
+		helps.ApplyClaudeRequestVersionHeaders(r, incomingHeaders, cfg)
 	}
 	var attrs map[string]string
 	if auth != nil {

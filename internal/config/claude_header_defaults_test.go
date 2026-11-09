@@ -67,12 +67,16 @@ func TestParseConfigBytes_ClaudeHeaderDefaultsOperatorOverrides(t *testing.T) {
       anthropic-beta-strip: [" cache-diagnosis-2026-04-07 ", "", "cache-diagnosis-2026-04-07"]
       anthropic-beta-append: ["context-1m-2025-08-07", " context-1m-2025-08-07 ", "advisor-tool-2026-03-01"]
       inject-diagnostics: false
+      passthrough-newer-client: false
       client-request-id: " PassThrough "
 `))
 	if err != nil {
 		t.Fatalf("ParseConfigBytes() error = %v", err)
 	}
 	hd := cfg.ClaudeHeaderDefaults
+	if hd.PassthroughNewerClient == nil || *hd.PassthroughNewerClient {
+		t.Fatalf("PassthroughNewerClient = %v, want explicit false", hd.PassthroughNewerClient)
+	}
 	if want := []string{"t3-code", "custom-ide"}; !reflect.DeepEqual(hd.NativeEntrypoints, want) {
 		t.Fatalf("NativeEntrypoints = %q, want %q", hd.NativeEntrypoints, want)
 	}

@@ -667,6 +667,42 @@ func ApplyClaudeDefaultDeviceProfileHeaders(r *http.Request, cfg *config.Config)
 	ApplyClaudeDeviceProfileHeaders(r, defaultClaudeDeviceProfile(cfg))
 }
 
+// ClaudeRequestVersion selects the same loaded baseline or verified newer version
+// for billing and HTTP headers. Software verification does not depend on the body.
+func ClaudeRequestVersion(headers http.Header, cfg *config.Config) string {
+	if version := DetectClaudeCodeRequest(headers, nil, false, cfg).PassthroughVersion; version != "" {
+		return version
+	}
+	return DefaultClaudeVersion(cfg)
+}
+
+// ApplyClaudeRequestVersionHeaders changes only software fields, after the seat's
+// stable platform identity has been resolved. No client version enters the cache.
+func ApplyClaudeRequestVersionHeaders(r *http.Request, headers http.Header, cfg *config.Config) {
+	if r == nil {
+		return
+	}
+	detection := DetectClaudeCodeRequest(headers, nil, false, cfg)
+	if detection.PassthroughVersion != "" {
+		for _, name := range []string{"User-Agent", "X-Stainless-Package-Version", "X-Stainless-Runtime-Version"} {
+			r.Header.Set(name, headerValue(headers, name))
+		}
+		return
+	}
+	baseline := defaultClaudeDeviceProfile(cfg)
+	// Retain an already normalized native entrypoint (for example sdk-cli).
+	current, ok := parseClaudeCodeUserAgent(r.Header.Get("User-Agent"))
+	if !ok || !baseline.hasVersion || current.version.Compare(baseline.version) != 0 {
+		r.Header.Set("User-Agent", baseline.UserAgent)
+	}
+	r.Header.Set("X-Stainless-Package-Version", baseline.PackageVersion)
+	r.Header.Set("X-Stainless-Runtime-Version", baseline.RuntimeVersion)
+	if detection.NormalizeVersion {
+		r.Header.Set("X-Stainless-Lang", "js")
+		r.Header.Set("X-Stainless-Runtime", "node")
+	}
+}
+
 func ApplyClaudeLegacyDeviceHeaders(r *http.Request, ginHeaders http.Header, cfg *config.Config, confirmedClaudeCode bool, keepNewerVersions ...bool) {
 	if r == nil {
 		return

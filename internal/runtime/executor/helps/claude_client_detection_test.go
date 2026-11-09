@@ -83,7 +83,7 @@ func TestDetectClaudeCodeRequestRequiresAllFourMessageSignals(t *testing.T) {
 }
 
 func TestDetectClaudeCodeRequestAcceptsNewerPatchInMeasuredReleaseLine(t *testing.T) {
-	headers := confirmedClaudeCodeHeaders()
+	headers := measuredClaudeCodeHelperHeaders("claude-code-20250219,interleaved-thinking-2025-05-14")
 	headers.Set("User-Agent", "claude-cli/2.1.322 (external, cli)")
 	payload := claudeCodeDetectionPayload(validClaudeCodeMetadataUserID)
 
@@ -638,7 +638,7 @@ func TestDetectClaudeCodeRequestRecognizesAgentSDKHaiku55Helpers(t *testing.T) {
 
 func TestDetectClaudeCodeRequestAcceptsConfiguredNativeEntrypoints(t *testing.T) {
 	payload := claudeCodeDetectionPayload(validClaudeCodeMetadataUserID)
-	headers := confirmedClaudeCodeHeaders()
+	headers := measuredClaudeCodeHelperHeaders("claude-code-20250219,interleaved-thinking-2025-05-14")
 	headers.Set("User-Agent", "claude-cli/2.1.322 (external, t3-code, agent-sdk/0.3.276)")
 
 	if detection := DetectClaudeCodeRequest(headers, payload, false); detection.Confirmed || detection.NativeClient {

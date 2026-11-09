@@ -403,7 +403,7 @@ func claudeCCHFallbackBillingHeader(ctx context.Context, cfg *config.Config, pay
 	isSubagent := helps.IsClaudeSubagentRequest(incomingHeaders, payload)
 	return generateBillingHeader(
 		true,
-		helps.DefaultClaudeVersion(cfg),
+		helps.ClaudeRequestVersion(incomingHeaders, cfg),
 		claudeBillingFingerprintMessageText(payload),
 		entrypoint,
 		getWorkloadFromContext(ctx),
@@ -429,7 +429,7 @@ func claudeCCHFallbackBillingHeaderDoc(ctx context.Context, cfg *config.Config, 
 	isSubagent := isClaudeSubagentRequestDoc(incomingHeaders, doc)
 	return generateBillingHeader(
 		true,
-		helps.DefaultClaudeVersion(cfg),
+		helps.ClaudeRequestVersion(incomingHeaders, cfg),
 		claudeBillingFingerprintMessageTextDoc(doc),
 		entrypoint,
 		getWorkloadFromContext(ctx),
@@ -2477,6 +2477,50 @@ func resolveClaudeWirePolicy(cfg *config.Config, auth *cliproxyauth.Auth, apiKey
 	return policy, settings
 }
 
+// normalizeClaudeBillingVersionDoc reconciles an existing newer client's billing
+// version before payload rules, without changing the rest of its native prompt.
+func normalizeClaudeBillingVersionDoc(doc *ojson.Doc, headers http.Header, cfg *config.Config) bool {
+	detection := helps.DetectClaudeCodeRequest(headers, nil, false, cfg)
+	if !detection.NormalizeVersion && detection.PassthroughVersion == "" {
+		return false
+	}
+	version := helps.ClaudeRequestVersion(headers, cfg)
+	normalize := func(text string) string {
+		if !strings.HasPrefix(text, "x-anthropic-billing-header:") {
+			return text
+		}
+		prefix, rest, found := strings.Cut(text, "cc_version=")
+		if !found {
+			return text
+		}
+		current, suffix, semicolon := strings.Cut(rest, ";")
+		if !semicolon || current == version || strings.HasPrefix(current, version+".") {
+			return text
+		}
+		return prefix + "cc_version=" + version + "." + computeFingerprint(claudeBillingFingerprintMessageTextDoc(doc), version) + ";" + suffix
+	}
+	system := doc.Get("system")
+	if system.Type == ojson.String {
+		if text := normalize(system.String()); text != system.String() {
+			_ = doc.Set("system", text)
+			return true
+		}
+		return false
+	}
+	changed := false
+	for i, block := range system.Array() {
+		if block.Get("type").String() != "text" {
+			continue
+		}
+		text := block.Get("text").String()
+		if normalized := normalize(text); normalized != text {
+			_ = doc.Set(fmt.Sprintf("system.%d.text", i), normalized)
+			changed = true
+		}
+	}
+	return changed
+}
+
 // applyCloaking applies the shared Messages/count_tokens wire policy. The
 // returned boolean reports whether cloaking ran.
 func applyCloaking(
@@ -2532,6 +2576,8 @@ func applyCloakingInternalDoc(
 		changed := false
 		if policy.Uncloak {
 			changed = uncloakClaudeCodePayloadDoc(doc, confirmedClaudeCode)
+		} else if policy.ProfileClaudeCodeCLI && !policy.ExplicitNever {
+			changed = normalizeClaudeBillingVersionDoc(doc, resolveIncomingClaudeHeaders(ctx, helps.IncomingHeadersFromContext(ctx)), cfg)
 		}
 		return false, changed, nil
 	}
@@ -2544,7 +2590,7 @@ func applyCloakingInternalDoc(
 		}
 	}
 
-	billingVersion := helps.DefaultClaudeVersion(cfg)
+	billingVersion := helps.ClaudeRequestVersion(resolveIncomingClaudeHeaders(ctx, helps.IncomingHeadersFromContext(ctx)), cfg)
 	workload := getWorkloadFromContext(ctx)
 
 	isProbeOrHelper := isClaudeProbeOrHelperRequestDoc(doc)

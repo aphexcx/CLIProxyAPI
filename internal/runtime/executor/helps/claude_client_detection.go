@@ -156,6 +156,10 @@ type ClaudeCodeRequestDetection struct {
 	Entrypoint      string
 	Subclient       string
 	AgentSDKVersion string
+	// PassthroughVersion is set only for a newer native software tuple verified
+	// against the measured JS/Node header shape, with passthrough enabled.
+	PassthroughVersion string
+	NormalizeVersion   bool
 }
 
 // DetectClaudeCodeRequest first mirrors CCH's strong-signal contract, then
@@ -185,6 +189,23 @@ func DetectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bo
 	metadataUserID := ojson.GetBytesNoCopy(payload, "metadata.user_id")
 	detection.MetadataUserID = metadataUserID.Exists() && metadataUserID.Type == ojson.String && isValidUserID(metadataUserID.String())
 	detection.NativeClient = isNativeClaudeEntrypoint(entrypoint, cfg)
+	baseline := defaultClaudeDeviceProfile(cfg)
+	newer := validUserAgent && baseline.hasVersion && userAgent.version.Compare(baseline.version) > 0
+	if newer {
+		// Keep software verification in the native-client detector. A UA alone,
+		// or a Python SDK carrying a copied CLI UA, cannot opt into passthrough.
+		verified := detection.NativeClient && detection.XAppCLI &&
+			headerValue(headers, "X-Stainless-Lang") == "js" &&
+			headerValue(headers, "X-Stainless-Runtime") == "node" &&
+			plausibleClaudePackageVersion(headerValue(headers, "X-Stainless-Package-Version"), baseline.PackageVersion) &&
+			plausibleClaudeRuntimeVersion(headerValue(headers, "X-Stainless-Runtime-Version"), baseline.RuntimeVersion)
+		enabled := cfg == nil || cfg.ClaudeHeaderDefaults.PassthroughNewerClient == nil || *cfg.ClaudeHeaderDefaults.PassthroughNewerClient
+		if verified && enabled {
+			detection.UserAgent = true
+			detection.PassthroughVersion = strings.TrimPrefix(strings.Fields(headerValue(headers, "User-Agent"))[0], "claude-cli/")
+		}
+		detection.NormalizeVersion = detection.PassthroughVersion == ""
+	}
 	standardSignals := detection.XAppCLI && detection.UserAgent && detection.BetasPresent && (countTokens || detection.MetadataUserID)
 	detection.HelperProfile = detection.NativeClient && matchesMeasuredClaudeCodeHelperProfile(headers, payload, countTokens, detection, cfg)
 	detection.StrongSignals = standardSignals || detection.HelperProfile

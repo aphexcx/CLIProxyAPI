@@ -607,7 +607,7 @@ func TestApplyClaudeHeaders_DisableDeviceProfileStabilization(t *testing.T) {
 		"X-Stainless-Arch":            []string{"x64"},
 	})
 	applyClaudeHeaders(firstReq, auth, "key-disable-stability", false, nil, nil, cfg, nil, true)
-	assertClaudeFingerprint(t, firstReq.Header, "claude-cli/2.1.62 (external, cli)", "0.70.0", "v22.0.0", "Linux", "x64")
+	assertClaudeFingerprint(t, firstReq.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", "Linux", "x64")
 
 	thirdPartyReq := newClaudeHeaderTestRequest(t, http.Header{
 		"User-Agent":                  []string{"lobe-chat/1.0"},
@@ -879,6 +879,8 @@ func TestClaudeExecutor_ConfirmedNewerPatchClaudeCodeRequestPreservesInteractive
 	incoming := http.Header{
 		"User-Agent":                  {"claude-cli/2.1.322 (external, cli)"},
 		"X-App":                       {"cli"},
+		"X-Stainless-Lang":            {"js"},
+		"X-Stainless-Runtime":         {"node"},
 		"Anthropic-Beta":              {"claude-code-20250219,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,effort-2025-11-24"},
 		"X-Claude-Code-Session-Id":    {sessionID},
 		"X-Stainless-Package-Version": {"0.128.0"},
@@ -1304,9 +1306,11 @@ func TestClaudeExecutor_ConfirmedSDKTSAgentSDKRequestPassesThroughWithRealProfil
 	const billingHeader = "x-anthropic-billing-header: cc_version=2.1.322.179; cc_entrypoint=sdk-ts;"
 	payload := []byte(`{"model":"claude-sonnet-5-5","max_tokens":1024,"system":[{"type":"text","text":` + fmt.Sprintf("%q", billingHeader) + `},{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.","cache_control":{"type":"ephemeral","ttl":"1h"}},{"type":"text","text":"t3-code-system-prompt","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"Agent","description":"subagent","input_schema":{"type":"object"}},{"name":"Bash","description":"shell","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"metadata":{"user_id":` + fmt.Sprintf("%q", userID) + `},"thinking":{"type":"adaptive","display":"summarized"},"output_config":{"effort":"low"}}`)
 	incoming := http.Header{
-		"User-Agent":     {sdkTSUA},
-		"X-App":          {"cli"},
-		"Anthropic-Beta": {"claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,effort-2025-11-24,dangerous-tool-use-2026-09-03,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11"},
+		"User-Agent":          {sdkTSUA},
+		"X-App":               {"cli"},
+		"X-Stainless-Lang":    {"js"},
+		"X-Stainless-Runtime": {"node"},
+		"Anthropic-Beta":      {"claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,effort-2025-11-24,dangerous-tool-use-2026-09-03,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11"},
 		"Anthropic-Dangerous-Direct-Browser-Access": {"true"},
 		"X-Claude-Code-Session-Id":                  {sessionID},
 		"X-Stainless-Package-Version":               {"0.128.0"},
@@ -1385,9 +1389,11 @@ func TestClaudeExecutor_ConfiguredNativeEntrypointPassesThroughWithRealProfile(t
 	const billingHeader = "x-anthropic-billing-header: cc_version=2.1.322.179; cc_entrypoint=t3-code;"
 	payload := []byte(`{"model":"claude-sonnet-5-5","max_tokens":1024,"system":[{"type":"text","text":` + fmt.Sprintf("%q", billingHeader) + `},{"type":"text","text":"You are a Claude agent, built on Anthropic's Claude Agent SDK.","cache_control":{"type":"ephemeral","ttl":"1h"}},{"type":"text","text":"t3-code-system-prompt","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"Agent","description":"subagent","input_schema":{"type":"object"}},{"name":"Bash","description":"shell","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"metadata":{"user_id":` + fmt.Sprintf("%q", userID) + `},"thinking":{"type":"adaptive","display":"summarized"},"output_config":{"effort":"low"}}`)
 	incoming := http.Header{
-		"User-Agent":     {t3CodeUA},
-		"X-App":          {"cli"},
-		"Anthropic-Beta": {"claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,effort-2025-11-24,dangerous-tool-use-2026-09-03,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11"},
+		"User-Agent":          {t3CodeUA},
+		"X-App":               {"cli"},
+		"X-Stainless-Lang":    {"js"},
+		"X-Stainless-Runtime": {"node"},
+		"Anthropic-Beta":      {"claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,effort-2025-11-24,dangerous-tool-use-2026-09-03,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11"},
 		"Anthropic-Dangerous-Direct-Browser-Access": {"true"},
 		"X-Claude-Code-Session-Id":                  {sessionID},
 		"X-Stainless-Package-Version":               {"0.128.0"},

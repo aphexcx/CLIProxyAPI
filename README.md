@@ -141,6 +141,11 @@ PackyCode provides special discounts for our software users: register using <a h
 - OpenAI-compatible upstream providers via config (e.g., OpenRouter)
 - Reusable Go SDK for embedding the proxy (see `docs/sdk-usage.md`)
 
+### Claude Code cloak
+
+The cloak keeps each seat's stable device identity while passing through a verified newer Claude Code client's User-Agent, billing version, SDK/runtime versions, and beta set; older or unverified callers use the configured baseline (2.1.321 by default).
+Set `upstream.claude.header-defaults.passthrough-newer-client: false` to pin newer clients to that baseline; verification uses the existing native-client detector and requires a valid CLI/SDK User-Agent, `x-app: cli`, and consistent JavaScript/Node Stainless headers.
+
 ## Getting Started
 
 CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
