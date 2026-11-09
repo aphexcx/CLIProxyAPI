@@ -48,7 +48,10 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 				} else if tc.rule == "filter" {
 					cfg.Payload.Filter = []config.PayloadFilterRule{{Models: models, Params: []string{"system"}}}
 				}
-				const betas = "claude-code-20250219,effort-2025-11-24,new-client-feature-2026-11-09"
+				betas := "claude-code-20250219,oauth-2025-04-20,effort-2025-11-24,new-client-feature-2026-11-09,extended-cache-ttl-2025-04-11"
+				if path == "count_tokens" {
+					betas += ",token-counting-2024-11-01"
+				}
 				headers := claudeNativeHelperHeaders(betas, "gzip, deflate, br, zstd")
 				headers.Set("User-Agent", tc.ua)
 				headers.Set("X-Stainless-Package-Version", "0.140.0")
@@ -139,5 +142,42 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestClaudeNewerClientRequiredBetas(t *testing.T) {
+	const incomingBetas = "claude-code-20250219,future-client-feature,effort-2025-11-24"
+	headers := claudeNativeHelperHeaders(incomingBetas, "gzip, deflate, br, zstd")
+	headers.Set("User-Agent", "claude-cli/2.1.400 (external, cli)")
+	// Replay causes the executor to add binding controls, which the incoming
+	// client could not know would be necessary for this selected upstream.
+	body := applyClaudePreservedThinkingBinding([]byte(`{"model":"claude-haiku-5-5","messages":[{"role":"assistant","content":[{"type":"redacted_thinking","data":"test-signed-block"}]},{"role":"user","content":"continue"}]}`))
+	if !ojson.GetBytes(body, "thinking.block_binding").Exists() {
+		t.Fatal("replayed thinking did not trigger binding controls")
+	}
+	for _, strip := range []bool{false, true} {
+		t.Run(fmt.Sprintf("operator-strip=%v", strip), func(t *testing.T) {
+			cfg := &config.Config{}
+			if strip {
+				cfg.ClaudeHeaderDefaults.AnthropicBetaStrip = []string{claudeThinkingBindingBeta}
+			}
+			req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			auth := claudeNativeHelperOAuthAuth("https://api.anthropic.com")
+			if err = applyClaudeHeaders(req, auth, auth.Attributes["api_key"], false, nil, body, cfg, headers, true); err != nil {
+				t.Fatal(err)
+			}
+			betas := req.Header.Get("Anthropic-Beta")
+			for _, required := range []string{claudeCodeBeta, claudeOAuthBeta, "future-client-feature", claudeEffortBeta} {
+				if !strings.Contains(betas, required) {
+					t.Fatalf("missing %s: %s", required, betas)
+				}
+			}
+			if strings.Contains(betas, claudeThinkingBindingBeta) == strip {
+				t.Fatalf("binding beta/operator precedence incorrect: %s", betas)
+			}
+		})
 	}
 }
