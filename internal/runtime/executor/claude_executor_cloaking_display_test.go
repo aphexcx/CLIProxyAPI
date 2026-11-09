@@ -3,12 +3,11 @@ package executor
 import (
 	"testing"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 func TestReconcileClaudeCloakDisplayAfterThinkingOverride(t *testing.T) {
-	for _, model := range []string{"claude-opus-5-5", "claude-sonnet-5", "claude-fable-5-1"} {
+	for _, model := range []string{"claude-opus-5-5", "claude-sonnet-5", "claude-fable-5-1", "claude-fable-5-2", "claude-fable-5-2[1m]"} {
 		t.Run(model, func(t *testing.T) {
 			for _, tc := range []struct {
 				name     string
@@ -26,10 +25,12 @@ func TestReconcileClaudeCloakDisplayAfterThinkingOverride(t *testing.T) {
 				{name: "payload deletion is not refilled", thinking: `{"type":"adaptive"}`, injected: true, touched: true},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
-					body, _ := sjson.SetBytes([]byte(`{}`), "model", model)
-					body, _ = sjson.SetRawBytes(body, "thinking", []byte(tc.thinking))
+					bodyDoc := ojson.NewDoc([]byte(`{}`))
+					_ = bodyDoc.Set("model", model)
+					_ = bodyDoc.SetRawBytes("thinking", []byte(tc.thinking))
+					body := bodyDoc.Bytes()
 					out := reconcileClaudeCodeFableModelAfterPayload(body, claudeCodeFableState{injectedDisplay: tc.injected}, false, tc.touched, true, false)
-					display := gjson.GetBytes(out, "thinking.display")
+					display := ojson.GetBytes(out, "thinking.display")
 					if display.String() != tc.want || (tc.want == "" && display.Exists()) {
 						t.Fatalf("display=%s, want %q; body=%s", display.Raw, tc.want, out)
 					}
@@ -42,7 +43,15 @@ func TestReconcileClaudeCloakDisplayAfterThinkingOverride(t *testing.T) {
 func TestReconcileClaudeCloakDisplayRemovesSyntheticDisplayForNonProgressModel(t *testing.T) {
 	body := []byte(`{"model":"claude-opus-4-8","thinking":{"type":"adaptive","display":"updates"}}`)
 	out := reconcileClaudeCodeFableModelAfterPayload(body, claudeCodeFableState{injectedDisplay: true}, false, false, true, false)
-	if display := gjson.GetBytes(out, "thinking.display"); display.Exists() {
+	if display := ojson.GetBytes(out, "thinking.display"); display.Exists() {
 		t.Fatalf("synthetic display survived for non-progress model: %s", out)
+	}
+}
+
+func TestFable52PerTurnCapabilities(t *testing.T) {
+	for _, model := range []string{"claude-fable-5-2", "claude-fable-5-2[1m]"} {
+		if !claudeModelHasPerTurnEffort(model) || !claudeModelHasPerTurnTiming(model) {
+			t.Errorf("%s lost Fable per-turn capabilities", model)
+		}
 	}
 }

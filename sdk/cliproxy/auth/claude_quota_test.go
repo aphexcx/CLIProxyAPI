@@ -28,6 +28,8 @@ func newClaudeQuotaManager(t *testing.T) (*Manager, string, string) {
 	cfg := &config.Config{RequestRetry: 3}
 	cfg.Claude.Quota.Enabled = true
 	cfg.Claude.Quota.PriorityAtReset = true
+	// These fixtures exercise a single configured model; defaults cover both Fable versions.
+	cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {quotaFable}}
 	m.SetConfig(cfg)
 	ids := []string{t.Name() + "-a", t.Name() + "-b"}
 	for _, id := range ids {
@@ -61,6 +63,40 @@ func (m *Manager) applyTestClaudeQuotaUsage(ctx context.Context, cfg *config.Con
 		observed[name] = window
 	}
 	m.applyClaudeQuotaUsage(ctx, cfg, auth, observed, now)
+}
+
+func TestClaudeQuotaDefaultsHoldAndReleaseBothFableVersions(t *testing.T) {
+	m, a, _ := newClaudeQuotaManager(t)
+	cfg := &config.Config{}
+	cfg.Claude.Quota.Enabled = true
+	m.SetConfig(cfg)
+	models := []string{quotaFable, "claude-fable-5-2"}
+	registry.GetGlobalRegistry().RegisterClient(a, "claude", []*registry.ModelInfo{{ID: models[0]}, {ID: models[1]}, {ID: quotaSonnet}})
+	now := time.Now()
+	reset := now.Add(time.Hour)
+	applyTestClaudeQuota(m, a, 100, reset, now)
+	auth, _ := m.GetByID(a)
+	for _, model := range models {
+		if blocked, _, until := isAuthBlockedForModel(auth, model, now); !blocked || !until.Equal(reset) {
+			t.Fatalf("%s: blocked=%v until=%v", model, blocked, until)
+		}
+		if !registry.GetGlobalRegistry().IsModelSuspendedForClient(a, model) {
+			t.Fatalf("%s hold was not published", model)
+		}
+	}
+	if blocked, _, _ := isAuthBlockedForModel(auth, quotaSonnet, now); blocked {
+		t.Fatal("Fable window held an unrelated model")
+	}
+	applyTestClaudeQuota(m, a, 10, reset, now.Add(time.Second))
+	auth, _ = m.GetByID(a)
+	for _, model := range models {
+		if blocked, _, _ := isAuthBlockedForModel(auth, model, now.Add(time.Second)); blocked {
+			t.Fatalf("%s hold survived recovered usage", model)
+		}
+		if registry.GetGlobalRegistry().IsModelSuspendedForClient(a, model) {
+			t.Fatalf("%s suspension survived recovered usage", model)
+		}
+	}
 }
 
 func TestClaudeQuotaHoldIsPerModelAndExpires(t *testing.T) {

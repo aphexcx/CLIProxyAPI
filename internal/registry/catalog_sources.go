@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -349,8 +350,35 @@ func dynamicCatalogFetcherWithSource(embedded []byte, urls *[]string, validate f
 	}
 }
 
+// fetchGeneralCatalogWithSource keeps the fork's new Claude model available
+// until the official catalog catches up. Explicit catalogs remain authoritative.
+func fetchGeneralCatalogWithSource(ctx context.Context, source string) ([]byte, string, error) {
+	data, resolved, errFetch := dynamicCatalogFetcherWithSource(embeddedModelsJSON, &modelsURLs, validateCatalogBytes)(ctx, source)
+	if errFetch != nil || source != "" {
+		return data, resolved, errFetch
+	}
+	const modelID = "claude-fable-5-2"
+	for _, model := range ojson.GetBytes(data, "claude").Array() {
+		if model.Get("id").String() == modelID {
+			return data, resolved, nil
+		}
+	}
+	for _, model := range ojson.GetBytes(embeddedModelsJSON, "claude").Array() {
+		if model.Get("id").String() == modelID {
+			// ModelInfo's response serialization hides internal capabilities.
+			// Append to the wire JSON so every existing field stays intact.
+			doc := ojson.NewDoc(data)
+			if errSet := doc.SetRawBytes("claude.-1", []byte(model.Raw)); errSet != nil {
+				return nil, resolved, errSet
+			}
+			return doc.Bytes(), resolved, nil
+		}
+	}
+	return nil, resolved, fmt.Errorf("embedded catalog is missing fork model %s", modelID)
+}
+
 var generalCatalogUpdater = &catalogUpdater{
-	fetchWithSource: dynamicCatalogFetcherWithSource(embeddedModelsJSON, &modelsURLs, validateCatalogBytes),
+	fetchWithSource: fetchGeneralCatalogWithSource,
 	publish:         publishCatalogBytes,
 }
 var codexCatalogUpdater = &catalogUpdater{

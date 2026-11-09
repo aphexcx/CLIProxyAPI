@@ -222,6 +222,7 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	if !execOptions.InternalSource {
 		reporter = helps.NewUsageReporter(execCtx, executorPluginID, modelName, nil)
 		reporter.SetTranslatedReasoningEffort(req.Payload, entryProtocol)
+		reporter.StartResponseTTFT()
 	}
 	resp, errExecute := host.ExecutePluginExecutor(execCtx, executorPluginID, req, opts)
 	if errExecute != nil {
@@ -233,6 +234,7 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 		return nil, nil, errMsg
 	}
 	if reporter != nil && !nestedTracker.hasNestedExecution() {
+		reporter.RecordFirstPacket()
 		detail := parsePluginExecutorResponseUsage(responseProtocol, resp.Payload)
 		reporter.Publish(execCtx, detail)
 		reporter.EnsurePublished(execCtx)
@@ -334,13 +336,13 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterPluginExecutorRoute(ctx co
 		RequestedModel: originalRequestedModel,
 		Stream:         opts.Stream,
 		Headers:        cloneHeader(opts.Headers),
-		Body:           cloneBytes(req.Payload),
+		Body:           req.Payload,
 		Metadata:       opts.Metadata,
 	}, requestID, skipPluginID)
 	opts.Headers = mergeRequestInterceptorHeaders(opts.Headers, resp.Headers, resp.ClearHeaders)
 	if len(resp.Body) > 0 {
-		req.Payload = cloneBytes(resp.Body)
-		opts.OriginalRequest = cloneBytes(resp.Body)
+		req.Payload = resp.Body
+		opts.OriginalRequest = resp.Body
 	}
 	if path := strings.TrimSpace(resp.Path); path != "" {
 		if opts.Metadata == nil {

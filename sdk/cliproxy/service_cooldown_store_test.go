@@ -69,6 +69,7 @@ func TestClaudeQuotaConfigApplyDoesNotRearmClearedHold(t *testing.T) {
 				ctx := context.Background()
 				cfg := &config.Config{SaveCooldownStatus: true, RequestRetry: 3, AuthDir: t.TempDir()}
 				cfg.Claude.Quota.Enabled = true
+				cfg.Claude.Quota.ModelWindows = map[string][]string{"Fable": {model}}
 				manager := coreauth.NewManager(nil, nil, nil)
 				store := &quotaReloadStore{}
 				manager.SetConfig(cfg)

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -65,6 +66,62 @@ func TestCatalogFetcherSources(t *testing.T) {
 				t.Fatal("file was not reread")
 			}
 		})
+	}
+}
+
+func TestGeneralCatalogRefreshPreservesForkModel(t *testing.T) {
+	const modelID = "claude-fable-5-2"
+	// Use wire JSON: ModelInfo intentionally hides these fields when marshaled.
+	data := []byte(`{"claude":[{"id":"claude-existing","native_capabilities":{"web_search":true},"future_field":"keep"}],"codex-pro":[{"id":"gpt-existing","support_configuration_update":true}],"future_section":{"keep":true}}`)
+	var original map[string]any
+	if err := json.Unmarshal(data, &original); err != nil {
+		t.Fatal(err)
+	}
+	var response atomic.Value
+	response.Store(data)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(response.Load().([]byte)) }))
+	defer server.Close()
+	originalURLs := modelsURLs
+	modelsURLs = []string{server.URL}
+	t.Cleanup(func() { modelsURLs = originalURLs })
+	for _, tc := range []struct {
+		name, source string
+		wantModel    bool
+	}{
+		{"official refresh", "", true},
+		{"explicit catalog", server.URL, false},
+		{"embedded catalog", embeddedCatalogSource, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fetched, _, errFetch := fetchGeneralCatalogWithSource(context.Background(), tc.source)
+			if errFetch != nil {
+				t.Fatal(errFetch)
+			}
+			var got staticModelsJSON
+			if errUnmarshal := json.Unmarshal(fetched, &got); errUnmarshal != nil {
+				t.Fatal(errUnmarshal)
+			}
+			present := slices.ContainsFunc(got.Claude, func(model *ModelInfo) bool { return model.ID == modelID })
+			if present != tc.wantModel {
+				t.Fatalf("model present = %v, want %v", present, tc.wantModel)
+			}
+			if tc.source != embeddedCatalogSource {
+				var wire map[string]any
+				if errUnmarshal := json.Unmarshal(fetched, &wire); errUnmarshal != nil {
+					t.Fatal(errUnmarshal)
+				}
+				wire["claude"] = slices.DeleteFunc(wire["claude"].([]any), func(model any) bool { return model.(map[string]any)["id"] == modelID })
+				if !reflect.DeepEqual(wire, original) {
+					t.Fatal("refresh changed existing capability metadata or unknown catalog fields")
+				}
+			}
+		})
+	}
+	data = []byte(`{"claude":[{"id":"claude-fable-5-2","display_name":"Official Fable 5.2","native_capabilities":{"web_search":true}}]}`)
+	response.Store(data)
+	fetched, _, errFetch := fetchGeneralCatalogWithSource(context.Background(), "")
+	if errFetch != nil || string(fetched) != string(data) {
+		t.Fatalf("official model metadata was replaced: %v", errFetch)
 	}
 }
 

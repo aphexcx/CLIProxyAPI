@@ -3,10 +3,10 @@ package thinking_test
 import (
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/thinking/provider/claude"
-	"github.com/tidwall/gjson"
 )
 
 // claude-sonnet-5-5 rejects thinking.type="disabled" and requires "between_tools"
@@ -62,10 +62,10 @@ func TestApplyThinking_ClaudeSonnet55DisabledUsesBetweenTools(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ApplyThinking: %v", err)
 			}
-			if got := gjson.GetBytes(out, "thinking").Raw; got != `{"type":"between_tools"}` {
+			if got := ojson.GetBytes(out, "thinking").Raw; got != `{"type":"between_tools"}` {
 				t.Fatalf("thinking = %s, want {\"type\":\"between_tools\"}; body=%s", got, out)
 			}
-			if gjson.GetBytes(out, "output_config.effort").Exists() {
+			if ojson.GetBytes(out, "output_config.effort").Exists() {
 				t.Fatalf("between_tools retained output_config.effort: %s", out)
 			}
 			if got := thinking.ExtractTranslatedReasoningEffort(out, "claude"); got != "none" {
@@ -75,11 +75,26 @@ func TestApplyThinking_ClaudeSonnet55DisabledUsesBetweenTools(t *testing.T) {
 	}
 }
 
-// Anthropic rejects thinking.type="disabled" on claude-opus-5-5, claude-fable-5,
-// and claude-fable-5-1. Turning thinking off must fall back to adaptive thinking
-// at the lowest supported effort ("low") with display="omitted", and keep an
-// explicit {"type":"disabled"} block (without display, budget_tokens, or
-// block_binding) on models that accept disabled.
+func TestApplyThinking_Fable52XHigh(t *testing.T) {
+	for _, model := range []string{"claude-fable-5-2", "claude-fable-5-2[1m]"} {
+		t.Run(model, func(t *testing.T) {
+			body := []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`)
+			out, err := thinking.ApplyThinking(body, model+"(xhigh)", "claude", "claude", "claude")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ojson.GetBytes(out, "thinking.type").String() != "adaptive" || ojson.GetBytes(out, "output_config.effort").String() != "xhigh" {
+				t.Fatalf("expected adaptive xhigh thinking: %s", out)
+			}
+			if ojson.GetBytes(out, "thinking.budget_tokens").Exists() {
+				t.Fatalf("adaptive-only model received a budget: %s", out)
+			}
+		})
+	}
+}
+
+// Adaptive-only models fall back to the lowest effort when thinking is disabled.
+// Other models keep an explicit disabled block without adaptive-only fields.
 func TestApplyThinking_ClaudeDisabledFallsBackOnAdaptiveOnlyModels(t *testing.T) {
 	tests := []struct {
 		model        string
@@ -93,6 +108,8 @@ func TestApplyThinking_ClaudeDisabledFallsBackOnAdaptiveOnlyModels(t *testing.T)
 		{model: "claude-fable-5[1m]", wantThinking: "adaptive", wantEffort: "low"},
 		{model: "claude-fable-5-1", wantThinking: "adaptive", wantEffort: "low"},
 		{model: "claude-fable-5-1[1m]", wantThinking: "adaptive", wantEffort: "low"},
+		{model: "claude-fable-5-2", wantThinking: "adaptive", wantEffort: "low"},
+		{model: "claude-fable-5-2[1m]", wantThinking: "adaptive", wantEffort: "low"},
 		{model: "claude-opus-5", wantThinking: "disabled"},
 		{model: "claude-sonnet-5", wantThinking: "disabled"},
 		{model: "claude-haiku-5-5", wantThinking: "disabled"},
@@ -107,23 +124,23 @@ func TestApplyThinking_ClaudeDisabledFallsBackOnAdaptiveOnlyModels(t *testing.T)
 			if err != nil {
 				t.Fatalf("ApplyThinking: %v", err)
 			}
-			if got := gjson.GetBytes(out, "thinking.type").String(); got != tt.wantThinking {
+			if got := ojson.GetBytes(out, "thinking.type").String(); got != tt.wantThinking {
 				t.Fatalf("thinking.type = %q, want %q; body=%s", got, tt.wantThinking, out)
 			}
-			if got := gjson.GetBytes(out, "output_config.effort").String(); got != tt.wantEffort {
+			if got := ojson.GetBytes(out, "output_config.effort").String(); got != tt.wantEffort {
 				t.Fatalf("output_config.effort = %q, want %q; body=%s", got, tt.wantEffort, out)
 			}
-			if gjson.GetBytes(out, "thinking.budget_tokens").Exists() {
+			if ojson.GetBytes(out, "thinking.budget_tokens").Exists() {
 				t.Fatalf("thinking retained budget_tokens: %s", out)
 			}
-			if gjson.GetBytes(out, "thinking.block_binding").Exists() {
+			if ojson.GetBytes(out, "thinking.block_binding").Exists() {
 				t.Fatalf("thinking retained block_binding on off rewrite: %s", out)
 			}
 			if tt.wantThinking == "adaptive" {
-				if got := gjson.GetBytes(out, "thinking.display").String(); got != "omitted" {
+				if got := ojson.GetBytes(out, "thinking.display").String(); got != "omitted" {
 					t.Fatalf("thinking.display = %q, want omitted; body=%s", got, out)
 				}
-			} else if gjson.GetBytes(out, "thinking.display").Exists() {
+			} else if ojson.GetBytes(out, "thinking.display").Exists() {
 				t.Fatalf("disabled thinking retained display: %s", out)
 			}
 		})
@@ -148,25 +165,25 @@ func TestApplyThinking_ClaudeDisabledFallbackInputs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ApplyThinking: %v", err)
 			}
-			if gjson.GetBytes(out, "thinking.budget_tokens").Exists() {
+			if ojson.GetBytes(out, "thinking.budget_tokens").Exists() {
 				t.Fatalf("retained budget_tokens: %s", out)
 			}
-			if gjson.GetBytes(out, "thinking.block_binding").Exists() {
+			if ojson.GetBytes(out, "thinking.block_binding").Exists() {
 				t.Fatalf("retained block_binding: %s", out)
 			}
 			if tt.model == "claude-opus-5" {
-				if got := gjson.GetBytes(out, "thinking").Raw; got != `{"type":"disabled"}` {
+				if got := ojson.GetBytes(out, "thinking").Raw; got != `{"type":"disabled"}` {
 					t.Fatalf("thinking = %s, want {\"type\":\"disabled\"}; body=%s", got, out)
 				}
 				return
 			}
-			if got := gjson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
+			if got := ojson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
 				t.Fatalf("thinking.type = %q, want adaptive; body=%s", got, out)
 			}
-			if got := gjson.GetBytes(out, "output_config.effort").String(); got != "low" {
+			if got := ojson.GetBytes(out, "output_config.effort").String(); got != "low" {
 				t.Fatalf("output_config.effort = %q, want low; body=%s", got, out)
 			}
-			if got := gjson.GetBytes(out, "thinking.display").String(); got != "omitted" {
+			if got := ojson.GetBytes(out, "thinking.display").String(); got != "omitted" {
 				t.Fatalf("thinking.display = %q, want omitted; body=%s", got, out)
 			}
 		})
@@ -183,6 +200,8 @@ func TestApplyThinking_ClaudeAdaptiveOnlyModelsConvertBudgetAndAuto(t *testing.T
 		"claude-opus-4-8",
 		"claude-fable-5",
 		"claude-fable-5-1",
+		"claude-fable-5-2",
+		"claude-fable-5-2[1m]",
 	}
 	for _, model := range adaptiveOnlyModels {
 		t.Run(model+"/native_budget_tokens", func(t *testing.T) {
@@ -191,13 +210,13 @@ func TestApplyThinking_ClaudeAdaptiveOnlyModelsConvertBudgetAndAuto(t *testing.T
 			if err != nil {
 				t.Fatalf("ApplyThinking: %v", err)
 			}
-			if got := gjson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
+			if got := ojson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
 				t.Fatalf("thinking.type = %q, want adaptive; body=%s", got, out)
 			}
-			if gjson.GetBytes(out, "thinking.budget_tokens").Exists() {
+			if ojson.GetBytes(out, "thinking.budget_tokens").Exists() {
 				t.Fatalf("thinking.budget_tokens still present: %s", out)
 			}
-			if got := gjson.GetBytes(out, "output_config.effort").String(); got != "high" {
+			if got := ojson.GetBytes(out, "output_config.effort").String(); got != "high" {
 				t.Fatalf("output_config.effort = %q, want high; body=%s", got, out)
 			}
 		})
@@ -208,13 +227,13 @@ func TestApplyThinking_ClaudeAdaptiveOnlyModelsConvertBudgetAndAuto(t *testing.T
 			if err != nil {
 				t.Fatalf("ApplyThinking: %v", err)
 			}
-			if got := gjson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
+			if got := ojson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
 				t.Fatalf("thinking.type = %q, want adaptive; body=%s", got, out)
 			}
-			if gjson.GetBytes(out, "thinking.budget_tokens").Exists() {
+			if ojson.GetBytes(out, "thinking.budget_tokens").Exists() {
 				t.Fatalf("thinking.budget_tokens still present: %s", out)
 			}
-			if got := gjson.GetBytes(out, "output_config.effort").String(); got != "xhigh" {
+			if got := ojson.GetBytes(out, "output_config.effort").String(); got != "xhigh" {
 				t.Fatalf("output_config.effort = %q, want xhigh; body=%s", got, out)
 			}
 		})
@@ -227,13 +246,13 @@ func TestApplyThinking_ClaudeAdaptiveOnlyModelsConvertBudgetAndAuto(t *testing.T
 			if err != nil {
 				t.Fatalf("ApplyThinkingWithModelInfo: %v", err)
 			}
-			if got := gjson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
+			if got := ojson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
 				t.Fatalf("thinking.type = %q, want adaptive; body=%s", got, out)
 			}
-			if gjson.GetBytes(out, "thinking.budget_tokens").Exists() {
+			if ojson.GetBytes(out, "thinking.budget_tokens").Exists() {
 				t.Fatalf("thinking.budget_tokens still present: %s", out)
 			}
-			if got := gjson.GetBytes(out, "output_config.effort").String(); got != "medium" {
+			if got := ojson.GetBytes(out, "output_config.effort").String(); got != "medium" {
 				t.Fatalf("output_config.effort = %q, want medium; body=%s", got, out)
 			}
 		})
@@ -244,13 +263,13 @@ func TestApplyThinking_ClaudeAdaptiveOnlyModelsConvertBudgetAndAuto(t *testing.T
 			if err != nil {
 				t.Fatalf("ApplyThinking: %v", err)
 			}
-			if got := gjson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
+			if got := ojson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
 				t.Fatalf("thinking.type = %q, want adaptive; body=%s", got, out)
 			}
-			if gjson.GetBytes(out, "thinking.budget_tokens").Exists() {
+			if ojson.GetBytes(out, "thinking.budget_tokens").Exists() {
 				t.Fatalf("auto synthesized budget_tokens: %s", out)
 			}
-			if gjson.GetBytes(out, "output_config.effort").Exists() {
+			if ojson.GetBytes(out, "output_config.effort").Exists() {
 				t.Fatalf("auto set explicit effort: %s", out)
 			}
 		})
@@ -277,10 +296,10 @@ func TestApplyThinking_ClaudeAdaptiveOnlyModelsConvertBudgetAndAuto(t *testing.T
 			if err != nil {
 				t.Fatalf("ApplyThinkingWithModelInfo(%v): %v", levels, err)
 			}
-			if got := gjson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
+			if got := ojson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
 				t.Fatalf("levels=%v thinking.type = %q, want adaptive; body=%s", levels, got, out)
 			}
-			if got := gjson.GetBytes(out, "output_config.effort").String(); got != "low" {
+			if got := ojson.GetBytes(out, "output_config.effort").String(); got != "low" {
 				t.Fatalf("levels=%v output_config.effort = %q, want low; body=%s", levels, got, out)
 			}
 		}
@@ -293,10 +312,10 @@ func TestApplyThinking_ClaudeAdaptiveOnlyModelsConvertBudgetAndAuto(t *testing.T
 			if err != nil {
 				t.Fatalf("ApplyThinking: %v", err)
 			}
-			if got := gjson.GetBytes(out, "thinking.type").String(); got != "enabled" {
+			if got := ojson.GetBytes(out, "thinking.type").String(); got != "enabled" {
 				t.Fatalf("thinking.type = %q, want enabled; body=%s", got, out)
 			}
-			if got := gjson.GetBytes(out, "thinking.budget_tokens").Int(); got != 16384 {
+			if got := ojson.GetBytes(out, "thinking.budget_tokens").Int(); got != 16384 {
 				t.Fatalf("thinking.budget_tokens = %d, want 16384; body=%s", got, out)
 			}
 		})
