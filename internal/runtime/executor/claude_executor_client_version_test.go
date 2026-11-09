@@ -18,7 +18,7 @@ import (
 func TestClaudeExecutorClientVersion(t *testing.T) {
 	for _, path := range []string{"messages", "stream", "count_tokens"} {
 		for _, tc := range []struct {
-			name, ua, want, rule             string
+			name, ua, want, rule, toolType   string
 			off, spoof, override, noMetadata bool
 			adaptive                         bool
 		}{
@@ -30,6 +30,8 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 			{name: "newer cloaked adaptive", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", noMetadata: true, adaptive: true},
 			{name: "newer filtered context management", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", noMetadata: true, adaptive: true, rule: "filter-context"},
 			{name: "newer missing CLI beta", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", noMetadata: true, rule: "missing-cli-beta"},
+			{name: "newer tool removal", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", noMetadata: true, toolType: "tool_removal"},
+			{name: "newer tool reference addition", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", noMetadata: true, toolType: "tool_addition"},
 			{name: "older", ua: "claude-cli/2.1.100 (external, cli)", want: "2.1.321"},
 			{name: "curl", ua: "curl/8.0", want: "2.1.321"},
 			{name: "management", ua: "Mozilla/5.0", want: "2.1.321"},
@@ -39,6 +41,10 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 			{name: "payload override", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.321", off: true, rule: "override"},
 			{name: "payload filter", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", rule: "filter"},
 		} {
+			// count_tokens accepts user/assistant turns only, not tool-change system turns.
+			if path == "count_tokens" && tc.toolType != "" {
+				continue
+			}
 			t.Run(path+"/"+tc.name, func(t *testing.T) {
 				helps.ResetClaudeDeviceProfileCache()
 				stabilize, enabled := true, !tc.off
@@ -76,6 +82,15 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 					headers.Set("X-Stainless-Runtime", "python")
 				}
 				payload := []byte(`{"model":"claude-fable-5-2","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"metadata":{"user_id":"` + strings.ReplaceAll(claudeNativeHelperUserID, `"`, `\"`) + `"}}`)
+				model := "claude-fable-5-2"
+				if tc.toolType != "" {
+					model = "claude-sonnet-5-5"
+					doc := ojson.NewDoc(payload)
+					_ = doc.Set("model", model)
+					_ = doc.SetRawBytes("tools", []byte(`[{"name":"lookup_notes","input_schema":{"type":"object","properties":{}}}]`))
+					_ = doc.SetRawBytes("messages", []byte(fmt.Sprintf(`[{"role":"user","content":"hi"},{"role":"system","content":[{"type":%q,"tool":{"type":"tool_reference","name":"lookup_notes"}}]},{"role":"user","content":"continue"}]`, tc.toolType)))
+					payload = doc.Bytes()
+				}
 				if tc.noMetadata {
 					payload, _ = ojson.DeleteBytes(payload, "metadata")
 				}
@@ -107,7 +122,7 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 				ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
 				executor := NewClaudeExecutor(cfg)
 				auth := claudeNativeHelperOAuthAuth("https://api.anthropic.com")
-				req := cliproxyexecutor.Request{Model: "claude-fable-5-2", Payload: payload}
+				req := cliproxyexecutor.Request{Model: model, Payload: payload}
 				opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, OriginalRequest: payload, Headers: headers}
 				switch path {
 				case "messages":
@@ -175,6 +190,19 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 									t.Fatalf("filtered feature beta restored: %s", beta)
 								}
 							}
+						} else if tc.toolType != "" {
+							found := false
+							for _, message := range ojson.GetBytes(seenBody, "messages").Array() {
+								for _, block := range message.Get("content").Array() {
+									found = found || block.Get("type").String() == tc.toolType
+								}
+							}
+							if !found || !strings.Contains(got, claudeMidConvToolChangesBeta) {
+								t.Fatalf("tool change or required beta lost: found=%v, betas=%s", found, got)
+							}
+							if strings.Contains(got, claudeInlineToolsBeta) {
+								t.Fatal("reference-only tool change acquired inline-definition beta")
+							}
 						} else {
 							for _, field := range []string{"fallbacks", "diagnostics"} {
 								if !ojson.GetBytes(seenBody, field).Exists() {
@@ -224,6 +252,9 @@ func TestClaudeBodyRequiredBetasConstantFeatures(t *testing.T) {
 		{"system cache scope", `{"system":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":"global"}}]}`, "prompt-caching-scope-2026-01-05"},
 		{"content cache scope", `{"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":"global"}}]}]}`, "prompt-caching-scope-2026-01-05"},
 		{"unrelated scope", `{"scope":"global","system":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}`, ""},
+		{"tool removal", `{"model":"claude-sonnet-5-5","messages":[{"role":"system","content":[{"type":"tool_removal","tool":{"type":"tool_reference","name":"lookup_notes"}}]}]}`, claudeMidConvToolChangesBeta},
+		{"tool reference addition", `{"model":"claude-sonnet-5-5","messages":[{"role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_reference","name":"lookup_notes"}}]}]}`, claudeMidConvToolChangesBeta},
+		{"tool inline addition", `{"model":"claude-sonnet-5-5","messages":[{"role":"system","content":[{"type":"tool_addition","tool":{"definition":{"name":"lookup_notes"}}}]}]}`, claudeMidConvToolChangesBeta + "," + claudeInlineToolsBeta},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := claudeBodyRequiredBetas([]byte(tc.body), false); got != tc.want {

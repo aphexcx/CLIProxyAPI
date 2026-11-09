@@ -231,7 +231,7 @@ func claudeCodeBetas(body []byte, requested map[string]bool, oauthToken, bodyOnl
 		if claudeIncludePerTurnTiming(body, requested) {
 			betas = append(betas, claudePerTurnTimingBeta)
 		}
-		if !isClaudeSonnet5Model(ojson.GetBytesNoCopy(body, "model").String()) && (!bodyOnly || claudeIncludeInlineTools(body, nil)) {
+		if !isClaudeSonnet5Model(ojson.GetBytesNoCopy(body, "model").String()) && (!bodyOnly || claudeBodyHasToolChanges(body)) {
 			betas = append(betas, claudeMidConvToolChangesBeta)
 		}
 		if claudeIncludeInlineTools(body, requested) {
@@ -565,6 +565,21 @@ func claudeIncludePerTurnTiming(body []byte, requested map[string]bool) bool {
 			return false
 		}
 		return true
+	})
+	return found
+}
+
+func claudeBodyHasToolChanges(body []byte) bool {
+	found := false
+	ojson.GetBytesNoCopy(body, "messages").ForEach(func(_, message ojson.Result) bool {
+		message.Get("content").ForEach(func(_, block ojson.Result) bool {
+			switch strings.ToLower(strings.TrimSpace(block.Get("type").String())) {
+			case "tool_addition", "tool_removal":
+				found = true
+			}
+			return !found
+		})
+		return !found
 	})
 	return found
 }
