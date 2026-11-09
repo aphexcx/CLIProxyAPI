@@ -62,7 +62,7 @@ func TestAnthropicRedirectExchange(t *testing.T) {
 	}
 	client := &http.Client{Transport: anthropicRedirectTransport{upstream: upstreamURL, base: upstream.Client().Transport}}
 	originalFactory := newClaudeOAuthService
-	newClaudeOAuthService = func(cfg *config.Config, proxyURL string, options ...claude.AuthOption) *claude.ClaudeAuth {
+	newClaudeOAuthService = func(cfg *config.Config, proxyURL string, options ...claude.AuthOption) claudeOAuthService {
 		return claude.NewClaudeAuthWithProxyURL(cfg, proxyURL, append(options, claude.WithHTTPClient(client))...)
 	}
 	defer func() { newClaudeOAuthService = originalFactory }()
