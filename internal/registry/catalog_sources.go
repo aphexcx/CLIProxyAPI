@@ -349,8 +349,39 @@ func dynamicCatalogFetcherWithSource(embedded []byte, urls *[]string, validate f
 	}
 }
 
+// fetchGeneralCatalogWithSource keeps the fork's new Claude model available
+// until the official catalog catches up. Explicit catalogs remain authoritative.
+func fetchGeneralCatalogWithSource(ctx context.Context, source string) ([]byte, string, error) {
+	data, resolved, errFetch := dynamicCatalogFetcherWithSource(embeddedModelsJSON, &modelsURLs, validateCatalogBytes)(ctx, source)
+	if errFetch != nil || source != "" {
+		return data, resolved, errFetch
+	}
+	const modelID = "claude-fable-5-2"
+	var catalog staticModelsJSON
+	if errUnmarshal := json.Unmarshal(data, &catalog); errUnmarshal != nil {
+		return nil, resolved, errUnmarshal
+	}
+	for _, model := range catalog.Claude {
+		if model != nil && model.ID == modelID {
+			return data, resolved, nil
+		}
+	}
+	var embedded staticModelsJSON
+	if errUnmarshal := json.Unmarshal(embeddedModelsJSON, &embedded); errUnmarshal != nil {
+		return nil, resolved, errUnmarshal
+	}
+	for _, model := range embedded.Claude {
+		if model != nil && model.ID == modelID {
+			catalog.Claude = append(catalog.Claude, model)
+			merged, errMarshal := json.Marshal(catalog)
+			return merged, resolved, errMarshal
+		}
+	}
+	return nil, resolved, fmt.Errorf("embedded catalog is missing fork model %s", modelID)
+}
+
 var generalCatalogUpdater = &catalogUpdater{
-	fetchWithSource: dynamicCatalogFetcherWithSource(embeddedModelsJSON, &modelsURLs, validateCatalogBytes),
+	fetchWithSource: fetchGeneralCatalogWithSource,
 	publish:         publishCatalogBytes,
 }
 var codexCatalogUpdater = &catalogUpdater{

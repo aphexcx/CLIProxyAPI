@@ -68,6 +68,56 @@ func TestCatalogFetcherSources(t *testing.T) {
 	}
 }
 
+func TestGeneralCatalogRefreshPreservesForkModel(t *testing.T) {
+	const modelID = "claude-fable-5-2"
+	var catalog staticModelsJSON
+	if err := json.Unmarshal(embeddedModelsJSON, &catalog); err != nil {
+		t.Fatal(err)
+	}
+	catalog.Claude = slices.DeleteFunc(catalog.Claude, func(model *ModelInfo) bool { return model.ID == modelID })
+	data, err := json.Marshal(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(data) }))
+	defer server.Close()
+	originalURLs := modelsURLs
+	modelsURLs = []string{server.URL}
+	t.Cleanup(func() { modelsURLs = originalURLs })
+	for _, tc := range []struct {
+		name, source string
+		wantModel    bool
+	}{
+		{"official refresh", "", true},
+		{"explicit catalog", server.URL, false},
+		{"embedded catalog", embeddedCatalogSource, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fetched, _, errFetch := fetchGeneralCatalogWithSource(context.Background(), tc.source)
+			if errFetch != nil {
+				t.Fatal(errFetch)
+			}
+			var got staticModelsJSON
+			if errUnmarshal := json.Unmarshal(fetched, &got); errUnmarshal != nil {
+				t.Fatal(errUnmarshal)
+			}
+			present := slices.ContainsFunc(got.Claude, func(model *ModelInfo) bool { return model.ID == modelID })
+			if present != tc.wantModel {
+				t.Fatalf("model present = %v, want %v", present, tc.wantModel)
+			}
+		})
+	}
+	catalog.Claude = append(catalog.Claude, &ModelInfo{ID: modelID, Object: "model", OwnedBy: "anthropic", Type: "claude", DisplayName: "Official Fable 5.2"})
+	data, err = json.Marshal(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetched, _, errFetch := fetchGeneralCatalogWithSource(context.Background(), "")
+	if errFetch != nil || string(fetched) != string(data) {
+		t.Fatalf("official model metadata was replaced: %v", errFetch)
+	}
+}
+
 func TestCatalogSourceSwitchRejectsStalePublication(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
