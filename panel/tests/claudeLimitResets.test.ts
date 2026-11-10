@@ -1,13 +1,25 @@
-import { afterEach, expect, spyOn, test } from 'bun:test';
+import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test';
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { apiClient } from '@/services/api/client';
-import { readClaudeLimitResets, type ClaudeLimitResetSeat } from '@/services/api/claudeLimitResets';
+import {
+  readClaudeLimitResets,
+  matchClaudeLimitResetSeat,
+  observeClaudeResetCredentials,
+  invalidateClaudeLimitResets,
+  type ClaudeLimitResetSeat,
+} from '@/services/api/claudeLimitResets';
 import { ClaudeLimitResetsView } from '@/features/quota/providers/claude/ClaudeLimitResets';
+import i18n from '@/i18n';
+import { authFilesApi } from '@/services/api/authFiles';
 
 const seat: ClaudeLimitResetSeat = {
   name: 'fixture.json',
   auth_index: 'fixture',
+  credential_generation: '1:1',
+  last_good_at: '2026-11-10T00:00:00Z',
   stale: false,
   age_seconds: 12,
   best_click_rank: 1,
@@ -32,6 +44,12 @@ const seat: ClaudeLimitResetSeat = {
   },
 };
 let mocks: { mockRestore(): void }[] = [];
+const observedAt = Date.parse(seat.last_good_at!);
+beforeEach(async () => {
+  await i18n.changeLanguage('en');
+  invalidateClaudeLimitResets();
+  mocks.push(spyOn(Date, 'now').mockReturnValue(observedAt + 12_000));
+});
 afterEach(() => {
   for (const mock of mocks) mock.mockRestore();
   mocks = [];
@@ -93,4 +111,67 @@ test('response latency does not skip the next minute refresh', async () => {
   now = 61_000;
   await readClaudeLimitResets();
   expect(get).toHaveBeenCalledTimes(2);
+});
+
+test('credential list replacement drops cached observations within the minute', async () => {
+  let generation = '1:1';
+  const get = spyOn(apiClient, 'get').mockImplementation(async (path) =>
+    path === '/credentials'
+      ? { files: [{ name: seat.name, type: 'claude', credential_generation: generation }] }
+      : { seats: [{ ...seat, credential_generation: generation }], ranking_rule: 'fixture' }
+  );
+  mocks.push(get);
+  await authFilesApi.list();
+  const first = await readClaudeLimitResets();
+  generation = '1:2';
+  await authFilesApi.list();
+  expect(matchClaudeLimitResetSeat(first.seats, seat.name, generation)).toBeUndefined();
+  const next = await readClaudeLimitResets();
+  expect(matchClaudeLimitResetSeat(next.seats, seat.name, generation)?.credential_generation).toBe(
+    '1:2'
+  );
+  expect(get.mock.calls.filter(([path]) => path === '/claude/limit-resets')).toHaveLength(2);
+});
+
+test('a reset read spanning a credential replacement is discarded', async () => {
+  let resolve!: (value: { seats: ClaudeLimitResetSeat[]; ranking_rule: string }) => void;
+  const get = spyOn(apiClient, 'get').mockImplementation(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      })
+  );
+  mocks.push(get);
+  observeClaudeResetCredentials([{ name: seat.name, credential_generation: '2:1' }]);
+  const old = readClaudeLimitResets();
+  observeClaudeResetCredentials([{ name: seat.name, credential_generation: '2:2' }]);
+  resolve({ seats: [seat], ranking_rule: 'old' });
+  await expect(old).rejects.toThrow('obsolete credential list');
+  get.mockResolvedValue({
+    seats: [{ ...seat, credential_generation: '2:2' }],
+    ranking_rule: 'new',
+  });
+  expect((await readClaudeLimitResets()).ranking_rule).toBe('new');
+});
+
+test('two failed refreshes display elapsed time from the last good read', () => {
+  const clock = spyOn(Date, 'now');
+  mocks.push(clock);
+  for (const seconds of [72, 3_612]) {
+    clock.mockReturnValue(observedAt + seconds * 1_000);
+    const html = renderToStaticMarkup(createElement(ClaudeLimitResetsView, { seat, failed: true }));
+    expect(html).toContain(`${seconds}s ago · stale`);
+    expect(html).not.toContain('Best click');
+  }
+});
+
+test('panel source has no reset claim path', async () => {
+  async function scan(dir: string): Promise<void> {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) await scan(path);
+      else expect(await readFile(path, 'utf8')).not.toContain('reset_rate_limits');
+    }
+  }
+  await scan('src');
 });

@@ -30,23 +30,19 @@ func (m *Manager) wakeClaudeQuotaPollLocked() {
 }
 
 type claudeQuotaPollSeat struct {
-	lastAttempt            time.Time
-	nextPoll               time.Time
-	polledAt               time.Time
-	running                bool
-	queued                 bool
-	epoch                  uint64
-	polls                  uint64
-	rateLimits             uint64
-	lastStatus             int
-	interval               time.Duration
-	jitter                 time.Duration
-	usage                  json.RawMessage
-	lastFailed             bool
-	resetStatus            json.RawMessage
-	resetPolledAt          time.Time
-	resetError             string
-	resetCredentialVersion uint64
+	lastAttempt time.Time
+	nextPoll    time.Time
+	polledAt    time.Time
+	running     bool
+	queued      bool
+	epoch       uint64
+	polls       uint64
+	rateLimits  uint64
+	lastStatus  int
+	interval    time.Duration
+	jitter      time.Duration
+	usage       json.RawMessage
+	lastFailed  bool
 }
 
 // ClaudeQuotaSnapshot contains only runtime usage, never credential material.
@@ -199,13 +195,7 @@ func (m *Manager) reserveClaudeQuotaPoll(ctx context.Context, cfg *internalconfi
 	if seat.epoch != auth.RegistrationEpoch {
 		seat.polledAt = time.Time{}
 		seat.usage = nil
-		seat.resetStatus, seat.resetPolledAt, seat.resetError = nil, time.Time{}, ""
 		seat.epoch = auth.RegistrationEpoch
-	}
-	if seat.resetCredentialVersion != auth.CredentialVersion {
-		seat.resetStatus, seat.resetPolledAt, seat.resetError = nil, time.Time{}, ""
-		seat.resetCredentialVersion = auth.CredentialVersion
-		seat.lastFailed, seat.lastStatus = false, 0
 	}
 	seat.lastAttempt, seat.running, seat.queued = now, true, false
 	seat.polls++

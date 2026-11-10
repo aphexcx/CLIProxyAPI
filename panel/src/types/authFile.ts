@@ -57,6 +57,7 @@ export interface AuthFileCooldownSnapshot {
 
 export interface AuthFileItem {
   name: string;
+  credential_generation?: string;
   claude_usage?: ClaudeCachedUsage;
   codex_usage?: CodexCachedUsage;
   siwcBindSupported?: boolean;

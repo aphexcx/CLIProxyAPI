@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 	"time"
 
@@ -25,12 +24,6 @@ import (
 const defaultAPICallTimeout = 60 * time.Second
 
 var errResetRateLimitsDenied = errors.New("banked-reset deny rule (cp-bha): reset_rate_limits requests are forbidden")
-
-// URL.Path is already percent-decoded by net/url. Normalize it before
-// checking the suffix, regardless of the destination host or HTTP method.
-func deniesResetRateLimits(u *url.URL) bool {
-	return u != nil && strings.HasSuffix(strings.TrimRight(strings.ToLower(path.Clean(u.Path)), "/"), "/reset_rate_limits")
-}
 
 const (
 	antigravityOAuthClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
@@ -229,19 +222,8 @@ func (h *Handler) APICall(c *gin.Context) {
 		req.Host = hostOverride
 	}
 
-	httpClient := &http.Client{
-		Timeout: defaultAPICallTimeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if deniesResetRateLimits(req.URL) {
-				return errResetRateLimitsDenied
-			}
-			if len(via) >= 10 {
-				return errors.New("stopped after 10 redirects")
-			}
-			return nil
-		},
-	}
-	httpClient.Transport = h.apiCallTransport(auth, requestProxyURL)
+	httpClient := newManagementHTTPClient(h.apiCallTransport(auth, requestProxyURL))
+	httpClient.Timeout = defaultAPICallTimeout
 
 	resp, errDo := httpClient.Do(req)
 	if errDo != nil {
@@ -598,10 +580,8 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	httpClient := &http.Client{
-		Timeout:   defaultAPICallTimeout,
-		Transport: h.apiCallTransport(auth, requestProxyURL),
-	}
+	httpClient := newManagementHTTPClient(h.apiCallTransport(auth, requestProxyURL))
+	httpClient.Timeout = defaultAPICallTimeout
 	resp, errDo := httpClient.Do(req)
 	if errDo != nil {
 		return "", errDo
@@ -867,6 +847,10 @@ func (h *Handler) authByIndex(authIndex string) *coreauth.Auth {
 }
 
 func (h *Handler) apiCallTransport(auth *coreauth.Auth, requestProxyURL string) http.RoundTripper {
+	return guardManagementTransport(h.apiCallBaseTransport(auth, requestProxyURL))
+}
+
+func (h *Handler) apiCallBaseTransport(auth *coreauth.Auth, requestProxyURL string) http.RoundTripper {
 	if proxyStr := strings.TrimSpace(requestProxyURL); proxyStr != "" {
 		if transport := buildProxyTransport(proxyStr); transport != nil {
 			return transport

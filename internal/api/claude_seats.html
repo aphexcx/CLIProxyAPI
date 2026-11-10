@@ -62,7 +62,7 @@ function render(files, resets) {
   for (const file of files.filter(file => file.provider === 'claude')) {
     const card = node('article', undefined, seats);
     node('h2', file.label || file.name, card);
-    const reset = (resets.seats || []).find(seat => seat.name === file.name);
+    const reset = (resets.seats || []).find(seat => seat.name === file.name && file.credential_generation && seat.credential_generation === file.credential_generation);
     const grants = reset?.cedar_ember?.grants || [];
     const column = node('div', undefined, card, 'resets');
     column.title = resets.ranking_rule || '';

@@ -338,10 +338,18 @@ func (o *ClaudeAuth) FetchOAuthUsageSnapshot(ctx context.Context, accessToken st
 	return o.fetchOAuthUsageSnapshot(ctx, UsageURL, accessToken)
 }
 
-// FetchOAuthUsageWithLimitResets requests the read-only reset status in the
-// existing usage poll. It never refreshes credentials or submits a claim.
-func (o *ClaudeAuth) FetchOAuthUsageWithLimitResets(ctx context.Context, accessToken string) (map[string]OAuthUsageWindow, json.RawMessage, error) {
-	return o.fetchOAuthUsageSnapshot(ctx, LimitResetsUsageURL, accessToken)
+// FetchOAuthLimitResets is independent of routine quota usage. Its response is
+// never authoritative for usage windows, even if the server includes them.
+func (o *ClaudeAuth) FetchOAuthLimitResets(ctx context.Context, accessToken string) (json.RawMessage, error) {
+	body, _, errFetch := o.fetchOAuthControlPlaneJSON(ctx, LimitResetsUsageURL, accessToken, "reset status")
+	if errFetch != nil {
+		return nil, errFetch
+	}
+	windows, errParse := parseOAuthUsage(body)
+	if errParse != nil || len(windows) == 0 {
+		return nil, fmt.Errorf("reset status response has no valid usage windows")
+	}
+	return json.RawMessage(body), nil
 }
 
 func (o *ClaudeAuth) fetchOAuthUsageSnapshot(ctx context.Context, endpoint, accessToken string) (map[string]OAuthUsageWindow, json.RawMessage, error) {

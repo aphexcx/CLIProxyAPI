@@ -1,11 +1,14 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 // ClaudeLimitResets is an observation, never authorization to spend a reset.
@@ -77,44 +80,47 @@ func ParseClaudeLimitResets(usage json.RawMessage) (*ClaudeLimitResets, error) {
 }
 
 type ClaudeLimitResetsSnapshot struct {
-	CedarEmber *ClaudeLimitResets `json:"cedar_ember"`
-	Error      string             `json:"error,omitempty"`
-	LastGoodAt *time.Time         `json:"last_good_at"`
-	AgeSeconds *int64             `json:"age_seconds"`
-	Stale      bool               `json:"stale"`
+	CredentialGeneration string             `json:"credential_generation"`
+	CedarEmber           *ClaudeLimitResets `json:"cedar_ember"`
+	Error                string             `json:"error,omitempty"`
+	LastGoodAt           *time.Time         `json:"last_good_at"`
+	AgeSeconds           *int64             `json:"age_seconds"`
+	Stale                bool               `json:"stale"`
 }
 
 // ClaudeLimitResetsCached never schedules or performs I/O. A malformed reset
 // block cannot discard its last good observation or advance that observation's age.
 func (m *Manager) ClaudeLimitResetsCached(id string) ClaudeLimitResetsSnapshot {
 	snapshot := ClaudeLimitResetsSnapshot{Error: "quota polling unavailable", Stale: true}
-	quota, ok := m.ClaudeQuotaCached(id)
-	if !ok {
+	if m == nil {
 		return snapshot
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	auth, seat := m.auths[id], m.quotaPollSeats[id]
-	if auth == nil || seat == nil || seat.epoch != auth.RegistrationEpoch || seat.resetCredentialVersion != auth.CredentialVersion {
+	auth, seat := m.auths[id], m.limitResetSeats[id]
+	if auth == nil {
+		return snapshot
+	}
+	snapshot.CredentialGeneration = auth.CredentialGeneration()
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil || !cfg.Claude.Quota.Enabled {
+		return snapshot
+	}
+	if seat == nil || seat.generation != snapshot.CredentialGeneration {
 		snapshot.Error = "not polled yet"
 		return snapshot
 	}
-	if seat.resetStatus != nil {
+	if seat.status != nil {
 		// Reparse the isolated status to copy all slices and pointers.
-		_ = json.Unmarshal(seat.resetStatus, &snapshot.CedarEmber)
-		at := seat.resetPolledAt
+		_ = json.Unmarshal(seat.status, &snapshot.CedarEmber)
+		at := seat.polledAt
 		age := max(int64(0), int64(time.Since(at)/time.Second))
 		snapshot.LastGoodAt, snapshot.AgeSeconds = &at, &age
 	}
-	snapshot.Error = seat.resetError
-	snapshot.Stale = quota.Stale || snapshot.CedarEmber == nil || snapshot.Error != ""
-	if seat.lastFailed {
+	snapshot.Error = seat.err
+	snapshot.Stale = snapshot.CedarEmber == nil || snapshot.Error != "" || time.Since(seat.polledAt) > max(seat.interval, claudeQuotaMinimumPollInterval)+time.Minute
+	if !quotaPollEligible(auth) {
 		snapshot.Stale = true
-		snapshot.Error = "usage poll failed"
-		if seat.lastStatus != 0 {
-			snapshot.Error = fmt.Sprintf("usage poll failed (HTTP %d)", seat.lastStatus)
-		}
-	} else if quota.Status == "polling_paused" {
 		snapshot.Error = "polling paused"
 	} else if snapshot.Stale && snapshot.Error == "" {
 		snapshot.Error = "cached reset status is stale"
@@ -122,12 +128,113 @@ func (m *Manager) ClaudeLimitResetsCached(id string) ClaudeLimitResetsSnapshot {
 	return snapshot
 }
 
-func (seat *claudeQuotaPollSeat) recordLimitResets(usage json.RawMessage, now time.Time) {
-	status, err := ParseClaudeLimitResets(usage)
-	if err != nil {
-		seat.resetError = err.Error()
+// CredentialGeneration is public identity, never a hash of secret material.
+func (a *Auth) CredentialGeneration() string {
+	return fmt.Sprintf("%d:%d", a.RegistrationEpoch, a.CredentialVersion)
+}
+
+type LimitResetsPoller interface {
+	PollLimitResets(context.Context, *Auth) (json.RawMessage, error)
+}
+
+type claudeLimitResetPollSeat struct {
+	generation            string
+	status                json.RawMessage
+	polledAt, attemptedAt time.Time
+	interval              time.Duration
+	err                   string
+	running               bool
+}
+
+// Launch on the quota cadence, but never make a slow or failed reset read hold
+// the routine usage slot. This read has its own cache, errors and lifecycle.
+func (m *Manager) startClaudeLimitResetsPoll(ctx context.Context, cfg *internalconfig.Config, base *Auth, executor QuotaPoller, interval time.Duration) {
+	poller, ok := executor.(LimitResetsPoller)
+	if !ok || !strings.EqualFold(base.Provider, "claude") {
 		return
 	}
-	seat.resetStatus, _ = json.Marshal(status)
-	seat.resetPolledAt, seat.resetError = now, ""
+	m.mu.Lock()
+	if ctx.Err() != nil || m.runtimeConfig.Load() != cfg || !sameClaudeQuotaCredential(m.auths[base.ID], base) {
+		m.mu.Unlock()
+		return
+	}
+	if m.limitResetSeats == nil {
+		m.limitResetSeats = make(map[string]*claudeLimitResetPollSeat)
+	}
+	seat := m.limitResetSeats[base.ID]
+	if seat == nil || seat.generation != base.CredentialGeneration() {
+		seat = &claudeLimitResetPollSeat{generation: base.CredentialGeneration()}
+		m.limitResetSeats[base.ID] = seat
+	}
+	if seat.running || time.Since(seat.attemptedAt) < claudeQuotaMinimumPollInterval {
+		m.mu.Unlock()
+		return
+	}
+	seat.running, seat.attemptedAt, seat.interval = true, time.Now(), interval
+	m.mu.Unlock()
+	go func() {
+		readCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		changes, stop := m.WatchAuthChanges(base.ID)
+		defer stop()
+		defer func() { m.mu.Lock(); seat.running = false; m.mu.Unlock() }()
+		current := func() bool {
+			m.mu.RLock()
+			defer m.mu.RUnlock()
+			return sameClaudeQuotaCredential(m.auths[base.ID], base)
+		}
+		if readCtx.Err() != nil || !current() {
+			return
+		}
+		type result struct {
+			body json.RawMessage
+			err  error
+		}
+		complete := make(chan result, 1)
+		go func() { body, err := poller.PollLimitResets(readCtx, base); complete <- result{body, err} }()
+		for {
+			select {
+			case <-readCtx.Done():
+				return
+			case <-changes:
+				if !current() {
+					return
+				}
+			case read := <-complete:
+				m.recordClaudeLimitResets(readCtx, cfg, base, read.body, read.err, time.Now())
+				return
+			}
+		}
+	}()
+}
+
+func (m *Manager) recordClaudeLimitResets(ctx context.Context, cfg *internalconfig.Config, base *Auth, body json.RawMessage, errRead error, now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ctx.Err() != nil || m.runtimeConfig.Load() != cfg || !cfg.Claude.Quota.Enabled || !sameClaudeQuotaCredential(m.auths[base.ID], base) {
+		return
+	}
+	if m.limitResetSeats == nil {
+		m.limitResetSeats = make(map[string]*claudeLimitResetPollSeat)
+	}
+	seat := m.limitResetSeats[base.ID]
+	if seat == nil || seat.generation != base.CredentialGeneration() {
+		seat = &claudeLimitResetPollSeat{generation: base.CredentialGeneration()}
+		m.limitResetSeats[base.ID] = seat
+	}
+	if errRead != nil {
+		seat.err = "reset status poll failed"
+		var statusError interface{ StatusCode() int }
+		if errors.As(errRead, &statusError) {
+			seat.err = fmt.Sprintf("reset status poll failed (HTTP %d)", statusError.StatusCode())
+		}
+		return
+	}
+	status, err := ParseClaudeLimitResets(body)
+	if err != nil {
+		seat.err = err.Error()
+		return
+	}
+	seat.status, _ = json.Marshal(status)
+	seat.polledAt, seat.err = now, ""
 }

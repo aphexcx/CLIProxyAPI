@@ -26,7 +26,7 @@ func (e *ClaudeExecutor) PollQuotaUsage(ctx context.Context, auth *cliproxyauth.
 	if strings.TrimSpace(accessToken) == "" {
 		accessToken, _ = auth.Metadata["accessToken"].(string)
 	}
-	windows, usage, errFetch := claudeauth.NewClaudeAuthWithProxyURL(e.cfg, auth.ProxyURL).FetchOAuthUsageWithLimitResets(ctx, accessToken)
+	windows, usage, errFetch := claudeauth.NewClaudeAuthWithProxyURL(e.cfg, auth.ProxyURL).FetchOAuthUsageSnapshot(ctx, accessToken)
 	if errFetch != nil {
 		return nil, nil, errFetch
 	}
@@ -35,4 +35,17 @@ func (e *ClaudeExecutor) PollQuotaUsage(ctx context.Context, auth *cliproxyauth.
 		result[name] = cliproxyauth.QuotaWindow{Utilization: window.Utilization, ResetsAt: window.ResetsAt, ObservedAt: window.ObservedAt}
 	}
 	return result, usage, nil
+}
+
+// PollLimitResets makes a separate observational GET. Its body never enters the
+// routine quota cache or the routing guard's window reconciliation.
+func (e *ClaudeExecutor) PollLimitResets(ctx context.Context, auth *cliproxyauth.Auth) (json.RawMessage, error) {
+	if auth == nil {
+		return nil, fmt.Errorf("Claude reset status: auth is nil")
+	}
+	accessToken, _ := auth.Metadata["access_token"].(string)
+	if strings.TrimSpace(accessToken) == "" {
+		accessToken, _ = auth.Metadata["accessToken"].(string)
+	}
+	return claudeauth.NewClaudeAuthWithProxyURL(e.cfg, auth.ProxyURL).FetchOAuthLimitResets(ctx, accessToken)
 }

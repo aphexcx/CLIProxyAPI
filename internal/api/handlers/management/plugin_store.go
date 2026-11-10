@@ -18,8 +18,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/htmlsanitize"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginstore"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
@@ -569,10 +567,7 @@ func (h *Handler) newPluginStoreClient(proxyURL string, registryURL string, stor
 	if httpClient != nil {
 		return pluginstore.Client{HTTPClient: httpClient, NetworkScope: strings.TrimSpace(proxyURL), RateLimiter: limiter, RegistryURL: registryURL, Auth: storeAuth}
 	}
-	client := &http.Client{}
-	if strings.TrimSpace(proxyURL) != "" {
-		util.SetProxy(&sdkconfig.SDKConfig{ProxyURL: strings.TrimSpace(proxyURL)}, client)
-	}
+	client := newManagementHTTPClient(buildProxyTransport(strings.TrimSpace(proxyURL)))
 	return pluginstore.Client{HTTPClient: client, NetworkScope: strings.TrimSpace(proxyURL), RateLimiter: limiter, RegistryURL: registryURL, Auth: storeAuth}
 }
 

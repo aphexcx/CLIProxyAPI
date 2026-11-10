@@ -24,12 +24,19 @@ func (p *resetStatusPoller) PollQuotaUsage(ctx context.Context, auth *coreauth.A
 	// The OAuth parser preserves the display-name alias used by newer responses.
 	windows["Fable 5"] = windows["Fable"]
 	delete(windows, "Fable")
+	return windows, json.RawMessage(`{"five_hour":{"utilization":15}}`), nil
+}
+
+func (p *resetStatusPoller) PollLimitResets(context.Context, *coreauth.Auth) (json.RawMessage, error) {
+	if p.fail.Load() {
+		return nil, &coreauth.Error{HTTPStatus: 429}
+	}
 	weekly, expiry := time.Now().Add(72*time.Hour), time.Now().Add(7*24*time.Hour)
 	body, _ := json.Marshal(gin.H{"cedar_ember": coreauth.ClaudeLimitResets{
 		Eligible: true, AtLimit: true, WeeklyResetsAt: &weekly,
 		Grants: []coreauth.ClaudeResetGrant{{ID: "synthetic-launch", Label: "Launch", ResetsLeft: 2, EndsAt: &expiry, Type: "weekly", Clears: []string{"seven_day_overage_included"}, UsableNow: true}},
 	}})
-	return windows, body, err
+	return body, nil
 }
 
 func TestLimitResetsReadsCacheOnlyAndPreservesFailureAge(t *testing.T) {
@@ -85,10 +92,39 @@ func TestLimitResetsReadsCacheOnlyAndPreservesFailureAge(t *testing.T) {
 		<-time.After(121 * time.Second)
 		synctest.Wait()
 		got := read("/", 200)[0]
-		if got.CedarEmber == nil || got.AgeSeconds == nil || *got.AgeSeconds != 121 || !got.Stale || got.Error != "usage poll failed (HTTP 429)" || got.BestClickRank != nil {
+		if got.CedarEmber == nil || got.AgeSeconds == nil || *got.AgeSeconds != 121 || !got.Stale || got.Error != "reset status poll failed (HTTP 429)" || got.BestClickRank != nil {
 			t.Fatalf("failed poll=%+v", got)
 		}
 	})
+}
+
+func TestLimitResetGenerationMatchesCredentialListing(t *testing.T) {
+	ctx := context.Background()
+	cfg := &config.Config{}
+	cfg.Claude.Quota.Enabled = true
+	m := coreauth.NewManager(nil, nil, nil)
+	m.SetConfig(cfg)
+	auth, err := m.Register(ctx, &coreauth.Auth{ID: "fixture", FileName: "fixture.json", Provider: "claude", Status: coreauth.StatusActive, Attributes: map[string]string{"path": "fixture.json"}, Metadata: map[string]any{"access_token": "fixture-only"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: cfg, authManager: m}
+	first := m.ClaudeLimitResetsCached(auth.ID).CredentialGeneration
+	for _, token := range []string{"fixture-only", "replacement"} {
+		auth.Metadata["access_token"] = token
+		auth, err = m.Update(ctx, auth)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entry := h.buildAuthFileEntry(auth, authFileQuotaContext{v8: true})
+		generation := m.ClaudeLimitResetsCached(auth.ID).CredentialGeneration
+		if generation == "" || entry["credential_generation"] != generation {
+			t.Fatalf("listing=%v reset=%s", entry["credential_generation"], generation)
+		}
+		if token == "replacement" && generation == first {
+			t.Fatal("replacement kept credential generation")
+		}
+	}
 }
 
 func TestLimitResetRanking(t *testing.T) {

@@ -124,7 +124,9 @@ export function QuotaCard(props: QuotaCardProps) {
     quota?.error || t('common.unknown_error')
   );
   const claudeAfterPlan =
-    entry.type === 'claude' ? <ClaudeLimitResets name={file.name} /> : undefined;
+    entry.type === 'claude' ? (
+      <ClaudeLimitResets name={file.name} generation={file.credential_generation} />
+    ) : undefined;
   const showReset =
     status === 'success' &&
     Boolean(adapter.resetQuota) &&

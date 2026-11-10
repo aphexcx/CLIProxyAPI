@@ -2,6 +2,7 @@ package management
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -120,6 +121,10 @@ func (h *Handler) FetchCredentialQuota(c *gin.Context) {
 				quotaResp, handledProbe, errProbe := h.executeQuotaProbe(c, auth, probeMap)
 				if handledProbe {
 					if errProbe != nil {
+						if errors.Is(errProbe, errResetRateLimitsDenied) {
+							c.JSON(http.StatusForbidden, gin.H{"error": errResetRateLimitsDenied.Error()})
+							return
+						}
 						c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("quota probe failed: %v", errProbe)})
 						return
 					}
@@ -445,9 +450,7 @@ func (h *Handler) executeQuotaProbe(c *gin.Context, auth *coreauth.Auth, probe m
 		}
 	}
 
-	client := &http.Client{
-		Transport: h.apiCallTransport(auth, ""),
-	}
+	client := newManagementHTTPClient(h.apiCallTransport(auth, ""))
 
 	resp, errDo := client.Do(req)
 	if errDo != nil {

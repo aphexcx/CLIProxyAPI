@@ -3,8 +3,12 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -45,13 +49,13 @@ func TestLimitResetsRetainsLastGoodOnMissingMalformedAndFailedPoll(t *testing.T)
 	cfg := m.runtimeConfig.Load().(*config.Config)
 	base, _ := m.GetByID(id)
 	now := time.Now().Add(-2 * time.Minute)
-	m.applyClaudeQuotaUsageSnapshot(context.Background(), cfg, base, nil, json.RawMessage(limitResetsFixture), now)
+	m.recordClaudeLimitResets(context.Background(), cfg, base, json.RawMessage(limitResetsFixture), nil, now)
 	initial := m.ClaudeLimitResetsCached(id)
 	if initial.CedarEmber == nil || *initial.AgeSeconds < 120 {
 		t.Fatalf("initial=%+v", initial)
 	}
 	for _, body := range []string{`{}`, `{"cedar_ember":{"eligible":"bad"}}`} {
-		m.applyClaudeQuotaUsageSnapshot(context.Background(), cfg, base, nil, json.RawMessage(body), now.Add(time.Minute))
+		m.recordClaudeLimitResets(context.Background(), cfg, base, json.RawMessage(body), nil, now.Add(time.Minute))
 		got := m.ClaudeLimitResetsCached(id)
 		if got.CedarEmber == nil || !got.LastGoodAt.Equal(*initial.LastGoodAt) || got.Error == "" || !got.Stale {
 			t.Fatalf("last good lost: %+v", got)
@@ -61,9 +65,9 @@ func TestLimitResetsRetainsLastGoodOnMissingMalformedAndFailedPoll(t *testing.T)
 			t.Fatal("caller mutated cache")
 		}
 	}
-	m.recordClaudeQuotaPoll(base, time.Now(), &Error{HTTPStatus: 429})
+	m.recordClaudeLimitResets(context.Background(), cfg, base, nil, &Error{HTTPStatus: 429}, time.Now())
 	failed := m.ClaudeLimitResetsCached(id)
-	if failed.Error != "usage poll failed (HTTP 429)" || !failed.LastGoodAt.Equal(*initial.LastGoodAt) {
+	if failed.Error != "reset status poll failed (HTTP 429)" || !failed.LastGoodAt.Equal(*initial.LastGoodAt) {
 		t.Fatalf("failed=%+v", failed)
 	}
 	base.Metadata["access_token"] = "replacement-fixture"
@@ -85,9 +89,99 @@ func TestLimitResetsInitialPollFailureReportsErrorWithoutInventingAge(t *testing
 		t.Fatal("initial poll not reserved")
 	}
 	defer release()
-	m.recordClaudeQuotaPoll(base, started, &Error{HTTPStatus: 429})
+	m.recordClaudeLimitResets(context.Background(), cfg, base, nil, &Error{HTTPStatus: 429}, started)
 	got := m.ClaudeLimitResetsCached(id)
-	if got.Error != "usage poll failed (HTTP 429)" || !got.Stale || got.CedarEmber != nil || got.AgeSeconds != nil || got.LastGoodAt != nil {
+	if got.Error != "reset status poll failed (HTTP 429)" || !got.Stale || got.CedarEmber != nil || got.AgeSeconds != nil || got.LastGoodAt != nil {
 		t.Fatalf("initial failure lost or invented observation: %+v", got)
+	}
+}
+
+func TestLimitResetsCannotChangeQuotaWindowsOrHolds(t *testing.T) {
+	m, id, _ := newClaudeQuotaManager(t)
+	cfg := m.runtimeConfig.Load().(*config.Config)
+	now := time.Now()
+	applyTestClaudeQuota(m, id, 100, now.Add(time.Hour), now)
+	base, _ := m.GetByID(id)
+	if blocked, _, _ := isAuthBlockedForModel(base, quotaFable, now); !blocked {
+		t.Fatal("fixture has no Fable hold")
+	}
+	for _, errRead := range []error{nil, fmt.Errorf("reset status response has no valid usage windows")} {
+		m.recordClaudeLimitResets(context.Background(), cfg, base, json.RawMessage(limitResetsFixture), errRead, now)
+		current, _ := m.GetByID(id)
+		if !reflect.DeepEqual(current.Quota, base.Quota) || !reflect.DeepEqual(current.ModelStates, base.ModelStates) {
+			t.Fatal("reset observation modified routing quota state")
+		}
+		if blocked, _, _ := isAuthBlockedForModel(current, quotaFable, now); !blocked {
+			t.Fatal("reset-only body released a Fable hold")
+		}
+	}
+	if got := m.ClaudeLimitResetsCached(id); !got.Stale || got.CedarEmber == nil {
+		t.Fatalf("reset failure did not retain stale data: %+v", got)
+	}
+}
+
+type isolatedResetPoller struct {
+	ProviderExecutor
+	routine atomic.Int32
+	resets  atomic.Int32
+	finish  chan struct{}
+}
+
+func (*isolatedResetPoller) Identifier() string { return "claude" }
+func (p *isolatedResetPoller) PollQuota(context.Context, *Auth) (map[string]QuotaWindow, error) {
+	p.routine.Add(1)
+	return map[string]QuotaWindow{"Fable": {Utilization: 100, ResetsAt: time.Now().Add(time.Hour), ObservedAt: time.Now()}}, nil
+}
+func (p *isolatedResetPoller) PollLimitResets(ctx context.Context, _ *Auth) (json.RawMessage, error) {
+	p.resets.Add(1)
+	select {
+	case <-p.finish:
+		return json.RawMessage(limitResetsFixture), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestLimitResetsHungReadDoesNotBlockRoutinePolls(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewManager(nil, nil, nil)
+		cfg := &config.Config{RequestRetry: 3}
+		cfg.Claude.Quota.Enabled = true
+		m.SetConfig(cfg)
+		_, err := m.Register(context.Background(), &Auth{ID: "fixture", Provider: "claude", Status: StatusActive, Metadata: map[string]any{"access_token": "fixture"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := &isolatedResetPoller{finish: make(chan struct{})}
+		m.RegisterExecutor(p)
+		m.StartQuotaPolling(context.Background())
+		defer m.StopQuotaPolling()
+		synctest.Wait()
+		<-time.After(130 * time.Second)
+		synctest.Wait()
+		if p.routine.Load() < 2 || p.resets.Load() != 1 {
+			t.Fatalf("routine=%d resets=%d", p.routine.Load(), p.resets.Load())
+		}
+		close(p.finish)
+		synctest.Wait()
+		if m.ClaudeLimitResetsCached("fixture").CedarEmber == nil {
+			t.Fatal("separate reset cache was not populated")
+		}
+	})
+}
+
+func TestLimitResetsRejectsLateObservationFromReplacedCredential(t *testing.T) {
+	m, id, _ := newClaudeQuotaManager(t)
+	cfg := m.runtimeConfig.Load().(*config.Config)
+	old, _ := m.GetByID(id)
+	replacement := old.Clone()
+	replacement.Metadata["access_token"] = "replacement"
+	if _, err := m.Update(context.Background(), replacement); err != nil {
+		t.Fatal(err)
+	}
+	m.recordClaudeLimitResets(context.Background(), cfg, old, json.RawMessage(limitResetsFixture), nil, time.Now())
+	got := m.ClaudeLimitResetsCached(id)
+	if got.CedarEmber != nil || got.CredentialGeneration == old.CredentialGeneration() {
+		t.Fatalf("old observation accepted: %+v", got)
 	}
 }

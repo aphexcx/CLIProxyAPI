@@ -3,6 +3,7 @@
  */
 
 import { apiClient } from './client';
+import { invalidateClaudeLimitResets, observeClaudeResetCredentials } from './claudeLimitResets';
 import { getConfigValue, guardConfigConnection } from './configValue';
 import { isRecord } from '@/utils/helpers';
 import type { AuthFilesResponse } from '@/types/authFile';
@@ -559,6 +560,7 @@ export const authFilesApi = {
       )
     );
     if (connectionRevision === apiClient.getConnectionRevision()) {
+      observeClaudeResetCredentials(response.files, !lookup);
       seedClaudeQuota(response.files, generation, i18n.t, sequence);
       seedCodexQuota(response.files, generation, i18n.t, codexSequence);
     }
@@ -572,8 +574,14 @@ export const authFilesApi = {
       ...(authIndex ? { auth_index: authIndex } : {}),
     }),
 
-  patchFields: (name: string, fields: AuthFileFieldsPatch) =>
-    apiClient.patch('/credentials/fields', { name, ...fields }),
+  patchFields: async (name: string, fields: AuthFileFieldsPatch) => {
+    invalidateClaudeLimitResets();
+    try {
+      return await apiClient.patch('/credentials/fields', { name, ...fields });
+    } finally {
+      invalidateClaudeLimitResets();
+    }
+  },
 
   requestManualRefresh: async (name: string, authIndex?: string): Promise<void> => {
     // The refresh response may include tokens. Never return it to callers.
@@ -607,8 +615,16 @@ export const authFilesApi = {
     files.forEach((file) => {
       formData.append('file', file, file.name);
     });
-    const payload = await apiClient.postForm<AuthFileBatchUploadResponse>('/credentials', formData);
-    return normalizeBatchUploadResponse(payload, requestedNames);
+    invalidateClaudeLimitResets();
+    try {
+      const payload = await apiClient.postForm<AuthFileBatchUploadResponse>(
+        '/credentials',
+        formData
+      );
+      return normalizeBatchUploadResponse(payload, requestedNames);
+    } finally {
+      invalidateClaudeLimitResets();
+    }
   },
 
   deleteFiles: async (names: string[]): Promise<AuthFileBatchDeleteResult> => {
@@ -617,15 +633,27 @@ export const authFilesApi = {
       return { status: 'ok', deleted: 0, files: [], failed: [] };
     }
 
-    const payload = await apiClient.delete<AuthFileBatchDeleteResponse>('/credentials', {
-      data: { names: requestedNames },
-    });
-    return normalizeBatchDeleteResponse(payload, requestedNames);
+    invalidateClaudeLimitResets();
+    try {
+      const payload = await apiClient.delete<AuthFileBatchDeleteResponse>('/credentials', {
+        data: { names: requestedNames },
+      });
+      return normalizeBatchDeleteResponse(payload, requestedNames);
+    } finally {
+      invalidateClaudeLimitResets();
+    }
   },
 
   deleteFile: (name: string) => authFilesApi.deleteFiles([name]),
 
-  deleteAll: () => apiClient.delete('/credentials', { params: { all: true } }),
+  deleteAll: async () => {
+    invalidateClaudeLimitResets();
+    try {
+      return await apiClient.delete('/credentials', { params: { all: true } });
+    } finally {
+      invalidateClaudeLimitResets();
+    }
+  },
 
   download: async (name: string): Promise<Blob> => {
     const response = await apiClient.getRaw(

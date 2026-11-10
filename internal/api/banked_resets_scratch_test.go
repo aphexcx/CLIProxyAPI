@@ -34,12 +34,16 @@ func (p *scratchResetPoller) PollQuota(ctx context.Context, auth *coreauth.Auth)
 	return windows, err
 }
 func (p *scratchResetPoller) PollQuotaUsage(ctx context.Context, auth *coreauth.Auth) (map[string]coreauth.QuotaWindow, json.RawMessage, error) {
-	windows, body, err := p.client.FetchOAuthUsageWithLimitResets(ctx, auth.Metadata["access_token"].(string))
+	windows, body, err := p.client.FetchOAuthUsageSnapshot(ctx, auth.Metadata["access_token"].(string))
 	converted := make(map[string]coreauth.QuotaWindow, len(windows))
 	for name, w := range windows {
 		converted[name] = coreauth.QuotaWindow{Utilization: w.Utilization, ResetsAt: w.ResetsAt, ObservedAt: w.ObservedAt}
 	}
 	return converted, body, err
+}
+
+func (p *scratchResetPoller) PollLimitResets(ctx context.Context, auth *coreauth.Auth) (json.RawMessage, error) {
+	return p.client.FetchOAuthLimitResets(ctx, auth.Metadata["access_token"].(string))
 }
 
 type scratchResetTransport struct{ target *url.URL }
@@ -62,7 +66,7 @@ func TestBankedResetsScratch(t *testing.T) {
 	var upstreamCalls atomic.Int32
 	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamCalls.Add(1)
-		if r.Method != "GET" || r.URL.RequestURI() != "/api/oauth/usage?cedar_ember=1&skip_spend=1" || r.Header.Get("Anthropic-Beta") != "oauth-2025-04-20" || r.Header.Get("Authorization") != "Bearer scratch-only-token" {
+		if r.Method != "GET" || (r.URL.RequestURI() != "/api/oauth/usage?cedar_ember=1&skip_spend=1" && r.URL.RequestURI() != "/api/oauth/usage") || r.Header.Get("Anthropic-Beta") != "oauth-2025-04-20" || r.Header.Get("Authorization") != "Bearer scratch-only-token" {
 			t.Error("unexpected fixture request shape")
 			http.Error(w, "fixture request rejected", 400)
 			return
@@ -110,7 +114,7 @@ func TestBankedResetsScratch(t *testing.T) {
 	defer ticker.Stop()
 	deadline := time.NewTimer(10 * time.Second)
 	defer deadline.Stop()
-	for m.ClaudeLimitResetsCached(auth.ID).CedarEmber == nil {
+	for quota, _ := m.ClaudeQuotaCached(auth.ID); m.ClaudeLimitResetsCached(auth.ID).CedarEmber == nil || quota.Stale; quota, _ = m.ClaudeQuotaCached(auth.ID) {
 		select {
 		case <-ticker.C:
 		case <-deadline.C:
@@ -169,7 +173,7 @@ func TestBankedResetsScratch(t *testing.T) {
 	for range 5 {
 		request("GET", "/v8/management/claude/limit-resets", "", 200)
 	}
-	if upstreamCalls.Load() != 1 {
+	if upstreamCalls.Load() != 2 {
 		t.Fatalf("management GETs caused %d upstream calls", upstreamCalls.Load())
 	}
 	if proofDir := os.Getenv("CP_BHA_PROOF_DIR"); proofDir != "" {

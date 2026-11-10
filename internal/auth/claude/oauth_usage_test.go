@@ -105,7 +105,7 @@ func TestFetchOAuthUsageCurrentTokenOnly(t *testing.T) {
 	}
 }
 
-func TestFetchOAuthUsageWithLimitResetsUsesSameReadAndBeta(t *testing.T) {
+func TestFetchOAuthLimitResetsUsesSeparateReadAndBeta(t *testing.T) {
 	calls := 0
 	auth := &ClaudeAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		calls++
@@ -120,9 +120,18 @@ func TestFetchOAuthUsageWithLimitResetsUsesSameReadAndBeta(t *testing.T) {
 		}
 		return jsonResponse(req, `{"five_hour":{"utilization":0,"resets_at":null},"cedar_ember":{"eligible":false,"ineligible_reason":"surface","grants":[]}}`), nil
 	})}}
-	_, usage, err := auth.FetchOAuthUsageWithLimitResets(context.Background(), "fixture-only")
+	usage, err := auth.FetchOAuthLimitResets(context.Background(), "fixture-only")
 	if err != nil || calls != 1 || !strings.Contains(string(usage), `"cedar_ember"`) {
 		t.Fatalf("calls=%d err=%v", calls, err)
+	}
+}
+
+func TestFetchOAuthLimitResetsRejectsBodyWithoutUsageWindows(t *testing.T) {
+	auth := &ClaudeAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(req, `{"cedar_ember":{"eligible":false,"grants":[]}}`), nil
+	})}}
+	if _, err := auth.FetchOAuthLimitResets(context.Background(), "fixture-only"); err == nil {
+		t.Fatal("reset-only response accepted without usage windows")
 	}
 }
 

@@ -40,6 +40,9 @@ func (h *Handler) GetClaudeLimitResets(c *gin.Context) {
 			seat := claudeLimitResetSeat{Name: name, AuthIndex: auth.Index, ClaudeLimitResetsSnapshot: h.authManager.ClaudeLimitResetsCached(auth.ID)}
 			quota, _ := h.authManager.ClaudeQuotaCached(auth.ID)
 			for windowName, window := range quota.Windows {
+				if quota.Stale {
+					continue
+				}
 				name := strings.ToLower(strings.TrimSpace(windowName))
 				if (name == "fable" || name == "fable 5" || name == "seven_day_fable") && (window.ResetsAt.IsZero() || window.ResetsAt.After(now)) {
 					value := window.Utilization
