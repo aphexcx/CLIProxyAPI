@@ -9,6 +9,7 @@ import {
   matchClaudeLimitResetSeat,
   observeClaudeResetCredentials,
   invalidateClaudeLimitResets,
+  subscribeClaudeResetCredentials,
   type ClaudeLimitResetSeat,
 } from '@/services/api/claudeLimitResets';
 import { ClaudeLimitResetsView } from '@/features/quota/providers/claude/ClaudeLimitResets';
@@ -152,6 +153,44 @@ test('a reset read spanning a credential replacement is discarded', async () => 
     ranking_rule: 'new',
   });
   expect((await readClaudeLimitResets()).ranking_rule).toBe('new');
+});
+
+test('a mounted list subscriber follows background token rotation and account replacement', async () => {
+  let generation = '3:1';
+  let email = 'first@example.invalid';
+  const get = spyOn(apiClient, 'get').mockImplementation(async (path) =>
+    path === '/credentials'
+      ? { files: [{ name: seat.name, type: 'claude', email, credential_generation: generation }] }
+      : { seats: [{ ...seat, credential_generation: generation }], ranking_rule: 'fixture' }
+  );
+  mocks.push(get);
+  let files = (await authFilesApi.list()).files;
+  let refresh = Promise.resolve();
+  // QuotaPage retains this subscription while mounted; a background cache read
+  // must update the full card identity, including the account label.
+  const release = subscribeClaudeResetCredentials(() => {
+    refresh = authFilesApi.list().then((response) => {
+      files = response.files;
+    });
+  });
+  try {
+    for (const next of ['3:2', '3:3']) {
+      generation = next;
+      if (next === '3:3') email = 'replacement@example.invalid';
+      await authFilesApi.list(); // The shared five-second cache reader.
+      await refresh;
+      const resets = await readClaudeLimitResets();
+      expect(files[0].email).toBe(email);
+      expect(files[0].credential_generation).toBe(generation);
+      expect(
+        matchClaudeLimitResetSeat(resets.seats, files[0].name, files[0].credential_generation)
+          ?.best_click_rank
+      ).toBe(1);
+    }
+    expect(get.mock.calls.filter(([path]) => path === '/credentials')).toHaveLength(5);
+  } finally {
+    release();
+  }
 });
 
 test('two failed refreshes display elapsed time from the last good read', () => {
