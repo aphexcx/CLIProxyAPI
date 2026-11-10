@@ -28,6 +28,53 @@ func (p *scheduledResetPoller) PollLimitResets(context.Context, *Auth) (json.Raw
 	return nil, &Error{HTTPStatus: 429}
 }
 
+type successfulScheduledResetPoller struct{ scheduledResetPoller }
+
+func (p *successfulScheduledResetPoller) PollLimitResets(context.Context, *Auth) (json.RawMessage, error) {
+	p.attempts <- resetReadAttempt{reset: true, at: time.Now()}
+	return json.RawMessage(limitResetsFixture), nil
+}
+
+func TestLimitResetsPreserveRoutineReadsAtLongIntervals(t *testing.T) {
+	for _, interval := range []time.Duration{time.Minute, 15 * time.Minute, 30 * time.Minute} {
+		t.Run(interval.String(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m := NewManager(nil, nil, nil)
+				cfg := &config.Config{}
+				cfg.Claude.Quota.Enabled = true
+				cfg.Claude.Quota.PollInterval = interval.String()
+				m.SetConfig(cfg)
+				if _, err := m.Register(context.Background(), &Auth{ID: "fixture", Provider: "claude", Status: StatusActive, Metadata: map[string]any{"access_token": "fixture-only"}}); err != nil {
+					t.Fatal(err)
+				}
+				p := &successfulScheduledResetPoller{scheduledResetPoller{attempts: make(chan resetReadAttempt, 16)}}
+				m.RegisterExecutor(p)
+				m.StartQuotaPolling(context.Background())
+				defer m.StopQuotaPolling()
+				var previous resetReadAttempt
+				resets := 0
+				for i := 0; i < 8; i++ {
+					attempt := <-p.attempts
+					if attempt.reset && (i == 0 || previous.reset) {
+						t.Fatal("reset reads displaced the next routine usage read")
+					}
+					if i > 0 && attempt.at.Sub(previous.at) < interval {
+						t.Fatalf("usage requests only %s apart", attempt.at.Sub(previous.at))
+					}
+					if attempt.reset {
+						resets++
+					}
+					previous = attempt
+					synctest.Wait()
+				}
+				if resets == 0 {
+					t.Fatal("no reset status was read")
+				}
+			})
+		})
+	}
+}
+
 func TestLimitResetsShareSpacedSlotsAndBackOff429(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := NewManager(nil, nil, nil)
