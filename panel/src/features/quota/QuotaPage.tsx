@@ -88,39 +88,42 @@ export function QuotaPage() {
   const sessionGeneration = useQuotaStore((state) => state.cacheGeneration);
   const [filesGeneration, setFilesGeneration] = useState<number | null>(null);
   const listRequestRef = useRef(0);
-  const loadFiles = useCallback(async () => {
-    const requestId = ++listRequestRef.current;
-    if (connectionStatus !== 'connected') {
-      setFiles([]);
-      setFilesGeneration(null);
-      setLoading(false);
-      return;
-    }
-    const isCurrent = () =>
-      requestId === listRequestRef.current &&
-      sessionGeneration === useQuotaStore.getState().cacheGeneration;
-    setLoading(true);
-    setError('');
-    try {
-      const data = await authFilesApi.list();
-      if (!isCurrent()) return;
-      setFiles(data?.files || []);
-      setFilesGeneration(sessionGeneration);
-    } catch (err: unknown) {
-      if (!isCurrent()) return;
-      const message = err instanceof Error ? err.message : t('notification.refresh_failed');
-      setError(message);
-    } finally {
-      if (isCurrent()) setLoading(false);
-    }
-  }, [connectionStatus, sessionGeneration, t]);
+  const loadFiles = useCallback(
+    async (background = false) => {
+      const requestId = ++listRequestRef.current;
+      if (connectionStatus !== 'connected') {
+        setFiles([]);
+        setFilesGeneration(null);
+        setLoading(false);
+        return;
+      }
+      const isCurrent = () =>
+        requestId === listRequestRef.current &&
+        sessionGeneration === useQuotaStore.getState().cacheGeneration;
+      if (!background) setLoading(true);
+      setError('');
+      try {
+        const data = await authFilesApi.list();
+        if (!isCurrent()) return;
+        setFiles(data?.files || []);
+        setFilesGeneration(sessionGeneration);
+      } catch (err: unknown) {
+        if (!isCurrent()) return;
+        const message = err instanceof Error ? err.message : t('notification.refresh_failed');
+        setError(message);
+      } finally {
+        if (isCurrent()) setLoading(false);
+      }
+    },
+    [connectionStatus, sessionGeneration, t]
+  );
 
   useHeaderRefresh(loadFiles);
 
   // A background cache read can observe token rotation or same-name replacement.
   // Reload the full card identity too; changing only the reset generation could
   // show a new account's observations under the old account's label.
-  useEffect(() => subscribeClaudeResetCredentials(() => void loadFiles()), [loadFiles]);
+  useEffect(() => subscribeClaudeResetCredentials(() => void loadFiles(true)), [loadFiles]);
 
   useEffect(() => {
     void loadFiles();
