@@ -24,7 +24,7 @@ func TestDetectClaudeCodeRequestAcceptsUserAgentFields(t *testing.T) {
 				path = "count_tokens"
 			}
 			t.Run(testCase.name+"/"+path, func(t *testing.T) {
-				headers := confirmedClaudeCodeHeaders()
+				headers := measuredClaudeCodeHelperHeaders("claude-code-20250219,interleaved-thinking-2025-05-14")
 				headers.Set("User-Agent", testCase.userAgent)
 				payload := []byte(`{}`)
 				if !countTokens {
@@ -122,6 +122,10 @@ func TestDetectClaudeCodeRequestUserAgentFieldsKeepNativeGuards(t *testing.T) {
 			cfg := &config.Config{}
 			if testCase.allowEntrypoint {
 				cfg.ClaudeHeaderDefaults.NativeEntrypoints = []string{"other-client"}
+				headers.Set("X-Stainless-Lang", "js")
+				headers.Set("X-Stainless-Runtime", "node")
+				headers.Set("X-Stainless-Package-Version", "0.128.0")
+				headers.Set("X-Stainless-Runtime-Version", "v26.12.1")
 			}
 			detection := DetectClaudeCodeRequest(headers, payload, false, cfg)
 			if detection.Confirmed != testCase.wantConfirmed {

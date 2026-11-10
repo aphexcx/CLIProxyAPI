@@ -30,7 +30,7 @@ import (
 
 func resolveIncomingClaudeHeaders(ctx context.Context, incoming http.Header) http.Header {
 	resolved := make(http.Header)
-	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
+	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil && ginCtx.Request.Header != nil {
 		resolved = ginCtx.Request.Header.Clone()
 	}
 	for key, values := range incoming {
@@ -39,8 +39,12 @@ func resolveIncomingClaudeHeaders(ctx context.Context, incoming http.Header) htt
 	return resolved
 }
 
-func detectIncomingClaudeCodeRequest(ctx context.Context, incoming http.Header, payload []byte, countTokens bool, cfg *config.Config) (http.Header, helps.ClaudeCodeRequestDetection) {
+func detectIncomingClaudeCodeRequest(ctx context.Context, incoming http.Header, payload []byte, countTokens bool, cfg *config.Config, auth *cliproxyauth.Auth, apiKey string) (http.Header, helps.ClaudeCodeRequestDetection) {
 	resolved := resolveIncomingClaudeHeaders(ctx, incoming)
+	policy, _ := resolveClaudeWirePolicy(cfg, auth, apiKey, false)
+	if !policy.Cloak {
+		return resolved, helps.DetectClaudeCodeRequestLegacy(resolved, payload, countTokens, cfg)
+	}
 	return resolved, helps.DetectClaudeCodeRequest(resolved, payload, countTokens, cfg)
 }
 
@@ -403,7 +407,7 @@ func claudeCCHFallbackBillingHeader(ctx context.Context, cfg *config.Config, pay
 	isSubagent := helps.IsClaudeSubagentRequest(incomingHeaders, payload)
 	return generateBillingHeader(
 		true,
-		helps.DefaultClaudeVersion(cfg),
+		helps.ClaudeRequestVersion(incomingHeaders, cfg),
 		claudeBillingFingerprintMessageText(payload),
 		entrypoint,
 		getWorkloadFromContext(ctx),
@@ -413,7 +417,7 @@ func claudeCCHFallbackBillingHeader(ctx context.Context, cfg *config.Config, pay
 	)
 }
 
-func claudeCCHFallbackBillingHeaderDoc(ctx context.Context, cfg *config.Config, doc *ojson.Doc, entrypoint string) string {
+func claudeCCHFallbackBillingHeaderDoc(ctx context.Context, cfg *config.Config, doc *ojson.Doc, entrypoint, version string) string {
 	isProbeOrHelper := isClaudeProbeOrHelperRequestDoc(doc)
 	prevReq, promptID := extractClaudeBillingTagsDoc(doc)
 	if !isProbeOrHelper {
@@ -427,9 +431,12 @@ func claudeCCHFallbackBillingHeaderDoc(ctx context.Context, cfg *config.Config, 
 	}
 	incomingHeaders := resolveIncomingClaudeHeaders(ctx, helps.IncomingHeadersFromContext(ctx))
 	isSubagent := isClaudeSubagentRequestDoc(incomingHeaders, doc)
+	if version == "" {
+		version = helps.DefaultClaudeVersion(cfg)
+	}
 	return generateBillingHeader(
 		true,
-		helps.DefaultClaudeVersion(cfg),
+		version,
 		claudeBillingFingerprintMessageTextDoc(doc),
 		entrypoint,
 		getWorkloadFromContext(ctx),
@@ -2544,7 +2551,7 @@ func applyCloakingInternalDoc(
 		}
 	}
 
-	billingVersion := helps.DefaultClaudeVersion(cfg)
+	billingVersion := helps.ClaudeRequestVersion(resolveIncomingClaudeHeaders(ctx, helps.IncomingHeadersFromContext(ctx)), cfg)
 	workload := getWorkloadFromContext(ctx)
 
 	isProbeOrHelper := isClaudeProbeOrHelperRequestDoc(doc)

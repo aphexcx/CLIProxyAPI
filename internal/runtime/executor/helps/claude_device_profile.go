@@ -667,6 +667,32 @@ func ApplyClaudeDefaultDeviceProfileHeaders(r *http.Request, cfg *config.Config)
 	ApplyClaudeDeviceProfileHeaders(r, defaultClaudeDeviceProfile(cfg))
 }
 
+// ClaudeRequestVersion selects the same loaded baseline or verified newer version
+// for billing and HTTP headers. Software verification does not depend on the body.
+func ClaudeRequestVersion(headers http.Header, cfg *config.Config) string {
+	if version := DetectClaudeCodeRequest(headers, nil, false, cfg).PassthroughVersion; version != "" {
+		return version
+	}
+	return DefaultClaudeVersion(cfg)
+}
+
+// ApplyClaudeRequestVersionHeaders changes only software fields, after the seat's
+// stable platform identity has been resolved. No client version enters the cache.
+func ApplyClaudeRequestVersionHeaders(r *http.Request, headers http.Header, detection ClaudeCodeRequestDetection, cloaked bool) {
+	if r == nil {
+		return
+	}
+	if detection.PassthroughVersion != "" {
+		for _, name := range []string{"User-Agent", "X-Stainless-Package-Version", "X-Stainless-Runtime-Version"} {
+			r.Header.Set(name, headerValue(headers, name))
+		}
+		if cloaked {
+			// The generated prompt always identifies the CLI entrypoint.
+			r.Header.Set("User-Agent", "claude-cli/"+detection.PassthroughVersion+" (external, cli)")
+		}
+	}
+}
+
 func ApplyClaudeLegacyDeviceHeaders(r *http.Request, ginHeaders http.Header, cfg *config.Config, confirmedClaudeCode bool, keepNewerVersions ...bool) {
 	if r == nil {
 		return

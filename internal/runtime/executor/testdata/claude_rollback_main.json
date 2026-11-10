@@ -1,0 +1,2218 @@
+{
+  "base_sha": "ca4382d09a1338ba000fc1d7bdc94ebe97b2421a",
+  "capture": "Built main server; loopback HTTP; synthetic credentials only",
+  "cases": [
+    {
+      "name": "legacy/newer_patch",
+      "stabilize": false,
+      "profile": "claude-code-cli",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "claude-cli/2.1.400 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.400 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,message-threads-2026-08-12,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.140.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v27.0.0",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+          },
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "legacy/newer_minor",
+      "stabilize": false,
+      "profile": "claude-code-cli",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "claude-cli/2.2.0 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.2.0.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.321 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,server-side-fallback-2026-06-01,fallback-credit-2026-06-01,extended-cache-ttl-2025-04-11,message-threads-2026-08-12",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "203bc9fd-5227-53e6-b77b-9595afb17b91",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.128.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v26.12.1",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-11-09.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n\n"
+                },
+                {
+                  "type": "text",
+                  "text": "hi",
+                  "cache_control": {
+                    "type": "ephemeral",
+                    "ttl": "1h"
+                  }
+                }
+              ]
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.321.cf7; cc_entrypoint=cli;"
+            },
+            {
+              "type": "text",
+              "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+              "cache_control": {
+                "type": "ephemeral",
+                "ttl": "1h"
+              }
+            },
+            {
+              "type": "text",
+              "text": "# Reporting outcomes\n\nReport what actually happened, not what you intended. When you say something is done, sent, saved, fixed, or verified, that claim must rest on a result you observed in this session \u2014 tool output, the file as it now reads, the page as it now loads \u2014 not on what the step should have produced. If you did not check, say you did not check. If any step failed, was skipped, or came back different from what you expected, say so in the first sentence of your report, before anything else, even when the rest of the work succeeded. Never quietly work around a failure in a way that makes it look resolved; a problem the user can see is recoverable, one your summary hides is not. When you stop before the task is complete, your first line says so plainly and names what is left. Do not describe partial work as done, and do not let a summary read as more certain than the evidence behind it."
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"203bc9fd-5227-53e6-b77b-9595afb17b91\"}"
+          },
+          "fallbacks": [
+            {
+              "model": "claude-opus-5"
+            }
+          ],
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "legacy/older",
+      "stabilize": false,
+      "profile": "claude-code-cli",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "claude-cli/2.1.100 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.321 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,server-side-fallback-2026-06-01,fallback-credit-2026-06-01,extended-cache-ttl-2025-04-11,message-threads-2026-08-12",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "610f0e6c-d581-5fd0-96fe-c1db482c6842",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.128.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v26.12.1",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-11-09.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n\n"
+                },
+                {
+                  "type": "text",
+                  "text": "hi",
+                  "cache_control": {
+                    "type": "ephemeral",
+                    "ttl": "1h"
+                  }
+                }
+              ]
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.321.cf7; cc_entrypoint=cli;"
+            },
+            {
+              "type": "text",
+              "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+              "cache_control": {
+                "type": "ephemeral",
+                "ttl": "1h"
+              }
+            },
+            {
+              "type": "text",
+              "text": "# Reporting outcomes\n\nReport what actually happened, not what you intended. When you say something is done, sent, saved, fixed, or verified, that claim must rest on a result you observed in this session \u2014 tool output, the file as it now reads, the page as it now loads \u2014 not on what the step should have produced. If you did not check, say you did not check. If any step failed, was skipped, or came back different from what you expected, say so in the first sentence of your report, before anything else, even when the rest of the work succeeded. Never quietly work around a failure in a way that makes it look resolved; a problem the user can see is recoverable, one your summary hides is not. When you stop before the task is complete, your first line says so plainly and names what is left. Do not describe partial work as done, and do not let a summary read as more certain than the evidence behind it."
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"610f0e6c-d581-5fd0-96fe-c1db482c6842\"}"
+          },
+          "fallbacks": [
+            {
+              "model": "claude-opus-5"
+            }
+          ],
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "legacy/curl",
+      "stabilize": false,
+      "profile": "claude-code-cli",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "curl/8.0",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.321 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,server-side-fallback-2026-06-01,fallback-credit-2026-06-01,extended-cache-ttl-2025-04-11",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "610f0e6c-d581-5fd0-96fe-c1db482c6842",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.128.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v26.12.1",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-11-09.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n\n"
+                },
+                {
+                  "type": "text",
+                  "text": "hi",
+                  "cache_control": {
+                    "type": "ephemeral",
+                    "ttl": "1h"
+                  }
+                }
+              ]
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.321.cf7; cc_entrypoint=cli;"
+            },
+            {
+              "type": "text",
+              "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+              "cache_control": {
+                "type": "ephemeral",
+                "ttl": "1h"
+              }
+            },
+            {
+              "type": "text",
+              "text": "# Reporting outcomes\n\nReport what actually happened, not what you intended. When you say something is done, sent, saved, fixed, or verified, that claim must rest on a result you observed in this session \u2014 tool output, the file as it now reads, the page as it now loads \u2014 not on what the step should have produced. If you did not check, say you did not check. If any step failed, was skipped, or came back different from what you expected, say so in the first sentence of your report, before anything else, even when the rest of the work succeeded. Never quietly work around a failure in a way that makes it look resolved; a problem the user can see is recoverable, one your summary hides is not. When you stop before the task is complete, your first line says so plainly and names what is left. Do not describe partial work as done, and do not let a summary read as more certain than the evidence behind it."
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"610f0e6c-d581-5fd0-96fe-c1db482c6842\"}"
+          },
+          "fallbacks": [
+            {
+              "model": "claude-opus-5"
+            }
+          ],
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "legacy/management",
+      "stabilize": false,
+      "profile": "claude-code-cli",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.321 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,server-side-fallback-2026-06-01,fallback-credit-2026-06-01,extended-cache-ttl-2025-04-11",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "610f0e6c-d581-5fd0-96fe-c1db482c6842",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.128.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v26.12.1",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-11-09.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n\n"
+                },
+                {
+                  "type": "text",
+                  "text": "hi",
+                  "cache_control": {
+                    "type": "ephemeral",
+                    "ttl": "1h"
+                  }
+                }
+              ]
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.321.cf7; cc_entrypoint=cli;"
+            },
+            {
+              "type": "text",
+              "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+              "cache_control": {
+                "type": "ephemeral",
+                "ttl": "1h"
+              }
+            },
+            {
+              "type": "text",
+              "text": "# Reporting outcomes\n\nReport what actually happened, not what you intended. When you say something is done, sent, saved, fixed, or verified, that claim must rest on a result you observed in this session \u2014 tool output, the file as it now reads, the page as it now loads \u2014 not on what the step should have produced. If you did not check, say you did not check. If any step failed, was skipped, or came back different from what you expected, say so in the first sentence of your report, before anything else, even when the rest of the work succeeded. Never quietly work around a failure in a way that makes it look resolved; a problem the user can see is recoverable, one your summary hides is not. When you stop before the task is complete, your first line says so plainly and names what is left. Do not describe partial work as done, and do not let a summary read as more certain than the evidence behind it."
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"610f0e6c-d581-5fd0-96fe-c1db482c6842\"}"
+          },
+          "fallbacks": [
+            {
+              "model": "claude-opus-5"
+            }
+          ],
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "legacy/spoof",
+      "stabilize": false,
+      "profile": "claude-code-cli",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "claude-cli/2.1.400 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "python",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.400 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,message-threads-2026-08-12,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.140.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "python",
+          "x-stainless-runtime-version": "v27.0.0",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+          },
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "legacy/sdk_cli",
+      "stabilize": false,
+      "profile": "claude-code-cli",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "claude-cli/2.1.400 (external, sdk-cli, agent-sdk/0.3.300)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=sdk-cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.400 (external, sdk-cli, agent-sdk/0.3.300)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,message-threads-2026-08-12,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.140.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v27.0.0",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=sdk-cli;"
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+          },
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "legacy/haiku_helper",
+      "stabilize": false,
+      "profile": "claude-code-cli",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "claude-cli/2.1.400 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.321 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,thinking-token-count-2026-05-13,extended-cache-ttl-2025-04-11",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "138f9cfd-a72f-549d-8b2a-f1cfa1ab6559",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.128.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v26.12.1",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-haiku-4-5-20251001",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-11-09.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n\n"
+                },
+                {
+                  "type": "text",
+                  "text": "hi",
+                  "cache_control": {
+                    "type": "ephemeral",
+                    "ttl": "1h"
+                  }
+                }
+              ]
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"138f9cfd-a72f-549d-8b2a-f1cfa1ab6559\"}"
+          },
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.321.cf7; cc_entrypoint=cli;"
+            },
+            {
+              "type": "text",
+              "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+              "cache_control": {
+                "type": "ephemeral",
+                "ttl": "1h"
+              }
+            }
+          ],
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "legacy/api_key",
+      "stabilize": false,
+      "profile": "",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "claude-cli/2.1.400 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.400 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.140.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v27.0.0",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+          },
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "legacy/never_minor",
+      "stabilize": false,
+      "profile": "claude-code-cli",
+      "cloak": "never",
+      "headers": {
+        "User-Agent": "claude-cli/2.2.0 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.2.0.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.321 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,extended-cache-ttl-2025-04-11,message-threads-2026-08-12",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "203bc9fd-5227-53e6-b77b-9595afb17b91",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.128.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v26.12.1",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "hi",
+                  "cache_control": {
+                    "type": "ephemeral",
+                    "ttl": "1h"
+                  }
+                }
+              ]
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.2.0.abc; cc_entrypoint=cli;",
+              "cache_control": {
+                "type": "ephemeral",
+                "ttl": "1h"
+              }
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"203bc9fd-5227-53e6-b77b-9595afb17b91\"}"
+          },
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "legacy/never_spoof",
+      "stabilize": false,
+      "profile": "claude-code-cli",
+      "cloak": "never",
+      "headers": {
+        "User-Agent": "claude-cli/2.1.400 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "python",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.400 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,message-threads-2026-08-12,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.140.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "python",
+          "x-stainless-runtime-version": "v27.0.0",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+          },
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "legacy/caller_owned_newer",
+      "stabilize": false,
+      "profile": "",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "claude-cli/2.1.400 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "thinking": {
+          "type": "adaptive"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.400 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "identity",
+          "anthropic-beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.140.0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v27.0.0"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "hi",
+                  "cache_control": {
+                    "type": "ephemeral"
+                  }
+                }
+              ]
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;",
+              "cache_control": {
+                "type": "ephemeral"
+              }
+            }
+          ],
+          "thinking": {
+            "type": "adaptive"
+          },
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "stabilized/newer_patch",
+      "stabilize": true,
+      "profile": "claude-code-cli",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "claude-cli/2.1.400 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.321 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,message-threads-2026-08-12,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.128.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v26.12.1",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+          },
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "stabilized/newer_minor",
+      "stabilize": true,
+      "profile": "claude-code-cli",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "claude-cli/2.2.0 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.2.0.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.321 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,server-side-fallback-2026-06-01,fallback-credit-2026-06-01,extended-cache-ttl-2025-04-11,message-threads-2026-08-12",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "203bc9fd-5227-53e6-b77b-9595afb17b91",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.128.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v26.12.1",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-11-09.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n\n"
+                },
+                {
+                  "type": "text",
+                  "text": "hi",
+                  "cache_control": {
+                    "type": "ephemeral",
+                    "ttl": "1h"
+                  }
+                }
+              ]
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.321.cf7; cc_entrypoint=cli;"
+            },
+            {
+              "type": "text",
+              "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+              "cache_control": {
+                "type": "ephemeral",
+                "ttl": "1h"
+              }
+            },
+            {
+              "type": "text",
+              "text": "# Reporting outcomes\n\nReport what actually happened, not what you intended. When you say something is done, sent, saved, fixed, or verified, that claim must rest on a result you observed in this session \u2014 tool output, the file as it now reads, the page as it now loads \u2014 not on what the step should have produced. If you did not check, say you did not check. If any step failed, was skipped, or came back different from what you expected, say so in the first sentence of your report, before anything else, even when the rest of the work succeeded. Never quietly work around a failure in a way that makes it look resolved; a problem the user can see is recoverable, one your summary hides is not. When you stop before the task is complete, your first line says so plainly and names what is left. Do not describe partial work as done, and do not let a summary read as more certain than the evidence behind it."
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"203bc9fd-5227-53e6-b77b-9595afb17b91\"}"
+          },
+          "fallbacks": [
+            {
+              "model": "claude-opus-5"
+            }
+          ],
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "stabilized/older",
+      "stabilize": true,
+      "profile": "claude-code-cli",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "claude-cli/2.1.100 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.321 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,server-side-fallback-2026-06-01,fallback-credit-2026-06-01,extended-cache-ttl-2025-04-11,message-threads-2026-08-12",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "610f0e6c-d581-5fd0-96fe-c1db482c6842",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.128.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v26.12.1",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-11-09.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n\n"
+                },
+                {
+                  "type": "text",
+                  "text": "hi",
+                  "cache_control": {
+                    "type": "ephemeral",
+                    "ttl": "1h"
+                  }
+                }
+              ]
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.321.cf7; cc_entrypoint=cli;"
+            },
+            {
+              "type": "text",
+              "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+              "cache_control": {
+                "type": "ephemeral",
+                "ttl": "1h"
+              }
+            },
+            {
+              "type": "text",
+              "text": "# Reporting outcomes\n\nReport what actually happened, not what you intended. When you say something is done, sent, saved, fixed, or verified, that claim must rest on a result you observed in this session \u2014 tool output, the file as it now reads, the page as it now loads \u2014 not on what the step should have produced. If you did not check, say you did not check. If any step failed, was skipped, or came back different from what you expected, say so in the first sentence of your report, before anything else, even when the rest of the work succeeded. Never quietly work around a failure in a way that makes it look resolved; a problem the user can see is recoverable, one your summary hides is not. When you stop before the task is complete, your first line says so plainly and names what is left. Do not describe partial work as done, and do not let a summary read as more certain than the evidence behind it."
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"610f0e6c-d581-5fd0-96fe-c1db482c6842\"}"
+          },
+          "fallbacks": [
+            {
+              "model": "claude-opus-5"
+            }
+          ],
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "stabilized/curl",
+      "stabilize": true,
+      "profile": "claude-code-cli",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "curl/8.0",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.321 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,server-side-fallback-2026-06-01,fallback-credit-2026-06-01,extended-cache-ttl-2025-04-11",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "610f0e6c-d581-5fd0-96fe-c1db482c6842",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.128.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v26.12.1",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-11-09.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n\n"
+                },
+                {
+                  "type": "text",
+                  "text": "hi",
+                  "cache_control": {
+                    "type": "ephemeral",
+                    "ttl": "1h"
+                  }
+                }
+              ]
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.321.cf7; cc_entrypoint=cli;"
+            },
+            {
+              "type": "text",
+              "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+              "cache_control": {
+                "type": "ephemeral",
+                "ttl": "1h"
+              }
+            },
+            {
+              "type": "text",
+              "text": "# Reporting outcomes\n\nReport what actually happened, not what you intended. When you say something is done, sent, saved, fixed, or verified, that claim must rest on a result you observed in this session \u2014 tool output, the file as it now reads, the page as it now loads \u2014 not on what the step should have produced. If you did not check, say you did not check. If any step failed, was skipped, or came back different from what you expected, say so in the first sentence of your report, before anything else, even when the rest of the work succeeded. Never quietly work around a failure in a way that makes it look resolved; a problem the user can see is recoverable, one your summary hides is not. When you stop before the task is complete, your first line says so plainly and names what is left. Do not describe partial work as done, and do not let a summary read as more certain than the evidence behind it."
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"610f0e6c-d581-5fd0-96fe-c1db482c6842\"}"
+          },
+          "fallbacks": [
+            {
+              "model": "claude-opus-5"
+            }
+          ],
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "stabilized/management",
+      "stabilize": true,
+      "profile": "claude-code-cli",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.321 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,server-side-fallback-2026-06-01,fallback-credit-2026-06-01,extended-cache-ttl-2025-04-11",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "610f0e6c-d581-5fd0-96fe-c1db482c6842",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.128.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v26.12.1",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-11-09.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n\n"
+                },
+                {
+                  "type": "text",
+                  "text": "hi",
+                  "cache_control": {
+                    "type": "ephemeral",
+                    "ttl": "1h"
+                  }
+                }
+              ]
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.321.cf7; cc_entrypoint=cli;"
+            },
+            {
+              "type": "text",
+              "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+              "cache_control": {
+                "type": "ephemeral",
+                "ttl": "1h"
+              }
+            },
+            {
+              "type": "text",
+              "text": "# Reporting outcomes\n\nReport what actually happened, not what you intended. When you say something is done, sent, saved, fixed, or verified, that claim must rest on a result you observed in this session \u2014 tool output, the file as it now reads, the page as it now loads \u2014 not on what the step should have produced. If you did not check, say you did not check. If any step failed, was skipped, or came back different from what you expected, say so in the first sentence of your report, before anything else, even when the rest of the work succeeded. Never quietly work around a failure in a way that makes it look resolved; a problem the user can see is recoverable, one your summary hides is not. When you stop before the task is complete, your first line says so plainly and names what is left. Do not describe partial work as done, and do not let a summary read as more certain than the evidence behind it."
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"610f0e6c-d581-5fd0-96fe-c1db482c6842\"}"
+          },
+          "fallbacks": [
+            {
+              "model": "claude-opus-5"
+            }
+          ],
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "stabilized/spoof",
+      "stabilize": true,
+      "profile": "claude-code-cli",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "claude-cli/2.1.400 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "python",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.321 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,message-threads-2026-08-12,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.128.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "python",
+          "x-stainless-runtime-version": "v26.12.1",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+          },
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "stabilized/sdk_cli",
+      "stabilize": true,
+      "profile": "claude-code-cli",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "claude-cli/2.1.400 (external, sdk-cli, agent-sdk/0.3.300)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=sdk-cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.321 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,message-threads-2026-08-12,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.128.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v26.12.1",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=sdk-cli;"
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+          },
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "stabilized/haiku_helper",
+      "stabilize": true,
+      "profile": "claude-code-cli",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "claude-cli/2.1.400 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.321 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,thinking-token-count-2026-05-13,extended-cache-ttl-2025-04-11",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "138f9cfd-a72f-549d-8b2a-f1cfa1ab6559",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.128.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v26.12.1",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-haiku-4-5-20251001",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-11-09.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n\n"
+                },
+                {
+                  "type": "text",
+                  "text": "hi",
+                  "cache_control": {
+                    "type": "ephemeral",
+                    "ttl": "1h"
+                  }
+                }
+              ]
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"138f9cfd-a72f-549d-8b2a-f1cfa1ab6559\"}"
+          },
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.321.cf7; cc_entrypoint=cli;"
+            },
+            {
+              "type": "text",
+              "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+              "cache_control": {
+                "type": "ephemeral",
+                "ttl": "1h"
+              }
+            }
+          ],
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "stabilized/api_key",
+      "stabilize": true,
+      "profile": "",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "claude-cli/2.1.400 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.321 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.128.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v26.12.1",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+          },
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "stabilized/never_minor",
+      "stabilize": true,
+      "profile": "claude-code-cli",
+      "cloak": "never",
+      "headers": {
+        "User-Agent": "claude-cli/2.2.0 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.2.0.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.321 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,extended-cache-ttl-2025-04-11,message-threads-2026-08-12",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "203bc9fd-5227-53e6-b77b-9595afb17b91",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.128.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v26.12.1",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "hi",
+                  "cache_control": {
+                    "type": "ephemeral",
+                    "ttl": "1h"
+                  }
+                }
+              ]
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.2.0.abc; cc_entrypoint=cli;",
+              "cache_control": {
+                "type": "ephemeral",
+                "ttl": "1h"
+              }
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"203bc9fd-5227-53e6-b77b-9595afb17b91\"}"
+          },
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "stabilized/never_spoof",
+      "stabilize": true,
+      "profile": "claude-code-cli",
+      "cloak": "never",
+      "headers": {
+        "User-Agent": "claude-cli/2.1.400 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "python",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.400 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,message-threads-2026-08-12,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "connection": "keep-alive",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.140.0",
+          "x-stainless-retry-count": "0",
+          "x-stainless-runtime": "python",
+          "x-stainless-runtime-version": "v27.0.0",
+          "x-stainless-timeout": "600"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+            }
+          ],
+          "metadata": {
+            "user_id": "{\"device_id\":\"4ce48b90d5a1f71faf5139bbb16638ba7603c80541d4983d179ba0286727940c\",\"account_uuid\":\"95aa3680-a6ba-58b6-93b1-d0ef0ae13e9a\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+          },
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "stabilized/caller_owned_newer",
+      "stabilize": true,
+      "profile": "",
+      "cloak": "",
+      "headers": {
+        "User-Agent": "claude-cli/2.1.400 (external, cli)",
+        "X-App": "cli",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Package-Version": "0.140.0",
+        "X-Stainless-Runtime-Version": "v27.0.0",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Arch": "x64",
+        "Anthropic-Version": "2023-06-01",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "Anthropic-Beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+        "Accept-Encoding": "identity"
+      },
+      "body": {
+        "model": "claude-fable-5-2",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"
+          }
+        ],
+        "thinking": {
+          "type": "adaptive"
+        }
+      },
+      "expected": {
+        "headers": {
+          "user-agent": "claude-cli/2.1.400 (external, cli)",
+          "accept": "application/json",
+          "accept-encoding": "identity",
+          "anthropic-beta": "claude-code-20250219,message-threads-2026-08-12,effort-2025-11-24",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+          "x-app": "cli",
+          "x-stainless-arch": "x64",
+          "x-stainless-lang": "js",
+          "x-stainless-os": "Linux",
+          "x-stainless-package-version": "0.140.0",
+          "x-stainless-runtime": "node",
+          "x-stainless-runtime-version": "v27.0.0"
+        },
+        "body": {
+          "model": "claude-fable-5-2",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "hi",
+                  "cache_control": {
+                    "type": "ephemeral"
+                  }
+                }
+              ]
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;",
+              "cache_control": {
+                "type": "ephemeral"
+              }
+            }
+          ],
+          "thinking": {
+            "type": "adaptive"
+          },
+          "stream": false
+        }
+      }
+    }
+  ]
+}

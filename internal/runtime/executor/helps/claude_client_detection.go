@@ -156,6 +156,9 @@ type ClaudeCodeRequestDetection struct {
 	Entrypoint      string
 	Subclient       string
 	AgentSDKVersion string
+	// PassthroughVersion is set only for a newer native software tuple verified
+	// against the measured JS/Node header shape, with passthrough enabled.
+	PassthroughVersion string
 }
 
 // DetectClaudeCodeRequest first mirrors CCH's strong-signal contract, then
@@ -170,6 +173,17 @@ func DetectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bo
 	if len(configs) > 0 {
 		cfg = configs[0]
 	}
+	enabled := cfg == nil || cfg.ClaudeHeaderDefaults.PassthroughNewerClient == nil || *cfg.ClaudeHeaderDefaults.PassthroughNewerClient
+	return detectClaudeCodeRequest(headers, payload, countTokens, cfg, enabled)
+}
+
+// DetectClaudeCodeRequestLegacy preserves the pre-passthrough detector for
+// caller-owned requests and credentials that disable cloaking.
+func DetectClaudeCodeRequestLegacy(headers http.Header, payload []byte, countTokens bool, cfg *config.Config) ClaudeCodeRequestDetection {
+	return detectClaudeCodeRequest(headers, payload, countTokens, cfg, false)
+}
+
+func detectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bool, cfg *config.Config, newerClientPolicy bool) ClaudeCodeRequestDetection {
 	userAgent, validUserAgent := parseClaudeCodeUserAgent(headerValue(headers, "User-Agent"))
 	entrypoint := userAgent.entrypoint
 	subclient := claudeSubclientForEntrypoint(entrypoint, cfg)
@@ -185,6 +199,28 @@ func DetectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bo
 	metadataUserID := ojson.GetBytesNoCopy(payload, "metadata.user_id")
 	detection.MetadataUserID = metadataUserID.Exists() && metadataUserID.Type == ojson.String && isValidUserID(metadataUserID.String())
 	detection.NativeClient = isNativeClaudeEntrypoint(entrypoint, cfg)
+	baseline := defaultClaudeDeviceProfile(cfg)
+	newer := validUserAgent && baseline.hasVersion && userAgent.version.Compare(baseline.version) > 0
+	if newer && newerClientPolicy {
+		// Keep software verification in the native-client detector. A UA alone,
+		// or a Python SDK carrying a copied CLI UA, cannot opt into passthrough.
+		_, packageOK := parseClaudeSemver(headerValue(headers, "X-Stainless-Package-Version"))
+		runtime := headerValue(headers, "X-Stainless-Runtime-Version")
+		_, runtimeOK := parseClaudeSemver(strings.TrimPrefix(runtime, "v"))
+		verified := detection.NativeClient && detection.XAppCLI &&
+			headerValue(headers, "X-Stainless-Lang") == "js" &&
+			headerValue(headers, "X-Stainless-Runtime") == "node" &&
+			packageOK && claudePackageVersionPattern.MatchString(headerValue(headers, "X-Stainless-Package-Version")) &&
+			runtimeOK && claudeRuntimeVersionPattern.MatchString(runtime)
+		detection.UserAgent = verified
+		if verified {
+			detection.PassthroughVersion = strings.TrimPrefix(strings.Fields(headerValue(headers, "User-Agent"))[0], "claude-cli/")
+		} else {
+			// A newer client with inconsistent companion fields must take the
+			// complete cloak, never its native body under baseline labels.
+			return detection
+		}
+	}
 	standardSignals := detection.XAppCLI && detection.UserAgent && detection.BetasPresent && (countTokens || detection.MetadataUserID)
 	detection.HelperProfile = detection.NativeClient && matchesMeasuredClaudeCodeHelperProfile(headers, payload, countTokens, detection, cfg)
 	detection.StrongSignals = standardSignals || detection.HelperProfile
