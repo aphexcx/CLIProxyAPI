@@ -15,7 +15,10 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-type resetStatusPoller struct{ cachedUsagePoller }
+type resetStatusPoller struct {
+	cachedUsagePoller
+	resetDone chan struct{}
+}
 
 func (p *resetStatusPoller) PollQuotaUsage(ctx context.Context, auth *coreauth.Auth) (map[string]coreauth.QuotaWindow, json.RawMessage, error) {
 	windows, err := p.PollQuota(ctx, auth)
@@ -29,6 +32,11 @@ func (p *resetStatusPoller) PollQuotaUsage(ctx context.Context, auth *coreauth.A
 }
 
 func (p *resetStatusPoller) PollLimitResets(context.Context, *coreauth.Auth) (json.RawMessage, error) {
+	defer func() {
+		if p.resetDone != nil {
+			p.resetDone <- struct{}{}
+		}
+	}()
 	if p.fail.Load() {
 		return nil, &coreauth.Error{HTTPStatus: 429}
 	}
@@ -50,7 +58,7 @@ func TestLimitResetsReadsCacheOnlyAndPreservesFailureAge(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		p := &resetStatusPoller{}
+		p := &resetStatusPoller{resetDone: make(chan struct{}, 1)}
 		m.RegisterExecutor(p)
 		h := &Handler{cfg: cfg, authManager: m}
 		read := func(path string, code int) []claudeLimitResetSeat {
@@ -78,8 +86,7 @@ func TestLimitResetsReadsCacheOnlyAndPreservesFailureAge(t *testing.T) {
 		}
 		m.StartQuotaPolling(context.Background())
 		t.Cleanup(m.StopQuotaPolling)
-		synctest.Wait()
-		<-time.After(70 * time.Second)
+		<-p.resetDone
 		synctest.Wait()
 		for range 10 {
 			got := read("/?auth=fixture.json", 200)
@@ -91,11 +98,12 @@ func TestLimitResetsReadsCacheOnlyAndPreservesFailureAge(t *testing.T) {
 		if p.calls.Load() != 1 {
 			t.Fatal("GET bypassed quota cadence")
 		}
+		lastGoodAt := read("/", 200)[0].LastGoodAt
 		p.fail.Store(true)
-		<-time.After(16 * time.Minute)
+		<-p.resetDone
 		synctest.Wait()
 		got := read("/", 200)[0]
-		if got.CedarEmber == nil || got.AgeSeconds == nil || *got.AgeSeconds < 960 || !got.Stale || got.Error != "reset status poll failed (HTTP 429)" || got.BestClickRank != nil {
+		if got.CedarEmber == nil || got.AgeSeconds == nil || *got.AgeSeconds < 900 || got.LastGoodAt == nil || lastGoodAt == nil || !got.LastGoodAt.Equal(*lastGoodAt) || !got.Stale || got.Error != "reset status poll failed (HTTP 429)" || got.BestClickRank != nil {
 			t.Fatalf("failed poll=%+v", got)
 		}
 	})
