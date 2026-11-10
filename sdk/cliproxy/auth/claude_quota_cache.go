@@ -117,7 +117,13 @@ func (m *Manager) cachedQuota(id, provider string) (ClaudeQuotaSnapshot, bool) {
 			snapshot.PolledAt, snapshot.AgeSeconds, snapshot.Status = &at, &age, "ok"
 			// Allow the normal staggered round to finish, but bound legacy clients
 			// that cannot display cache age when a read stalls indefinitely.
-			snapshot.Stale = seat.lastFailed || now.Sub(at) > max(seat.interval, claudeQuotaMinimumPollInterval)+time.Minute
+			freshFor := max(seat.interval, claudeQuotaMinimumPollInterval)
+			if reset := m.limitResetSeats[id]; reset != nil && reset.generation == auth.CredentialGeneration() && reset.attemptedAt.After(at) {
+				// A reset consumed one slot after this observation; the next slot
+				// is reserved for routine usage. Errors still become stale at once.
+				freshFor += max(seat.interval, claudeQuotaMinimumPollInterval)
+			}
+			snapshot.Stale = seat.lastFailed || now.Sub(at) > freshFor+time.Minute
 		}
 		next = seat.nextPoll
 		snapshot.Refreshing = seat.running || seat.queued

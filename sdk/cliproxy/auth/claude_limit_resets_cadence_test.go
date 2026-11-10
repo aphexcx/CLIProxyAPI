@@ -75,6 +75,50 @@ func TestLimitResetsPreserveRoutineReadsAtLongIntervals(t *testing.T) {
 	}
 }
 
+func TestLimitResetsSharedSlotsKeepBothCachesFresh(t *testing.T) {
+	for _, interval := range []time.Duration{time.Minute, 15 * time.Minute, 30 * time.Minute} {
+		t.Run(interval.String(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m := NewManager(nil, nil, nil)
+				cfg := &config.Config{}
+				cfg.Claude.Quota.Enabled = true
+				cfg.Claude.Quota.PollInterval = interval.String()
+				m.SetConfig(cfg)
+				if _, err := m.Register(context.Background(), &Auth{ID: "fixture", Provider: "claude", Status: StatusActive, Metadata: map[string]any{"access_token": "fixture-only"}}); err != nil {
+					t.Fatal(err)
+				}
+				p := &successfulScheduledResetPoller{scheduledResetPoller{attempts: make(chan resetReadAttempt, 1024)}}
+				m.RegisterExecutor(p)
+				m.StartQuotaPolling(context.Background())
+				defer m.StopQuotaPolling()
+				stale := map[string]int64{}
+				for elapsed := time.Duration(0); elapsed < 4*interval+20*time.Minute; elapsed += 30 * time.Second {
+					<-time.After(30 * time.Second)
+					synctest.Wait()
+					quota, _ := m.ClaudeQuotaCached("fixture")
+					resets := m.ClaudeLimitResetsCached("fixture")
+					if quota.PolledAt != nil && quota.Stale {
+						stale["routine"] = *quota.AgeSeconds
+					}
+					if resets.CedarEmber != nil && resets.Stale {
+						stale["reset"] = *resets.AgeSeconds
+					}
+				}
+				if len(stale) != 0 {
+					t.Errorf("successful shared-slot observations became stale: %v", stale)
+				}
+				m.StopQuotaPolling()
+				<-time.After(3 * max(interval, claudeLimitResetInterval))
+				synctest.Wait()
+				quota, _ := m.ClaudeQuotaCached("fixture")
+				if !quota.Stale || !m.ClaudeLimitResetsCached("fixture").Stale {
+					t.Fatal("stopped polling left observations fresh indefinitely")
+				}
+			})
+		})
+	}
+}
+
 func TestLimitResetsShareSpacedSlotsAndBackOff429(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := NewManager(nil, nil, nil)

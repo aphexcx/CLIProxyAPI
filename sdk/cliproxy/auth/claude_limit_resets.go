@@ -118,7 +118,13 @@ func (m *Manager) ClaudeLimitResetsCached(id string) ClaudeLimitResetsSnapshot {
 		snapshot.LastGoodAt, snapshot.AgeSeconds = &at, &age
 	}
 	snapshot.Error = seat.err
-	snapshot.Stale = snapshot.CedarEmber == nil || snapshot.Error != "" || time.Since(seat.polledAt) > max(seat.interval, claudeQuotaMinimumPollInterval)+time.Minute
+	freshFor := max(seat.interval, claudeQuotaMinimumPollInterval)
+	if routine := m.quotaPollSeats[id]; routine != nil && routine.epoch == auth.RegistrationEpoch {
+		// A due reset waits for a shared slot and cannot consume the routine
+		// slot following its previous attempt. Bound that extra slot's age.
+		freshFor += max(routine.interval, claudeQuotaMinimumPollInterval)
+	}
+	snapshot.Stale = snapshot.CedarEmber == nil || snapshot.Error != "" || time.Since(seat.polledAt) > freshFor+time.Minute
 	if !quotaPollEligible(auth) {
 		snapshot.Stale = true
 		snapshot.Error = "polling paused"
