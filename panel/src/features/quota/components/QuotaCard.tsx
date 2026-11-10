@@ -98,8 +98,8 @@ export function QuotaCard(props: QuotaCardProps) {
   const codexQuota = entry.type === 'codex' ? (quota as CodexQuotaState | undefined) : undefined;
   const retainedClaudeUsage = hasClaudeUsageData(claudeQuota) || hasCodexUsageData(codexQuota);
   const displayName = getQuotaDisplayName(file);
-  // The Codex body used to own this subscription; seat cards keep it while details are closed.
-  useQuotaCacheReads(Boolean(codexQuota?.serverCache));
+  // Native seat cards need credential updates even while Details is closed.
+  useQuotaCacheReads(Boolean(codexQuota?.serverCache || claudeQuota?.serverCache));
 
   // Capture the entrance delay only at mount, without a render-time ref read.
   const [mountEntranceDelayMs] = useState<number | null>(entranceDelayMs ?? null);
