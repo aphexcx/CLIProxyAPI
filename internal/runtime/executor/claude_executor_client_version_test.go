@@ -16,6 +16,13 @@ import (
 )
 
 func TestClaudeExecutorClientVersion(t *testing.T) {
+	for _, stabilized := range []bool{false, true} {
+		testClaudeExecutorClientVersion(t, stabilized)
+	}
+}
+
+func testClaudeExecutorClientVersion(t *testing.T, stabilized bool) {
+	t.Helper()
 	for _, path := range []string{"messages", "stream", "count_tokens"} {
 		for _, tc := range []struct {
 			name, ua, want, rule, toolType   string
@@ -23,6 +30,9 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 			adaptive                         bool
 		}{
 			{name: "newer", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400"},
+			{name: "newer sdk", ua: "claude-cli/2.1.400 (external, sdk-cli, agent-sdk/0.3.300)", want: "2.1.400"},
+			{name: "newer sdk cloaked", ua: "claude-cli/2.1.400 (external, sdk-cli, agent-sdk/0.3.300)", want: "2.1.400", noMetadata: true},
+			{name: "older runtime", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400"},
 			{name: "newer cloaked body", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", noMetadata: true},
 			{name: "newer cloaked fast override", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", noMetadata: true, rule: "fast"},
 			{name: "newer native fast override", ua: "claude-cli/2.1.400 (external, cli)", want: "2.1.400", rule: "fast"},
@@ -45,9 +55,13 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 			if path == "count_tokens" && tc.toolType != "" {
 				continue
 			}
-			t.Run(path+"/"+tc.name, func(t *testing.T) {
+			t.Run(fmt.Sprintf("stabilized=%v/%s/%s", stabilized, path, tc.name), func(t *testing.T) {
 				helps.ResetClaudeDeviceProfileCache()
-				stabilize, enabled := true, !tc.off
+				stabilize, enabled := stabilized, !tc.off
+				want := tc.want
+				if tc.off && !stabilize {
+					want = "2.1.400"
+				}
 				cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{
 					StabilizeDeviceProfile: &stabilize, PassthroughNewerClient: &enabled,
 					OS: "Linux", Arch: "x64",
@@ -67,7 +81,7 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 				} else if tc.rule == "filter-context" {
 					cfg.Payload.Filter = []config.PayloadFilterRule{{Models: models, Params: []string{"context_management"}}}
 				}
-				betas := "claude-code-20250219,oauth-2025-04-20,effort-2025-11-24,new-client-feature-2026-11-09,extended-cache-ttl-2025-04-11"
+				betas := "claude-code-20250219,oauth-2025-04-20,effort-2025-11-24,message-threads-2026-08-12,extended-cache-ttl-2025-04-11"
 				if path == "count_tokens" {
 					betas += ",token-counting-2024-11-01"
 				}
@@ -78,6 +92,11 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 				headers.Set("User-Agent", tc.ua)
 				headers.Set("X-Stainless-Package-Version", "0.140.0")
 				headers.Set("X-Stainless-Runtime-Version", "v27.0.0")
+				headers.Set("X-Stainless-OS", "Linux")
+				headers.Set("X-Stainless-Arch", "x64")
+				if tc.name == "older runtime" {
+					headers.Set("X-Stainless-Runtime-Version", "v24.11.0")
+				}
 				if tc.spoof {
 					headers.Set("X-Stainless-Runtime", "python")
 				}
@@ -102,6 +121,9 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 				if !tc.noMetadata {
 					doc := ojson.NewDoc(payload)
 					_ = doc.SetRawBytes("system", []byte(`[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=cli;"}]`))
+					if tc.name == "newer sdk" {
+						_ = doc.Set("system.0.text", "x-anthropic-billing-header: cc_version=2.1.400.abc; cc_entrypoint=sdk-cli;")
+					}
 					payload = doc.Bytes()
 				}
 				var seenHeaders http.Header
@@ -144,15 +166,24 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if got := seenHeaders.Get("User-Agent"); got != fmt.Sprintf("claude-cli/%s (external, cli)", tc.want) {
+				wantUA := fmt.Sprintf("claude-cli/%s (external, cli)", want)
+				if tc.name == "newer sdk" || (tc.name == "newer sdk cloaked" && path == "count_tokens") {
+					wantUA = tc.ua
+				}
+				if got := seenHeaders.Get("User-Agent"); got != wantUA {
 					t.Fatalf("UA = %q", got)
 				}
 				if helps.HeaderValueCaseInsensitive(seenHeaders, "X-Stainless-OS") != "Linux" || seenHeaders.Get("X-Stainless-Arch") != "x64" {
 					t.Fatalf("seat platform changed: OS=%q arch=%q", helps.HeaderValueCaseInsensitive(seenHeaders, "X-Stainless-OS"), seenHeaders.Get("X-Stainless-Arch"))
 				}
 				wantPackage, wantRuntime := "0.128.0", "v26.12.1"
-				if tc.want == "2.1.400" {
-					wantPackage, wantRuntime = "0.140.0", "v27.0.0"
+				if want == "2.1.400" || tc.off {
+					if !tc.off || !stabilize {
+						wantPackage, wantRuntime = "0.140.0", "v27.0.0"
+					}
+					if tc.name == "older runtime" {
+						wantRuntime = "v24.11.0"
+					}
 					got := helps.HeaderValueCaseInsensitive(seenHeaders, "Anthropic-Beta")
 					for _, beta := range strings.Split(betas, ",") {
 						if !strings.Contains(","+got+",", ","+beta+",") {
@@ -225,12 +256,39 @@ func TestClaudeExecutorClientVersion(t *testing.T) {
 				}
 				if path != "count_tokens" {
 					billing := ojson.GetBytes(seenBody, "system.0.text").String()
+					entrypoint := "cli"
+					if tc.name == "newer sdk" {
+						entrypoint = "sdk-cli"
+					}
+					if tc.rule == "" && !strings.Contains(billing, "cc_entrypoint="+entrypoint+";") {
+						t.Fatalf("billing entrypoint disagrees with User-Agent: %q", billing)
+					}
+					billingVersion := want
+					if tc.off {
+						billingVersion = "2.1.400"
+					}
 					if tc.rule == "override" && billing != "operator billing override" {
 						t.Fatalf("payload override was overwritten: %q", billing)
 					} else if tc.rule == "filter" && ojson.GetBytes(seenBody, "system").Exists() {
 						t.Fatal("filtered system was restored")
-					} else if tc.rule == "" && !strings.Contains(billing, "cc_version="+tc.want+".") {
+					} else if tc.rule == "" && !strings.Contains(billing, "cc_version="+billingVersion+".") {
 						t.Fatalf("billing = %q", billing)
+					}
+					if tc.off && tc.rule == "" {
+						// The Anthropic transport appends its CCH signature to the
+						// existing billing block, as main does.
+						original := ojson.GetBytes(payload, "system.0.text").String()
+						if !strings.HasPrefix(billing, original) || ojson.GetBytes(seenBody, "system.#").Int() != 1 {
+							t.Fatal("rollback rewrote the native system prompt")
+						}
+					}
+					if tc.spoof {
+						if ojson.GetBytes(seenBody, "system.#").Int() < 2 || !ojson.GetBytes(seenBody, "fallbacks").Exists() {
+							t.Fatal("unverified newer client did not receive the full cloak")
+						}
+						if !strings.Contains(helps.HeaderValueCaseInsensitive(seenHeaders, "Anthropic-Beta"), "message-threads-2026-08-12") {
+							t.Fatal("unmanaged caller beta was lost")
+						}
 					}
 					if device := ojson.Get(ojson.GetBytes(seenBody, "metadata.user_id").String(), "device_id").String(); device == "" || device == strings.Repeat("f", 64) {
 						t.Fatalf("credential device identity missing or caller-supplied: %q", device)
@@ -298,5 +356,40 @@ func TestClaudeNewerClientRequiredBetas(t *testing.T) {
 				t.Fatalf("binding beta/operator precedence incorrect: %s", betas)
 			}
 		})
+	}
+}
+
+func TestClaudeBodyRequiredBetasExcludeModelDefaults(t *testing.T) {
+	for _, model := range []string{"claude-opus-5-5", "claude-fable-5-2"} {
+		for _, adaptive := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/adaptive=%v", model, adaptive), func(t *testing.T) {
+				body := fmt.Sprintf(`{"model":%q}`, model)
+				want := ""
+				if adaptive {
+					body = fmt.Sprintf(`{"model":%q,"thinking":{"type":"adaptive"}}`, model)
+					want = "interleaved-thinking-2025-05-14"
+				}
+				if got := claudeBodyRequiredBetas([]byte(body), false); got != want {
+					t.Fatalf("model defaults leaked into body requirements: %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestClaudeNewerCountTokensDoesNotInferCacheTTL(t *testing.T) {
+	headers := claudeNativeHelperHeaders("claude-code-20250219,token-counting-2024-11-01", "gzip")
+	headers.Set("User-Agent", "claude-cli/2.1.400 (external, cli)")
+	body := []byte(`{"model":"claude-fable-5-2","messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`)
+	req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages/count_tokens", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := claudeNativeHelperOAuthAuth("https://api.anthropic.com")
+	if err = applyClaudeHeaders(req, auth, auth.Attributes["api_key"], false, nil, body, &config.Config{}, headers, true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(req.Header.Get("Anthropic-Beta"), claudeExtendedCacheTTLBeta) {
+		t.Fatal("count_tokens inferred a message cache TTL beta")
 	}
 }

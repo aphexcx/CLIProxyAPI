@@ -537,16 +537,17 @@ upstream:
     # The cloak uses interactive cli identity; a non-interactive -p capture uses sdk-cli.
     # Update only after measuring a new Claude Code release.
     # Unconfirmed clients use this CLI baseline. Verified native Claude Code CLI, sdk-cli,
-    # sdk-ts, and VSCode requests preserve their measured entrypoint when the Claude Code version is a
-    # verified newer release with consistent JS/Node SDK companion headers. Older or unverified
-    # versions fall back to the baseline. In legacy mode,
+    # sdk-ts, and VSCode requests preserve their measured entrypoint at the baseline or on a
+    # verified newer release with consistent JS/Node SDK companion header shapes. The runtime
+    # may be older than the baseline's. Unverified newer clients receive the full baseline cloak.
+    # A generated cloak always uses the CLI entrypoint in both its prompt and User-Agent. In legacy mode,
     # timeout is a fallback and
     # verified native OS/arch values remain client-supplied. When stabilize-device-profile is
     # enabled, OS/arch are pinned to the values below and cached profiles remain constrained to
     # the same exact software baseline rather than learning newer client versions (unless the
     # credential resolves to cloak_mode: never, which preserves the confirmed caller's headers).
     # header-defaults:
-    #   passthrough-newer-client: true  # default true; false pins newer clients to the configured baseline
+    #   passthrough-newer-client: true  # false restores legacy behavior; never/caller-owned paths are unchanged
     #   user-agent: "claude-cli/2.1.321 (external, cli)"
     #   package-version: "0.128.0"
     #   runtime-version: "v26.12.1"

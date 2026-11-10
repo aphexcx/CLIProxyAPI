@@ -143,8 +143,8 @@ PackyCode provides special discounts for our software users: register using <a h
 
 ### Claude Code cloak
 
-The cloak keeps each seat's stable device identity while passing through a verified newer Claude Code client's User-Agent, billing version, SDK/runtime versions, and beta set alongside required upstream credential/body flags; older or unverified callers use the configured baseline (2.1.321 by default).
-Set `upstream.claude.header-defaults.passthrough-newer-client: false` to pin newer clients to that baseline; verification uses the existing native-client detector and requires a valid CLI/SDK User-Agent, `x-app: cli`, and consistent JavaScript/Node Stainless headers.
+The cloak keeps each seat's stable device identity while passing through a verified newer Claude Code client's version, SDK/runtime fields, and beta set alongside required upstream credential/body flags. Verification checks the shape of the CLI/SDK User-Agent and JavaScript/Node companion headers, so an older host Node version is allowed; an unverified newer caller receives the full configured baseline cloak (2.1.321 by default). Generated cloak prompts and User-Agents both use the CLI entrypoint; native requests retain their own entrypoint and billing block.
+Set `upstream.claude.header-defaults.passthrough-newer-client: false` to restore the previous behavior, including native newer patch clients that already passed through in legacy device mode. The option does not change `cloak_mode: never` or caller-owned requests.
 
 ## Getting Started
 

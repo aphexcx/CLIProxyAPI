@@ -24,9 +24,13 @@ func TestDetectClaudeCodeRequestVerifiedNewerSoftware(t *testing.T) {
 		{name: "python", header: "X-Stainless-Lang", value: "python"},
 		{name: "runtime mismatch", header: "X-Stainless-Runtime", value: "python"},
 		{name: "missing SDK", header: "X-Stainless-Package-Version"},
-		{name: "old SDK", header: "X-Stainless-Package-Version", value: "0.1.0"},
+		{name: "old SDK", header: "X-Stainless-Package-Version", value: "0.1.0", want: "2.1.400"},
+		{name: "negative SDK", header: "X-Stainless-Package-Version", value: "-1.0.0"},
+		{name: "signed SDK", header: "X-Stainless-Package-Version", value: "+1.0.0"},
+		{name: "suffixed SDK", header: "X-Stainless-Package-Version", value: "0.140.0-beta"},
 		{name: "bad runtime", header: "X-Stainless-Runtime-Version", value: "26.12.1"},
-		{name: "old runtime", header: "X-Stainless-Runtime-Version", value: "v1.0.0"},
+		{name: "old runtime", header: "X-Stainless-Runtime-Version", value: "v24.11.0", want: "2.1.400"},
+		{name: "negative runtime", header: "X-Stainless-Runtime-Version", value: "v-1.0.0"},
 		{name: "off", off: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -51,6 +55,12 @@ func TestDetectClaudeCodeRequestVerifiedNewerSoftware(t *testing.T) {
 			if tc.want != "" && !detection.Confirmed {
 				t.Fatal("verified newer native request was not confirmed")
 			}
+			if tc.header != "" && tc.want == "" && detection.Confirmed {
+				t.Fatal("inconsistent newer client was confirmed")
+			}
+			if tc.off && !detection.Confirmed {
+				t.Fatal("disabled policy changed legacy confirmation")
+			}
 		})
 	}
 }
@@ -63,7 +73,7 @@ func TestClaudeRequestVersionDoesNotPersistSoftwareOrChangePlatform(t *testing.T
 	cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{OS: "Linux", Arch: "x64"}}
 	request, _ := http.NewRequest(http.MethodPost, "https://example.test", nil)
 	ApplyClaudeDefaultDeviceProfileHeaders(request, cfg)
-	ApplyClaudeRequestVersionHeaders(request, headers, cfg)
+	ApplyClaudeRequestVersionHeaders(request, headers, DetectClaudeCodeRequest(headers, nil, false, cfg), false)
 	if got := request.Header.Get("User-Agent"); got != headers.Get("User-Agent") {
 		t.Fatalf("User-Agent = %q", got)
 	}
@@ -73,7 +83,8 @@ func TestClaudeRequestVersionDoesNotPersistSoftwareOrChangePlatform(t *testing.T
 	if DefaultClaudeVersion(cfg) != "2.1.321" || ClaudeRequestVersion(nil, cfg) != "2.1.321" {
 		t.Fatal("newer request changed the configured baseline")
 	}
-	ApplyClaudeRequestVersionHeaders(request, nil, cfg)
+	ApplyClaudeDefaultDeviceProfileHeaders(request, cfg)
+	ApplyClaudeRequestVersionHeaders(request, nil, DetectClaudeCodeRequest(nil, nil, false, cfg), false)
 	if got := request.Header.Get("User-Agent"); got != "claude-cli/2.1.321 (external, cli)" {
 		t.Fatalf("next caller inherited newer software: %q", got)
 	}

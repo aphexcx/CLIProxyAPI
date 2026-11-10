@@ -1285,10 +1285,10 @@ func applyClaudeHeadersWithNativeProfile(
 
 	incomingBetas := strings.TrimSpace(strings.Join(helps.HeaderValuesCaseInsensitive(incomingHeaders, "Anthropic-Beta"), ","))
 	countTokens := r.URL != nil && strings.HasSuffix(r.URL.Path, "/count_tokens")
-	software := helps.DetectClaudeCodeRequest(incomingHeaders, body, countTokens, cfg)
-	passthroughVersion := !wirePolicy.Uncloak && software.PassthroughVersion != ""
+	_, software := detectIncomingClaudeCodeRequest(r.Context(), incomingHeaders, body, countTokens, cfg, auth, apiKey)
+	passthroughVersion := software.PassthroughVersion != ""
 	if !confirmedClaudeCode && !wirePolicy.Cloak && wirePolicy.ExplicitNever && !wirePolicy.Uncloak {
-		det := helps.DetectClaudeCodeRequest(incomingHeaders, body, countTokens, cfg)
+		det := software
 		if det.ConfirmedShape {
 			confirmedClaudeCode = true
 			helperProfile = helperProfile || (!det.BetasPresent && !countTokens)
@@ -1307,7 +1307,7 @@ func applyClaudeHeadersWithNativeProfile(
 			}
 		}
 	}
-	if (confirmedClaudeCode || passthroughVersion) && (incomingBetas != "" || passthroughVersion) && (!software.NormalizeVersion || wirePolicy.ExplicitNever) {
+	if (confirmedClaudeCode || passthroughVersion) && (incomingBetas != "" || passthroughVersion) {
 		baseBetas = incomingBetas
 		if advisorNeeded {
 			baseBetas = withClaudeAdvisorToolBeta(baseBetas)
@@ -1449,6 +1449,9 @@ func applyClaudeHeadersWithNativeProfile(
 				baseBetas = withClaudeBetaAppended(baseBetas, claudeCodeBeta)
 			}
 			for _, beta := range strings.Split(claudeBodyRequiredBetas(body, useOAuthBetas), ",") {
+				if countTokens && beta == claudeExtendedCacheTTLBeta {
+					continue
+				}
 				baseBetas = withClaudeBetaAppended(baseBetas, beta)
 			}
 		}
@@ -1671,8 +1674,8 @@ func applyClaudeHeadersWithNativeProfile(
 	} else {
 		helps.ApplyClaudeLegacyDeviceHeaders(r, incomingHeaders, cfg, confirmedClaudeCode)
 	}
-	if !wirePolicy.ExplicitNever {
-		helps.ApplyClaudeRequestVersionHeaders(r, incomingHeaders, cfg)
+	if passthroughVersion {
+		helps.ApplyClaudeRequestVersionHeaders(r, incomingHeaders, software, wirePolicy.Cloak)
 	}
 	var attrs map[string]string
 	if auth != nil {

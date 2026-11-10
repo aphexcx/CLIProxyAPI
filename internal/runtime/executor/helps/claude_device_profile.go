@@ -678,28 +678,18 @@ func ClaudeRequestVersion(headers http.Header, cfg *config.Config) string {
 
 // ApplyClaudeRequestVersionHeaders changes only software fields, after the seat's
 // stable platform identity has been resolved. No client version enters the cache.
-func ApplyClaudeRequestVersionHeaders(r *http.Request, headers http.Header, cfg *config.Config) {
+func ApplyClaudeRequestVersionHeaders(r *http.Request, headers http.Header, detection ClaudeCodeRequestDetection, cloaked bool) {
 	if r == nil {
 		return
 	}
-	detection := DetectClaudeCodeRequest(headers, nil, false, cfg)
 	if detection.PassthroughVersion != "" {
 		for _, name := range []string{"User-Agent", "X-Stainless-Package-Version", "X-Stainless-Runtime-Version"} {
 			r.Header.Set(name, headerValue(headers, name))
 		}
-		return
-	}
-	baseline := defaultClaudeDeviceProfile(cfg)
-	// Retain an already normalized native entrypoint (for example sdk-cli).
-	current, ok := parseClaudeCodeUserAgent(r.Header.Get("User-Agent"))
-	if !ok || !baseline.hasVersion || current.version.Compare(baseline.version) != 0 {
-		r.Header.Set("User-Agent", baseline.UserAgent)
-	}
-	r.Header.Set("X-Stainless-Package-Version", baseline.PackageVersion)
-	r.Header.Set("X-Stainless-Runtime-Version", baseline.RuntimeVersion)
-	if detection.NormalizeVersion {
-		r.Header.Set("X-Stainless-Lang", "js")
-		r.Header.Set("X-Stainless-Runtime", "node")
+		if cloaked {
+			// The generated prompt always identifies the CLI entrypoint.
+			r.Header.Set("User-Agent", "claude-cli/"+detection.PassthroughVersion+" (external, cli)")
+		}
 	}
 }
 
