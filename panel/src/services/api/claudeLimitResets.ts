@@ -40,11 +40,12 @@ export function readClaudeLimitResets(): Promise<LimitResetsResponse> {
   if (cached?.revision === revision && Date.now() < cached.until)
     return Promise.resolve(cached.value);
   if (pending?.revision === revision) return pending.promise;
+  const startedAt = Date.now();
   const promise = apiClient
     .get<LimitResetsResponse>('/claude/limit-resets')
     .then((value) => {
       if (apiClient.getConnectionRevision() === revision) {
-        cached = { revision, until: Date.now() + 60_000, value };
+        cached = { revision, until: startedAt + 60_000, value };
       }
       return value;
     })

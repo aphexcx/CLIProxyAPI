@@ -34,6 +34,7 @@ const logout = document.getElementById('logout');
 const seats = document.getElementById('seats');
 const status = document.getElementById('status');
 let key = '', timer, revision = 0, loading = false;
+let lastFiles = [], lastResets = { seats: [] }, resetReadAt = 0;
 const node = (tag, text, parent, className) => {
   const element = document.createElement(tag);
   if (text !== undefined) element.textContent = text;
@@ -93,8 +94,8 @@ function render(files, resets) {
       try {
         await request('credentials/quota', { auth_index: file.auth_index });
         if (current !== revision) return;
-        await load();
-        if (current === revision) status.textContent = 'Refresh shares this seat’s next poll slot. Showing cached usage until then.';
+        const loaded = await load();
+        if (loaded && current === revision) status.textContent = 'Refresh shares this seat’s next poll slot. Showing cached usage until then.';
       } catch (error) { if (current === revision) { status.textContent = error.message; refresh.disabled = false; } }
     };
   }
@@ -109,10 +110,21 @@ async function load() {
     if (current !== revision) return;
     const resets = await request('claude/limit-resets');
     if (current !== revision) return;
-    render(data.files || [], resets);
+    lastFiles = data.files || []; lastResets = resets; resetReadAt = Date.now();
+    render(lastFiles, lastResets);
     login.hidden = true; logout.hidden = false;
     status.textContent = 'Updated ' + new Date().toLocaleTimeString();
-  } catch (error) { if (current === revision) status.textContent = error.message + ' Displayed values may be stale.'; }
+    return true;
+  } catch (error) {
+    if (current === revision) {
+      if (lastFiles.length) render(lastFiles, { ...lastResets, seats: (lastResets.seats || []).map(seat => ({
+        ...seat, stale: true, best_click_rank: null, error: 'Reset status unavailable',
+        age_seconds: seat.age_seconds == null ? null : seat.age_seconds + Math.max(0, Math.floor((Date.now() - resetReadAt) / 1000))
+      })) });
+      status.textContent = error.message + ' Displayed values may be stale.';
+    }
+    return false;
+  }
   finally { loading = false; }
 }
 login.onsubmit = event => {
@@ -121,6 +133,7 @@ login.onsubmit = event => {
 };
 function lockView(message = '') {
   revision++; key = ''; keyInput.value = ''; clearInterval(timer); seats.replaceChildren(); status.textContent = message;
+  lastFiles = []; lastResets = { seats: [] }; resetReadAt = 0;
   login.hidden = false; logout.hidden = true; keyInput.focus();
 }
 logout.onclick = () => lockView();

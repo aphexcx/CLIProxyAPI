@@ -18,6 +18,12 @@ type resetStatusPoller struct{ cachedUsagePoller }
 
 func (p *resetStatusPoller) PollQuotaUsage(ctx context.Context, auth *coreauth.Auth) (map[string]coreauth.QuotaWindow, json.RawMessage, error) {
 	windows, err := p.PollQuota(ctx, auth)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The OAuth parser preserves the display-name alias used by newer responses.
+	windows["Fable 5"] = windows["Fable"]
+	delete(windows, "Fable")
 	weekly, expiry := time.Now().Add(72*time.Hour), time.Now().Add(7*24*time.Hour)
 	body, _ := json.Marshal(gin.H{"cedar_ember": coreauth.ClaudeLimitResets{
 		Eligible: true, AtLimit: true, WeeklyResetsAt: &weekly,

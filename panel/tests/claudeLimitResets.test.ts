@@ -79,3 +79,18 @@ test('cards coalesce cache GETs and isolate management connections', async () =>
   await readClaudeLimitResets();
   expect(get).toHaveBeenCalledTimes(2);
 });
+
+test('response latency does not skip the next minute refresh', async () => {
+  let now = 1_000;
+  const clock = spyOn(Date, 'now').mockImplementation(() => now);
+  const revision = spyOn(apiClient, 'getConnectionRevision').mockReturnValue(100_003);
+  const get = spyOn(apiClient, 'get').mockImplementation(async () => {
+    now += 200;
+    return { seats: [seat], ranking_rule: 'fixture' };
+  });
+  mocks.push(clock, revision, get);
+  await readClaudeLimitResets();
+  now = 61_000;
+  await readClaudeLimitResets();
+  expect(get).toHaveBeenCalledTimes(2);
+});

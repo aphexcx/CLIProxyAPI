@@ -74,3 +74,20 @@ func TestLimitResetsRetainsLastGoodOnMissingMalformedAndFailedPoll(t *testing.T)
 		t.Fatal("old credential reset data survived replacement")
 	}
 }
+
+func TestLimitResetsInitialPollFailureReportsErrorWithoutInventingAge(t *testing.T) {
+	m, id, _ := newClaudeQuotaManager(t)
+	cfg := m.runtimeConfig.Load().(*config.Config)
+	base, _ := m.GetByID(id)
+	started := time.Now()
+	release, ok := m.reserveClaudeQuotaPoll(context.Background(), cfg, base, time.Minute, started)
+	if !ok {
+		t.Fatal("initial poll not reserved")
+	}
+	defer release()
+	m.recordClaudeQuotaPoll(base, started, &Error{HTTPStatus: 429})
+	got := m.ClaudeLimitResetsCached(id)
+	if got.Error != "usage poll failed (HTTP 429)" || !got.Stale || got.CedarEmber != nil || got.AgeSeconds != nil || got.LastGoodAt != nil {
+		t.Fatalf("initial failure lost or invented observation: %+v", got)
+	}
+}

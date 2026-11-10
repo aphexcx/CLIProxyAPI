@@ -202,6 +202,11 @@ func (m *Manager) reserveClaudeQuotaPoll(ctx context.Context, cfg *internalconfi
 		seat.resetStatus, seat.resetPolledAt, seat.resetError = nil, time.Time{}, ""
 		seat.epoch = auth.RegistrationEpoch
 	}
+	if seat.resetCredentialVersion != auth.CredentialVersion {
+		seat.resetStatus, seat.resetPolledAt, seat.resetError = nil, time.Time{}, ""
+		seat.resetCredentialVersion = auth.CredentialVersion
+		seat.lastFailed, seat.lastStatus = false, 0
+	}
 	seat.lastAttempt, seat.running, seat.queued = now, true, false
 	seat.polls++
 	seat.jitter = time.Duration(rand.Int64N(int64(5 * time.Second)))
