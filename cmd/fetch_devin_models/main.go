@@ -37,6 +37,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	sdkauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -240,7 +241,7 @@ func fetchRawDevinModels(ctx context.Context, cfg *config.Config, auth *coreauth
 		httpClient = http.DefaultClient
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := httptransport.Do(httpClient, req)
 	if err != nil {
 		return nil, fmt.Errorf("do request: %w", err)
 	}

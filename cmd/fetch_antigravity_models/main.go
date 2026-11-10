@@ -33,6 +33,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	sdkauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 )
@@ -262,7 +263,7 @@ func fetchModelsFromBaseURLs(ctx context.Context, auth *coreauth.Auth, baseURLs 
 					}
 				}
 			}
-			httpResp, errDo := httpClient.Do(httpReq)
+			httpResp, errDo := httptransport.Do(httpClient, httpReq)
 			if errDo != nil {
 				continue
 			}

@@ -36,6 +36,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	sdkauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 )
@@ -280,7 +281,7 @@ func fetchModels(ctx context.Context, auth *coreauth.Auth, accessToken, clientVe
 		}
 	}
 
-	httpResp, errDo := httpClient.Do(httpReq)
+	httpResp, errDo := httptransport.Do(httpClient, httpReq)
 	if errDo != nil {
 		return nil, 0, errDo
 	}
