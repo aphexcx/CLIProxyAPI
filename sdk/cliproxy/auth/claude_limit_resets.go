@@ -144,19 +144,24 @@ type claudeLimitResetPollSeat struct {
 	interval              time.Duration
 	err                   string
 	running               bool
+	nextAttempt           time.Time
+	rateLimits            int
 }
 
-// Launch on the quota cadence, but never make a slow or failed reset read hold
-// the routine usage slot. This read has its own cache, errors and lifecycle.
-func (m *Manager) startClaudeLimitResetsPoll(ctx context.Context, cfg *internalconfig.Config, base *Auth, executor QuotaPoller, interval time.Duration) {
+const claudeLimitResetInterval = 15 * time.Minute
+
+// Consume an already-reserved usage slot, at most once per fifteen minutes.
+// The first slot always reads routine usage. Both URL variants share the same
+// minimum spacing, while a slow reset read cannot hold the next routine slot.
+func (m *Manager) startClaudeLimitResetsPoll(ctx context.Context, cfg *internalconfig.Config, base *Auth, executor QuotaPoller, interval time.Duration) bool {
 	poller, ok := executor.(LimitResetsPoller)
 	if !ok || !strings.EqualFold(base.Provider, "claude") {
-		return
+		return false
 	}
 	m.mu.Lock()
 	if ctx.Err() != nil || m.runtimeConfig.Load() != cfg || !sameClaudeQuotaCredential(m.auths[base.ID], base) {
 		m.mu.Unlock()
-		return
+		return false
 	}
 	if m.limitResetSeats == nil {
 		m.limitResetSeats = make(map[string]*claudeLimitResetPollSeat)
@@ -166,11 +171,13 @@ func (m *Manager) startClaudeLimitResetsPoll(ctx context.Context, cfg *internalc
 		seat = &claudeLimitResetPollSeat{generation: base.CredentialGeneration()}
 		m.limitResetSeats[base.ID] = seat
 	}
-	if seat.running || time.Since(seat.attemptedAt) < claudeQuotaMinimumPollInterval {
+	routine := m.quotaPollSeats[base.ID]
+	if routine == nil || routine.polledAt.IsZero() || seat.running || time.Now().Before(seat.nextAttempt) {
 		m.mu.Unlock()
-		return
+		return false
 	}
-	seat.running, seat.attemptedAt, seat.interval = true, time.Now(), interval
+	seat.running, seat.attemptedAt, seat.interval = true, time.Now(), max(interval, claudeLimitResetInterval)
+	seat.nextAttempt = seat.attemptedAt.Add(seat.interval)
 	m.mu.Unlock()
 	go func() {
 		readCtx, cancel := context.WithCancel(ctx)
@@ -206,6 +213,7 @@ func (m *Manager) startClaudeLimitResetsPoll(ctx context.Context, cfg *internalc
 			}
 		}
 	}()
+	return true
 }
 
 func (m *Manager) recordClaudeLimitResets(ctx context.Context, cfg *internalconfig.Config, base *Auth, body json.RawMessage, errRead error, now time.Time) {
@@ -227,6 +235,13 @@ func (m *Manager) recordClaudeLimitResets(ctx context.Context, cfg *internalconf
 		var statusError interface{ StatusCode() int }
 		if errors.As(errRead, &statusError) {
 			seat.err = fmt.Sprintf("reset status poll failed (HTTP %d)", statusError.StatusCode())
+			if statusError.StatusCode() == 429 {
+				seat.rateLimits++
+				// Do not retry the reset read in the next routine slot. Back off
+				// 30m, 1h, then at most 2h; last-good data remains marked stale.
+				backoff := claudeLimitResetInterval * time.Duration(1<<min(seat.rateLimits, 3))
+				seat.nextAttempt = now.Add(backoff)
+			}
 		}
 		return
 	}
@@ -237,4 +252,5 @@ func (m *Manager) recordClaudeLimitResets(ctx context.Context, cfg *internalconf
 	}
 	seat.status, _ = json.Marshal(status)
 	seat.polledAt, seat.err = now, ""
+	seat.rateLimits = 0
 }

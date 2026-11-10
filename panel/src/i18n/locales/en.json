@@ -2316,6 +2316,8 @@
     "not_usable": "not usable now",
     "holder": "holder action only",
     "ineligible": "Seat ineligible",
+    "surface": "Not visible on this surface",
+    "ineligible_reason": "Ineligible: {{reason}}",
     "disabled": "Seat disabled",
     "cooldown": "Reset cooldown active",
     "weekly_unknown": "Weekly reset unknown",

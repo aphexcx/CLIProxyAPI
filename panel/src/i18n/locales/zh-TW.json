@@ -2342,6 +2342,8 @@
     "not_usable": "目前無法使用",
     "holder": "僅限持有人操作",
     "ineligible": "帳戶不符合資格",
+    "surface": "此介面無法顯示重設狀態",
+    "ineligible_reason": "不符合資格：{{reason}}",
     "disabled": "帳戶已停用",
     "cooldown": "重設冷卻中",
     "weekly_unknown": "每週重設時間未知",

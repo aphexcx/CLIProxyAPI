@@ -21,6 +21,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 	xproxy "golang.org/x/net/proxy"
@@ -446,7 +447,7 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 		})
 		dialer := newProxyAwareSidebandDialer(runtimeConfig, current)
 		dialer.Subprotocols = websocket.Subprotocols(c.Request)
-		return dialer.DialContext(ctx, upstreamURL, req.Header)
+		return httptransport.DialWebSocket(ctx, dialer, upstreamURL, req.Header)
 	}
 
 	upstream, handshakeResponse, errDial := dialUpstream(selected)

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
 )
@@ -289,7 +290,7 @@ func (o *ClaudeAuth) fetchOAuthControlPlaneJSON(ctx context.Context, endpoint, a
 		req = req.WithContext(context.WithValue(req.Context(), claudeUsageConnectTimeoutContextKey{}, claudeUsageConnectTimeout))
 	}
 
-	resp, errDo := o.httpClient.Do(req)
+	resp, errDo := httptransport.Do(o.httpClient, req)
 	observedAt := time.Now() // Header receipt, before any potentially stalled body read.
 	if errDo != nil {
 		return nil, time.Time{}, fmt.Errorf("fetch Claude OAuth %s: %w", label, errDo)
@@ -498,7 +499,7 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 	}
 	applyClaudeOAuthAxiosHeaders(req)
 
-	resp, err := o.httpClient.Do(req)
+	resp, err := httptransport.Do(o.httpClient, req)
 	if err != nil {
 		return nil, fmt.Errorf("token exchange request failed: %w", err)
 	}
@@ -637,7 +638,7 @@ func (o *ClaudeAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken
 	}
 	applyClaudeOAuthAxiosHeaders(req)
 
-	resp, err := o.httpClient.Do(req)
+	resp, err := httptransport.Do(o.httpClient, req)
 	if err != nil {
 		return nil, fmt.Errorf("token refresh request failed: %w", err)
 	}

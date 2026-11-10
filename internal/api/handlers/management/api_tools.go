@@ -17,13 +17,14 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 )
 
 const defaultAPICallTimeout = 60 * time.Second
 
-var errResetRateLimitsDenied = errors.New("banked-reset deny rule (cp-bha): reset_rate_limits requests are forbidden")
+var errResetRateLimitsDenied = httptransport.ErrResetRateLimitsDenied
 
 const (
 	antigravityOAuthClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
@@ -225,7 +226,7 @@ func (h *Handler) APICall(c *gin.Context) {
 	httpClient := newManagementHTTPClient(h.apiCallTransport(auth, requestProxyURL))
 	httpClient.Timeout = defaultAPICallTimeout
 
-	resp, errDo := httpClient.Do(req)
+	resp, errDo := httptransport.Do(httpClient, req)
 	if errDo != nil {
 		if errors.Is(errDo, errResetRateLimitsDenied) {
 			c.JSON(http.StatusForbidden, gin.H{"error": errResetRateLimitsDenied.Error()})
@@ -582,7 +583,7 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 
 	httpClient := newManagementHTTPClient(h.apiCallTransport(auth, requestProxyURL))
 	httpClient.Timeout = defaultAPICallTimeout
-	resp, errDo := httpClient.Do(req)
+	resp, errDo := httptransport.Do(httpClient, req)
 	if errDo != nil {
 		return "", errDo
 	}

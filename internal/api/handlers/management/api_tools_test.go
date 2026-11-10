@@ -73,8 +73,8 @@ func TestAPICallTransportDirectBypassesGlobalProxy(t *testing.T) {
 		},
 	}
 
-	transport := h.apiCallTransport(&coreauth.Auth{ProxyURL: "direct"}, "")
-	httpTransport, ok := transport.(*managementTransport).base.(*http.Transport)
+	transport := h.apiCallBaseTransport(&coreauth.Auth{ProxyURL: "direct"}, "")
+	httpTransport, ok := transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("transport type = %T, want *http.Transport", transport)
 	}
@@ -92,8 +92,8 @@ func TestAPICallTransportInvalidAuthFallsBackToGlobalProxy(t *testing.T) {
 		},
 	}
 
-	transport := h.apiCallTransport(&coreauth.Auth{ProxyURL: "bad-value"}, "")
-	httpTransport, ok := transport.(*managementTransport).base.(*http.Transport)
+	transport := h.apiCallBaseTransport(&coreauth.Auth{ProxyURL: "bad-value"}, "")
+	httpTransport, ok := transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("transport type = %T, want *http.Transport", transport)
 	}
@@ -122,8 +122,8 @@ func TestAPICallTransportRequestProxyOverridesCredentialAndGlobalProxy(t *testin
 	}
 	auth := &coreauth.Auth{ProxyURL: "http://credential-proxy.example.com:8080"}
 
-	transport := h.apiCallTransport(auth, " http://request-proxy.example.com:8080 ")
-	httpTransport, ok := transport.(*managementTransport).base.(*http.Transport)
+	transport := h.apiCallBaseTransport(auth, " http://request-proxy.example.com:8080 ")
+	httpTransport, ok := transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("transport type = %T, want *http.Transport", transport)
 	}
@@ -152,8 +152,8 @@ func TestAPICallTransportInvalidRequestProxyDoesNotFallBack(t *testing.T) {
 	}
 	auth := &coreauth.Auth{ProxyURL: "http://credential-proxy.example.com:8080"}
 
-	transport := h.apiCallTransport(auth, "bad-value")
-	httpTransport, ok := transport.(*managementTransport).base.(*http.Transport)
+	transport := h.apiCallBaseTransport(auth, "bad-value")
+	httpTransport, ok := transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("transport type = %T, want *http.Transport", transport)
 	}
@@ -263,8 +263,8 @@ func TestAPICallTransportAPIKeyAuthFallsBackToConfigProxyURL(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			transport := h.apiCallTransport(tc.auth, "")
-			httpTransport, ok := transport.(*managementTransport).base.(*http.Transport)
+			transport := h.apiCallBaseTransport(tc.auth, "")
+			httpTransport, ok := transport.(*http.Transport)
 			if !ok {
 				t.Fatalf("transport type = %T, want *http.Transport", transport)
 			}

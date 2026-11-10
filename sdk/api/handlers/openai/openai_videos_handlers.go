@@ -21,6 +21,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -915,7 +916,7 @@ func (h *OpenAIAPIHandler) writeVideoContentFromURL(c *gin.Context, contentURL s
 	}
 
 	httpClient := h.videoContentHTTPClient(c)
-	resp, err := httpClient.Do(req)
+	resp, err := httptransport.Do(httpClient, req)
 	if err != nil {
 		errMsg := &interfaces.ErrorMessage{
 			StatusCode: clienterror.HTTPStatusFromErrorOr(err, http.StatusBadGateway),

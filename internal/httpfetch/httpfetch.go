@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -32,7 +33,7 @@ func GetBytes(ctx context.Context, client Doer, requestURL string, headers map[s
 		}
 	}
 
-	resp, errDo := client.Do(req)
+	resp, errDo := httptransport.Do(client, req)
 	if errDo != nil {
 		return nil, fmt.Errorf("request failed: %w", errDo)
 	}

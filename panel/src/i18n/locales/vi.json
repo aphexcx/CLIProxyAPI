@@ -2322,6 +2322,8 @@
     "not_usable": "chưa thể dùng",
     "holder": "chỉ chủ tài khoản thao tác",
     "ineligible": "Tài khoản không đủ điều kiện",
+    "surface": "Không hiển thị trên giao diện này",
+    "ineligible_reason": "Không đủ điều kiện: {{reason}}",
     "disabled": "Tài khoản đã tắt",
     "cooldown": "Đang trong thời gian chờ đặt lại",
     "weekly_unknown": "Chưa rõ thời điểm đặt lại tuần",

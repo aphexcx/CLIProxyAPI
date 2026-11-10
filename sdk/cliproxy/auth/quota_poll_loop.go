@@ -142,7 +142,12 @@ func (m *Manager) quotaPollLoop(ctx context.Context, interval time.Duration) {
 			if !reserved {
 				continue
 			}
-			m.startClaudeLimitResetsPoll(ctx, cfg, auth, poller, interval)
+			// One usage endpoint request per reserved slot. A due reset read
+			// substitutes for this routine read; it never changes quota guards.
+			if m.startClaudeLimitResetsPoll(ctx, cfg, auth, poller, interval) {
+				finish()
+				continue
+			}
 			readCtx, cancel := context.WithCancel(ctx)
 			current := &read{auth: auth, cancel: cancel}
 			running[auth.ID] = current

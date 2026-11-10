@@ -107,6 +107,10 @@ func TestFetchOAuthUsageCurrentTokenOnly(t *testing.T) {
 
 func TestFetchOAuthLimitResetsUsesSeparateReadAndBeta(t *testing.T) {
 	calls := 0
+	fixture, errRead := os.ReadFile("testdata/limit_resets_surface.json")
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
 	auth := &ClaudeAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		calls++
 		if req.URL.String() != LimitResetsUsageURL || req.Method != http.MethodGet || req.Body != nil {
@@ -118,7 +122,12 @@ func TestFetchOAuthLimitResetsUsesSeparateReadAndBeta(t *testing.T) {
 		if _, deadline := req.Context().Deadline(); deadline {
 			t.Fatal("added response deadline")
 		}
-		return jsonResponse(req, `{"five_hour":{"utilization":0,"resets_at":null},"cedar_ember":{"eligible":false,"ineligible_reason":"surface","grants":[]}}`), nil
+		for _, key := range []string{"X-App", "X-Client-Version", "Anthropic-Version", "X-Stainless-Package-Version"} {
+			if req.Header.Get(key) != "" {
+				t.Fatalf("unexpected client/version header %s", key)
+			}
+		}
+		return jsonResponse(req, string(fixture)), nil
 	})}}
 	usage, err := auth.FetchOAuthLimitResets(context.Background(), "fixture-only")
 	if err != nil || calls != 1 || !strings.Contains(string(usage), `"cedar_ember"`) {

@@ -2314,6 +2314,8 @@
     "not_usable": "当前不可用",
     "holder": "仅限持有人操作",
     "ineligible": "账户不符合条件",
+    "surface": "此界面无法显示重置状态",
+    "ineligible_reason": "不符合条件：{{reason}}",
     "disabled": "账户已停用",
     "cooldown": "重置冷却中",
     "weekly_unknown": "每周重置时间未知",

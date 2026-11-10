@@ -23,6 +23,7 @@ const seat: ClaudeLimitResetSeat = {
   last_good_at: '2026-11-10T00:00:00Z',
   stale: false,
   age_seconds: 12,
+  receivedAt: 12_000,
   best_click_rank: 1,
   rank_reason: 'holder action only',
   cedar_ember: {
@@ -50,6 +51,7 @@ beforeEach(async () => {
   await i18n.changeLanguage('en');
   invalidateClaudeLimitResets();
   mocks.push(spyOn(Date, 'now').mockReturnValue(observedAt + 12_000));
+  mocks.push(spyOn(performance, 'now').mockReturnValue(12_000));
 });
 afterEach(() => {
   for (const mock of mocks) mock.mockRestore();
@@ -83,6 +85,18 @@ test('stale reset data stays visible with error and age but no recommendation', 
   expect(html).toContain('12s ago · stale');
   expect(html).toContain('not usable now');
   expect(html).not.toContain('Best click');
+});
+
+test('recorded surface response shows its reason rather than zero resets', async () => {
+  const fixture = JSON.parse(await readFile('../internal/auth/claude/testdata/limit_resets_surface.json', 'utf8'));
+  const hidden = { ...seat, cedar_ember: fixture.cedar_ember };
+  const html = renderToStaticMarkup(createElement(ClaudeLimitResetsView, { seat: hidden }));
+  expect(html).toContain('Resets: —');
+  expect(html).toContain('Not visible on this surface');
+  expect(html).not.toContain('Resets: 0');
+  expect(html).not.toContain('Best click');
+  hidden.cedar_ember.ineligible_reason = 'future_reason';
+  expect(renderToStaticMarkup(createElement(ClaudeLimitResetsView, { seat: hidden }))).toContain('Ineligible: future_reason');
 });
 
 test('cards coalesce cache GETs and isolate management connections', async () => {
@@ -193,11 +207,12 @@ test('a mounted list subscriber follows background token rotation and account re
   }
 });
 
-test('two failed refreshes display elapsed time from the last good read', () => {
-  const clock = spyOn(Date, 'now');
+test('two failed refreshes advance server age despite browser clock skew', () => {
+  const clock = spyOn(performance, 'now');
   mocks.push(clock);
+  mocks.push(spyOn(Date, 'now').mockReturnValue(observedAt - 86_400_000));
   for (const seconds of [72, 3_612]) {
-    clock.mockReturnValue(observedAt + seconds * 1_000);
+    clock.mockReturnValue(seconds * 1_000);
     const html = renderToStaticMarkup(createElement(ClaudeLimitResetsView, { seat, failed: true }));
     expect(html).toContain(`${seconds}s ago · stale`);
     expect(html).not.toContain('Best click');

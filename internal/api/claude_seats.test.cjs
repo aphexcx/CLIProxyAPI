@@ -30,6 +30,19 @@ function page() {
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
+test('recorded surface response is unknown rather than zero and has no rank', async () => {
+  const p = page();
+  p.elements.key.value = 'fixture-key';
+  p.elements.login.onsubmit({ preventDefault() {} });
+  await settle();
+  p.context.surface = JSON.parse(fs.readFileSync(path.join(__dirname, '../auth/claude/testdata/limit_resets_surface.json'), 'utf8')).cedar_ember;
+  vm.runInContext('render(lastFiles, {seats: lastResets.seats.map(seat => ({...seat, cedar_ember: surface}))})', p.context);
+  const text = element => element.textContent + element.children.map(text).join(' ');
+  assert.match(text(p.elements.seats), /Resets: —/);
+  assert.match(text(p.elements.seats), /Not visible on this surface/);
+  assert.doesNotMatch(text(p.elements.seats), /Resets: 0|Best click/);
+});
+
 test('same-name credential replacement hides the previous generation reset row', async () => {
   const p = page();
   p.elements.key.value = 'fixture-key';

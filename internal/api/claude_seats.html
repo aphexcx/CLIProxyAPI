@@ -66,8 +66,12 @@ function render(files, resets) {
     const grants = reset?.cedar_ember?.grants || [];
     const column = node('div', undefined, card, 'resets');
     column.title = resets.ranking_rule || '';
-    node('strong', 'Resets: ' + (reset?.cedar_ember ? grants.reduce((sum, grant) => sum + grant.resets_left, 0) : '—') + (reset?.best_click_rank && !reset.stale ? ' · Best click #' + reset.best_click_rank : ''), column);
+    node('strong', 'Resets: ' + (reset?.cedar_ember?.eligible ? grants.reduce((sum, grant) => sum + grant.resets_left, 0) : '—') + (reset?.cedar_ember?.eligible && reset.best_click_rank && !reset.stale ? ' · Best click #' + reset.best_click_rank : ''), column);
     node('div', reset?.error || reset?.rank_reason || 'Reset status unavailable', column);
+    if (reset?.cedar_ember?.eligible === false && reset.cedar_ember.ineligible_reason) {
+      const reason = reset.cedar_ember.ineligible_reason;
+      node('div', reason === 'surface' ? 'Not visible on this surface' : 'Ineligible: ' + reason, column);
+    }
     if (reset?.age_seconds != null) node('small', 'Last good read: ' + reset.age_seconds + 's ago' + (reset.stale ? ' · stale' : ''), column);
     for (const grant of grants) node('div', (grant.label || grant.id) + ': ' + grant.resets_left + ' left · expires ' + date(grant.ends_at) + ' · ' + (!reset.stale && reset.cedar_ember.eligible && grant.usable_now ? 'usable now' : 'not usable now'), column);
     const usage = file.claude_usage;

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 )
 
 // Client wraps HTTP calls to the management API.
@@ -66,7 +68,7 @@ func (c *Client) doRequest(method, path string, body io.Reader) ([]byte, int, er
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.http.Do(req)
+	resp, err := httptransport.Do(c.http, req)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -157,7 +157,7 @@ func TestLimitResetsHungReadDoesNotBlockRoutinePolls(t *testing.T) {
 		m.StartQuotaPolling(context.Background())
 		defer m.StopQuotaPolling()
 		synctest.Wait()
-		<-time.After(130 * time.Second)
+		<-time.After(150 * time.Second)
 		synctest.Wait()
 		if p.routine.Load() < 2 || p.resets.Load() != 1 {
 			t.Fatalf("routine=%d resets=%d", p.routine.Load(), p.resets.Load())

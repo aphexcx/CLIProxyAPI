@@ -19,6 +19,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -276,7 +277,7 @@ func (a *MetaAuth) StartDeviceFlowWithEndpoint(ctx context.Context, endpoint str
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "muse-code/1.0.2")
 
-	resp, err := a.httpClient.Do(req)
+	resp, err := httptransport.Do(a.httpClient, req)
 	if err != nil {
 		return nil, fmt.Errorf("meta device flow: request failed: %w", err)
 	}
@@ -357,7 +358,7 @@ func (a *MetaAuth) WaitForAuthorization(ctx context.Context, dcr *DeviceCodeResp
 			req.Header.Set("Accept", "application/json")
 			req.Header.Set("User-Agent", "muse-code/1.0.2")
 
-			resp, err := a.httpClient.Do(req)
+			resp, err := httptransport.Do(a.httpClient, req)
 			if err != nil {
 				log.Warnf("meta auth: poll request error: %v (retrying)", err)
 				continue
@@ -453,7 +454,7 @@ func (a *MetaAuth) MintAPIKey(ctx context.Context, dcaToken string) (*MintedKeyR
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := a.httpClient.Do(req)
+	resp, err := httptransport.Do(a.httpClient, req)
 	if err != nil {
 		return nil, fmt.Errorf("meta auth: mint request failed: %w", err)
 	}

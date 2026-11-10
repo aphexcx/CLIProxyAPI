@@ -23,6 +23,7 @@ export interface ClaudeLimitResetSeat {
   } | null;
   error?: string;
   age_seconds: number | null;
+  receivedAt?: number;
   stale: boolean;
   best_click_rank: number | null;
   rank_reason: string;
@@ -31,6 +32,12 @@ export interface ClaudeLimitResetSeat {
 interface LimitResetsResponse {
   seats: ClaudeLimitResetSeat[];
   ranking_rule: string;
+}
+
+// Server age plus monotonic elapsed time avoids browser/server clock skew.
+export function claudeLimitResetAge(seat?: ClaudeLimitResetSeat, now = performance.now()) {
+  if (seat?.age_seconds == null) return null;
+  return seat.age_seconds + Math.max(0, Math.floor((now - (seat.receivedAt ?? now)) / 1_000));
 }
 
 let cached: { revision: number; until: number; value: LimitResetsResponse } | undefined;
@@ -92,6 +99,8 @@ export function readClaudeLimitResets(): Promise<LimitResetsResponse> {
     .then((value) => {
       if (apiClient.getConnectionRevision() !== revision || credentialRevision !== generation)
         throw new Error('Reset status belongs to an obsolete credential list');
+      const receivedAt = performance.now();
+      value = { ...value, seats: value.seats.map((seat) => ({ ...seat, receivedAt })) };
       cached = { revision, until: startedAt + 60_000, value };
       return value;
     })

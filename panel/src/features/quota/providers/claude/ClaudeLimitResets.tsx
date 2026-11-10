@@ -6,6 +6,7 @@ import {
   matchClaudeLimitResetSeat,
   getClaudeResetCredentialRevision,
   subscribeClaudeResetCredentials,
+  claudeLimitResetAge,
   type ClaudeLimitResetSeat,
 } from '@/services/api/claudeLimitResets';
 
@@ -87,14 +88,16 @@ export function ClaudeLimitResetsView({
   failed?: boolean;
 }) {
   const { t } = useTranslation();
-  const [now, setNow] = useState(Date.now);
+  const [now, setNow] = useState(() => performance.now());
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1_000);
+    const timer = setInterval(() => setNow(performance.now()), 1_000);
     return () => clearInterval(timer);
   }, []);
-  const lastGood = seat?.last_good_at ? Date.parse(seat.last_good_at) : NaN;
-  const age = Number.isFinite(lastGood) ? Math.max(0, Math.floor((now - lastGood) / 1_000)) : null;
+  const age = claudeLimitResetAge(seat, now);
   const grants = seat?.cedar_ember?.grants ?? [];
+  const ineligibleReason = seat?.cedar_ember?.eligible === false
+    ? seat.cedar_ember.ineligible_reason
+    : null;
   const reasons: Record<string, string> = {
     'holder action only': 'holder',
     'seat ineligible': 'ineligible',
@@ -114,12 +117,12 @@ export function ClaudeLimitResetsView({
     >
       <strong>
         {t('claude_limit_resets.count', {
-          value: seat?.cedar_ember
+          value: seat?.cedar_ember?.eligible
             ? grants.reduce((sum, grant) => sum + grant.resets_left, 0)
             : '—',
         })}
       </strong>
-      {seat?.best_click_rank != null && !seat.stale && !failed && (
+      {seat?.cedar_ember?.eligible && seat.best_click_rank != null && !seat.stale && !failed && (
         <span> · {t('claude_limit_resets.rank', { rank: seat.best_click_rank })}</span>
       )}
       <div>
@@ -128,6 +131,11 @@ export function ClaudeLimitResetsView({
           : seat?.error ||
             t(`claude_limit_resets.${reasons[seat?.rank_reason ?? ''] ?? 'awaiting'}`)}
       </div>
+      {ineligibleReason && (
+        <div>{ineligibleReason === 'surface'
+          ? t('claude_limit_resets.surface')
+          : t('claude_limit_resets.ineligible_reason', { reason: ineligibleReason })}</div>
+      )}
       {age != null && (
         <small>
           {t('claude_limit_resets.age', { seconds: age })}

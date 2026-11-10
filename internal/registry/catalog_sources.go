@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -252,7 +253,7 @@ func readCatalogSource(ctx context.Context, source string) ([]byte, error) {
 		if errRequest != nil {
 			return nil, errRequest
 		}
-		resp, errDo := http.DefaultClient.Do(req)
+		resp, errDo := httptransport.Do(http.DefaultClient, req)
 		if errDo != nil {
 			return nil, errDo
 		}

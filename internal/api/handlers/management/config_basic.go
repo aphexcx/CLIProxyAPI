@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
@@ -57,7 +58,7 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 	}
 	setLatestReleaseRequestHeaders(req)
 
-	resp, err := client.Do(req)
+	resp, err := httptransport.Do(client, req)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "request_failed", "message": err.Error()})
 		return

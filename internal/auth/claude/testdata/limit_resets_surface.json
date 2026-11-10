@@ -1,0 +1,22 @@
+{
+  "five_hour": {
+    "utilization": 0,
+    "resets_at": null
+  },
+  "seven_day": {
+    "utilization": 0,
+    "resets_at": null
+  },
+  "limits": [],
+  "cedar_ember": {
+    "eligible": false,
+    "ineligible_reason": "surface",
+    "at_limit": false,
+    "exhausted": [],
+    "grants": [],
+    "next_grant_id": null,
+    "weekly_resets_at": null,
+    "cooldown_until": null,
+    "event_props": null
+  }
+}

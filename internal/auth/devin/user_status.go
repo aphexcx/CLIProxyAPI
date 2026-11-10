@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -356,7 +357,7 @@ func (s *DevinAuthService) FetchUserStatus(ctx context.Context, sessionToken, de
 	req.Header.Set("Accept", "*/*")
 	req.Header["User-Agent"] = []string{""}
 
-	resp, errDo := s.client.Do(req)
+	resp, errDo := httptransport.Do(s.client, req)
 	if errDo != nil {
 		return nil, errDo
 	}

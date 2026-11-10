@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -78,9 +79,11 @@ func TestLimitResetsReadsCacheOnlyAndPreservesFailureAge(t *testing.T) {
 		m.StartQuotaPolling(context.Background())
 		t.Cleanup(m.StopQuotaPolling)
 		synctest.Wait()
+		<-time.After(70 * time.Second)
+		synctest.Wait()
 		for range 10 {
 			got := read("/?auth=fixture.json", 200)
-			if len(got) != 1 || got[0].CedarEmber.Grants[0].ResetsLeft != 2 || got[0].BestClickRank == nil || *got[0].BestClickRank != 1 || got[0].Stale {
+			if len(got) != 1 || got[0].CedarEmber == nil || got[0].CedarEmber.Grants[0].ResetsLeft != 2 || got[0].BestClickRank == nil || *got[0].BestClickRank != 1 || got[0].Stale {
 				t.Fatalf("cached=%+v", got)
 			}
 		}
@@ -89,10 +92,10 @@ func TestLimitResetsReadsCacheOnlyAndPreservesFailureAge(t *testing.T) {
 			t.Fatal("GET bypassed quota cadence")
 		}
 		p.fail.Store(true)
-		<-time.After(121 * time.Second)
+		<-time.After(16 * time.Minute)
 		synctest.Wait()
 		got := read("/", 200)[0]
-		if got.CedarEmber == nil || got.AgeSeconds == nil || *got.AgeSeconds != 121 || !got.Stale || got.Error != "reset status poll failed (HTTP 429)" || got.BestClickRank != nil {
+		if got.CedarEmber == nil || got.AgeSeconds == nil || *got.AgeSeconds < 960 || !got.Stale || got.Error != "reset status poll failed (HTTP 429)" || got.BestClickRank != nil {
 			t.Fatalf("failed poll=%+v", got)
 		}
 	})
@@ -160,5 +163,23 @@ func TestLimitResetRanking(t *testing.T) {
 		if resetRankReason(&s, now) == "holder action only" {
 			t.Fatal("unsafe recommendation")
 		}
+	}
+}
+
+func TestLimitResetSurfacePreservesReasonAndCannotRank(t *testing.T) {
+	body, err := os.ReadFile("../../../auth/claude/testdata/limit_resets_surface.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := coreauth.ParseClaudeLimitResets(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seat := claudeLimitResetSeat{ClaudeLimitResetsSnapshot: coreauth.ClaudeLimitResetsSnapshot{CedarEmber: status}}
+	seat.RankReason = resetRankReason(&seat, time.Now())
+	seats := []claudeLimitResetSeat{seat}
+	rankClaudeResetSeats(seats)
+	if status.Eligible || status.IneligibleReason == nil || *status.IneligibleReason != "surface" || seats[0].BestClickRank != nil || seats[0].RankReason != "seat ineligible" {
+		t.Fatal("surface answer lost its meaning or became a zero-balance recommendation")
 	}
 }
