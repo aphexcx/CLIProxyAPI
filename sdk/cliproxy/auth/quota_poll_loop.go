@@ -454,8 +454,13 @@ func (m *Manager) applyClaudeQuotaUsageSnapshot(ctx context.Context, cfg *intern
 		}
 	}
 	seat := m.claudeQuotaPollSeatLocked(auth.ID)
+	if seat.epoch != auth.RegistrationEpoch || seat.resetCredentialVersion != auth.CredentialVersion {
+		seat.resetStatus, seat.resetPolledAt, seat.resetError = nil, time.Time{}, ""
+	}
+	seat.resetCredentialVersion = auth.CredentialVersion
 	seat.polledAt, seat.epoch = now, auth.RegistrationEpoch
 	seat.usage = append(json.RawMessage(nil), usage...)
+	seat.recordLimitResets(usage, now)
 	changed := m.reconcileClaudeQuotaHoldsLocked(auth, cfg, fresh, nil, now)
 	setQuotaUsagePolicy(auth, cfg)
 	changed = clearContradictedQuotaCooldowns(auth, now) || changed
@@ -853,6 +858,7 @@ func (m *Manager) updateClaudeQuotaConfig(previous, cfg *internalconfig.Config) 
 			if seat := m.quotaPollSeats[auth.ID]; seat != nil {
 				seat.polledAt, seat.queued = time.Time{}, false
 				seat.usage = nil
+				seat.resetStatus, seat.resetPolledAt, seat.resetError = nil, time.Time{}, ""
 			}
 		}
 	}

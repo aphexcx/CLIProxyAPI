@@ -26,7 +26,7 @@ func (e *ClaudeExecutor) PollQuotaUsage(ctx context.Context, auth *cliproxyauth.
 	if strings.TrimSpace(accessToken) == "" {
 		accessToken, _ = auth.Metadata["accessToken"].(string)
 	}
-	windows, usage, errFetch := claudeauth.NewClaudeAuthWithProxyURL(e.cfg, auth.ProxyURL).FetchOAuthUsageSnapshot(ctx, accessToken)
+	windows, usage, errFetch := claudeauth.NewClaudeAuthWithProxyURL(e.cfg, auth.ProxyURL).FetchOAuthUsageWithLimitResets(ctx, accessToken)
 	if errFetch != nil {
 		return nil, nil, errFetch
 	}

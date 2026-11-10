@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -22,6 +23,14 @@ import (
 )
 
 const defaultAPICallTimeout = 60 * time.Second
+
+var errResetRateLimitsDenied = errors.New("banked-reset deny rule (cp-bha): reset_rate_limits requests are forbidden")
+
+// URL.Path is already percent-decoded by net/url. Normalize it before
+// checking the suffix, regardless of the destination host or HTTP method.
+func deniesResetRateLimits(u *url.URL) bool {
+	return u != nil && strings.HasSuffix(strings.TrimRight(strings.ToLower(path.Clean(u.Path)), "/"), "/reset_rate_limits")
+}
 
 const (
 	antigravityOAuthClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
@@ -124,6 +133,10 @@ func (h *Handler) APICall(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid url"})
 		return
 	}
+	if deniesResetRateLimits(parsedURL) {
+		c.JSON(http.StatusForbidden, gin.H{"error": errResetRateLimitsDenied.Error()})
+		return
+	}
 
 	requestProxyURL := strings.TrimSpace(body.ProxyURL)
 	if requestProxyURL != "" {
@@ -218,11 +231,24 @@ func (h *Handler) APICall(c *gin.Context) {
 
 	httpClient := &http.Client{
 		Timeout: defaultAPICallTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if deniesResetRateLimits(req.URL) {
+				return errResetRateLimitsDenied
+			}
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			return nil
+		},
 	}
 	httpClient.Transport = h.apiCallTransport(auth, requestProxyURL)
 
 	resp, errDo := httpClient.Do(req)
 	if errDo != nil {
+		if errors.Is(errDo, errResetRateLimitsDenied) {
+			c.JSON(http.StatusForbidden, gin.H{"error": errResetRateLimitsDenied.Error()})
+			return
+		}
 		log.WithError(errDo).Debug("management APICall request failed")
 		c.JSON(http.StatusBadGateway, gin.H{"error": "request failed"})
 		return

@@ -56,11 +56,19 @@ async function request(path, body) {
   if (!response.ok) throw new Error('Management request failed (' + response.status + ').');
   return response.json();
 }
-function render(files) {
+function render(files, resets) {
   seats.replaceChildren();
   for (const file of files.filter(file => file.provider === 'claude')) {
     const card = node('article', undefined, seats);
     node('h2', file.label || file.name, card);
+    const reset = (resets.seats || []).find(seat => seat.name === file.name);
+    const grants = reset?.cedar_ember?.grants || [];
+    const column = node('div', undefined, card, 'resets');
+    column.title = resets.ranking_rule || '';
+    node('strong', 'Resets: ' + (reset?.cedar_ember ? grants.reduce((sum, grant) => sum + grant.resets_left, 0) : '—') + (reset?.best_click_rank && !reset.stale ? ' · Best click #' + reset.best_click_rank : ''), column);
+    node('div', reset?.error || reset?.rank_reason || 'Reset status unavailable', column);
+    if (reset?.age_seconds != null) node('small', 'Last good read: ' + reset.age_seconds + 's ago' + (reset.stale ? ' · stale' : ''), column);
+    for (const grant of grants) node('div', (grant.label || grant.id) + ': ' + grant.resets_left + ' left · expires ' + date(grant.ends_at) + ' · ' + (!reset.stale && reset.cedar_ember.eligible && grant.usable_now ? 'usable now' : 'not usable now'), column);
     const usage = file.claude_usage;
     if (!usage) { node('p', 'Cached usage is unavailable for this credential.', card); continue; }
     node('p', usage.polled_at ? 'Last successful poll: ' + date(usage.polled_at) + ' · ' + usage.age_seconds + 's ago' : 'Not polled yet', card, 'muted');
@@ -99,7 +107,9 @@ async function load() {
   try {
     const data = await request('credentials');
     if (current !== revision) return;
-    render(data.files || []);
+    const resets = await request('claude/limit-resets');
+    if (current !== revision) return;
+    render(data.files || [], resets);
     login.hidden = true; logout.hidden = false;
     status.textContent = 'Updated ' + new Date().toLocaleTimeString();
   } catch (error) { if (current === revision) status.textContent = error.message + ' Displayed values may be stale.'; }

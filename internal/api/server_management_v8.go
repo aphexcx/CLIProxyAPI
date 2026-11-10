@@ -44,6 +44,7 @@ func (s *Server) registerManagementV8Routes() {
 
 	v8.GET("/credentials", s.mgmt.ListAuthFiles)
 	v8.GET("/credentials/quota", s.mgmt.GetClaudeCredentialQuota)
+	v8.GET("/claude/limit-resets", s.mgmt.GetClaudeLimitResets)
 	v8.POST("/credentials/quota", s.mgmt.GetClaudeCredentialQuota)
 	v8.POST("/credentials", s.mgmt.UploadAuthFileV8)
 	v8.DELETE("/credentials", s.mgmt.DeleteAuthFileV8)

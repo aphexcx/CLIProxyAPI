@@ -105,6 +105,27 @@ func TestFetchOAuthUsageCurrentTokenOnly(t *testing.T) {
 	}
 }
 
+func TestFetchOAuthUsageWithLimitResetsUsesSameReadAndBeta(t *testing.T) {
+	calls := 0
+	auth := &ClaudeAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if req.URL.String() != LimitResetsUsageURL || req.Method != http.MethodGet || req.Body != nil {
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+		}
+		if req.Header.Get("Authorization") != "Bearer fixture-only" || req.Header.Get("Anthropic-Beta") != "oauth-2025-04-20" || req.Header.Get("User-Agent") != "axios/1.15.2" {
+			t.Fatal("missing honest OAuth usage headers")
+		}
+		if _, deadline := req.Context().Deadline(); deadline {
+			t.Fatal("added response deadline")
+		}
+		return jsonResponse(req, `{"five_hour":{"utilization":0,"resets_at":null},"cedar_ember":{"eligible":false,"ineligible_reason":"surface","grants":[]}}`), nil
+	})}}
+	_, usage, err := auth.FetchOAuthUsageWithLimitResets(context.Background(), "fixture-only")
+	if err != nil || calls != 1 || !strings.Contains(string(usage), `"cedar_ember"`) {
+		t.Fatalf("calls=%d err=%v", calls, err)
+	}
+}
+
 type neverAnsweringUsageDialer struct{ t *testing.T }
 
 func (d neverAnsweringUsageDialer) Dial(_, _ string) (net.Conn, error) {

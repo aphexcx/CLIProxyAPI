@@ -24,10 +24,11 @@ const (
 	AuthURL = "https://claude.ai/oauth/authorize"
 	// TokenURL is the authorization-code exchange endpoint. Claude Code 2.1.220
 	// posts the code exchange to platform.claude.com, not api.anthropic.com.
-	TokenURL        = "https://platform.claude.com/v1/oauth/token"
-	RefreshTokenURL = "https://platform.claude.com/v1/oauth/token"
-	ProfileURL      = "https://api.anthropic.com/api/oauth/profile"
-	UsageURL        = "https://api.anthropic.com/api/oauth/usage"
+	TokenURL            = "https://platform.claude.com/v1/oauth/token"
+	RefreshTokenURL     = "https://platform.claude.com/v1/oauth/token"
+	ProfileURL          = "https://api.anthropic.com/api/oauth/profile"
+	UsageURL            = "https://api.anthropic.com/api/oauth/usage"
+	LimitResetsUsageURL = UsageURL + "?cedar_ember=1&skip_spend=1"
 	// RolesURL is the claude_cli role endpoint the native client queries right
 	// after a successful token exchange, alongside the profile lookup.
 	RolesURL            = "https://api.anthropic.com/api/oauth/claude_cli/roles"
@@ -283,7 +284,7 @@ func (o *ClaudeAuth) fetchOAuthControlPlaneJSON(ctx context.Context, endpoint, a
 	applyClaudeOAuthAxiosHeaders(req)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Cache-Control", "no-cache")
-	if endpoint == UsageURL {
+	if endpoint == UsageURL || endpoint == LimitResetsUsageURL {
 		req.Header.Set("Anthropic-Beta", "oauth-2025-04-20")
 		req = req.WithContext(context.WithValue(req.Context(), claudeUsageConnectTimeoutContextKey{}, claudeUsageConnectTimeout))
 	}
@@ -334,7 +335,17 @@ func (o *ClaudeAuth) FetchOAuthUsage(ctx context.Context, accessToken string) (m
 // FetchOAuthUsageSnapshot preserves optional usage fields for management clients
 // while parsing the canonical windows used by the routing guard.
 func (o *ClaudeAuth) FetchOAuthUsageSnapshot(ctx context.Context, accessToken string) (map[string]OAuthUsageWindow, json.RawMessage, error) {
-	body, observedAt, errFetch := o.fetchOAuthControlPlaneJSON(ctx, UsageURL, accessToken, "usage")
+	return o.fetchOAuthUsageSnapshot(ctx, UsageURL, accessToken)
+}
+
+// FetchOAuthUsageWithLimitResets requests the read-only reset status in the
+// existing usage poll. It never refreshes credentials or submits a claim.
+func (o *ClaudeAuth) FetchOAuthUsageWithLimitResets(ctx context.Context, accessToken string) (map[string]OAuthUsageWindow, json.RawMessage, error) {
+	return o.fetchOAuthUsageSnapshot(ctx, LimitResetsUsageURL, accessToken)
+}
+
+func (o *ClaudeAuth) fetchOAuthUsageSnapshot(ctx context.Context, endpoint, accessToken string) (map[string]OAuthUsageWindow, json.RawMessage, error) {
+	body, observedAt, errFetch := o.fetchOAuthControlPlaneJSON(ctx, endpoint, accessToken, "usage")
 	if errFetch != nil {
 		return nil, nil, errFetch
 	}
