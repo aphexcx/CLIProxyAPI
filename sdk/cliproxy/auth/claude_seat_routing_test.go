@@ -291,6 +291,133 @@ func TestClaudeSeatRoutingCacheLifetime(t *testing.T) {
 	}
 }
 
+func TestClaudeSeatRoutingEverySeatChangeLogged(t *testing.T) {
+	for _, path := range []string{"execute", "stream", "count"} {
+		for _, swept := range []bool{false, true} {
+			for _, changeSeat := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/swept=%t/change=%t", path, swept, changeSeat), func(t *testing.T) {
+					synctest.Test(t, func(t *testing.T) {
+						f := newSeatRoutingFixture(t, &RoundRobinSelector{})
+						f.quota(t, f.ids[0], 100)
+						f.quota(t, f.ids[1], 10)
+						previous := f.request(t, "private-returning-client", seatOpus, "", path)
+						clientHash := f.events("claude routing: request")[0].Data["client_hash"]
+						if len(f.events("claude routing: client moved")) != 0 {
+							t.Fatal("first placement emitted a move")
+						}
+						for turn := 0; turn < 3; turn++ {
+							// Advance only the synctest clock; no wall-clock wait.
+							time.Sleep(6 * time.Minute)
+							want := previous
+							if changeSeat {
+								want = f.ids[0]
+								if want == previous {
+									want = f.ids[1]
+								}
+							}
+							for _, id := range f.ids {
+								used := float64(10)
+								if id == want {
+									used = 100
+								}
+								f.quota(t, id, used)
+							}
+							if swept {
+								f.request(t, fmt.Sprintf("sweeper-%d", turn), seatOpus, "", path)
+							}
+							before := len(f.events("claude routing: client moved"))
+							if got := f.request(t, "private-returning-client", seatOpus, "", path); got != want {
+								t.Fatalf("placement changed: got %s, want %s", got, want)
+							}
+							moves := f.events("claude routing: client moved")[before:]
+							if changeSeat {
+								oldAuth, _ := f.m.GetByID(previous)
+								newAuth, _ := f.m.GetByID(want)
+								if len(moves) != 1 {
+									t.Fatalf("seat change %d emitted %d moves, want exactly one", turn, len(moves))
+								}
+								data := moves[0].Data
+								if data["client_hash"] != clientHash || data["reason"] != "cache_expired" ||
+									data["previous_auth_index"] != oldAuth.EnsureIndex() || data["auth_index"] != newAuth.EnsureIndex() {
+									t.Fatalf("incorrect move: %+v", data)
+								}
+							} else if len(moves) != 0 {
+								t.Fatalf("same-seat placement emitted %d moves", len(moves))
+							}
+							before = len(f.events("claude routing: client moved"))
+							f.request(t, "private-returning-client", seatOpus, "", path)
+							if len(f.events("claude routing: client moved")) != before {
+								t.Fatal("warm stay emitted another move")
+							}
+							previous = want
+						}
+					})
+				})
+			}
+		}
+	}
+}
+
+func TestClaudeSeatRoutingRequestLogFacts(t *testing.T) {
+	for _, path := range []string{"execute", "stream", "count"} {
+		t.Run(path, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := newSeatRoutingFixture(t, &RoundRobinSelector{})
+				check := func(placement string, limited bool) {
+					t.Helper()
+					events := f.events("claude routing: request")
+					entry := events[len(events)-1]
+					formatted, errFormat := (&logging.LogFormatter{}).Format(&entry)
+					if errFormat != nil {
+						t.Fatal(errFormat)
+					}
+					for _, field := range []string{"placement=" + placement, fmt.Sprintf("scarce_model_limited=%t", limited)} {
+						if !strings.Contains(string(formatted), field) {
+							t.Errorf("missing %s: %s", field, formatted)
+						}
+					}
+					for _, secret := range []string{"private-log-client", "private prompt", "shared-access-key-scope", "test-only-token"} {
+						if strings.Contains(string(formatted), secret) {
+							t.Errorf("log exposes %q", secret)
+						}
+					}
+					t.Log(strings.TrimSpace(string(formatted)))
+				}
+				f.quota(t, f.ids[0], 10)
+				f.quota(t, f.ids[1], 100)
+				f.request(t, "private-log-client", seatOpus, "", path)
+				check("fresh", true)
+				f.request(t, "private-log-client", seatOpus, "", path)
+				check("warm", true)
+				// Equal-time quota observations conservatively retain the higher usage.
+				time.Sleep(time.Second)
+				f.quota(t, f.ids[1], 10)
+				f.request(t, "private-log-client", seatOpus, "", path)
+				check("warm", false)
+				f.quota(t, f.ids[0], 100)
+				time.Sleep(6 * time.Minute)
+				f.request(t, "unrelated-sweeper", seatOpus, "", path)
+				f.request(t, "private-log-client", seatOpus, "", path)
+				check("move", true)
+				moves := f.events("claude routing: client moved")
+				if len(moves) != 1 {
+					t.Fatalf("idle return emitted %d moves", len(moves))
+				}
+				formatted, errFormat := (&logging.LogFormatter{}).Format(&moves[0])
+				if errFormat != nil {
+					t.Fatal(errFormat)
+				}
+				t.Log(strings.TrimSpace(string(formatted)))
+				time.Sleep(6 * time.Minute)
+				f.request(t, "private-log-client", seatOpus, "", path)
+				check("fresh", true)
+				f.request(t, "private-fable-client", quotaFable, "", path)
+				check("fresh", false)
+			})
+		})
+	}
+}
+
 func TestClaudeSeatRoutingIndependentClients(t *testing.T) {
 	f := newSeatRoutingFixture(t, &RoundRobinSelector{})
 	a := f.request(t, "client-a", seatOpus, "", "execute")
