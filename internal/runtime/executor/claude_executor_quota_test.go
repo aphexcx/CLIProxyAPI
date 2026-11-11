@@ -63,9 +63,10 @@ func TestClaudeQuotaFable429FailsOverAndSonnetKeepsFirstSeat(t *testing.T) {
 	}
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		model := r.URL.Query().Get("model")
+		// Independent conversations isolate model cooldowns from warm-client affinity.
 		result, errExecute := m.Execute(r.Context(), []string{"claude"}, cliproxyexecutor.Request{
 			Model: model, Payload: []byte(fmt.Sprintf(`{"model":%q,"max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`, model)),
-		}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
+		}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, Headers: http.Header{"X-Session-Id": []string{model}}})
 		if errExecute != nil {
 			http.Error(w, errExecute.Error(), 502)
 			return
