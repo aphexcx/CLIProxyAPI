@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -219,10 +220,18 @@ func TestClaudeSeatRoutingWarmClient(t *testing.T) {
 }
 
 func TestClaudeSeatRoutingFailoverOnce(t *testing.T) {
-	for _, cause := range []string{"disabled", "model_cooldown", "upstream_error"} {
-		t.Run(cause, func(t *testing.T) {
-			f := newSeatRoutingFixture(t, &RoundRobinSelector{})
-			first := f.request(t, "failover", seatOpus, "", "execute")
+	for _, scenario := range []string{"disabled", "model_cooldown", "upstream_error", "lcp-disabled", "lcp-model_cooldown", "lcp-upstream_error"} {
+		t.Run(scenario, func(t *testing.T) {
+			var selector Selector = &RoundRobinSelector{}
+			client := "failover"
+			cause := strings.TrimPrefix(scenario, "lcp-")
+			if strings.HasPrefix(scenario, "lcp-") {
+				affinity := NewSessionAffinitySelector(selector)
+				t.Cleanup(affinity.Stop)
+				selector, client = affinity, ""
+			}
+			f := newSeatRoutingFixture(t, selector)
+			first := f.request(t, client, seatOpus, "", "execute")
 			switch cause {
 			case "disabled":
 				auth, _ := f.m.GetByID(first)
@@ -237,12 +246,12 @@ func TestClaudeSeatRoutingFailoverOnce(t *testing.T) {
 			case "upstream_error":
 				f.failSeat = first
 			}
-			second := f.request(t, "failover", seatOpus, "", "execute")
+			second := f.request(t, client, seatOpus, "", "execute")
 			if second == first {
 				t.Fatal("client did not fail over")
 			}
 			for i := 0; i < 5; i++ {
-				if got := f.request(t, "failover", seatOpus, "", "execute"); got != second {
+				if got := f.request(t, client, seatOpus, "", "execute"); got != second {
 					t.Fatalf("client moved again: %s", got)
 				}
 			}
@@ -335,6 +344,195 @@ func TestClaudeSeatRoutingExistingIdentities(t *testing.T) {
 				if got := request(client, true); got != want {
 					t.Fatalf("%s identity changed during continuation: %s != %s", identity, got, want)
 				}
+			}
+		})
+	}
+}
+
+func TestClaudeSeatRoutingInactivePluginHost(t *testing.T) {
+	for _, entrypoint := range []string{"single", "mixed"} {
+		t.Run(entrypoint, func(t *testing.T) {
+			f := newSeatRoutingFixture(t, &RoundRobinSelector{})
+			f.m.SetPluginScheduler(&inactivePluginScheduler{})
+			pick := func() string {
+				opts := cliproxyexecutor.Options{Headers: http.Header{"X-Session-Id": {"host-client"}}}
+				if entrypoint == "mixed" {
+					return f.request(t, "host-client", seatOpus, "", "execute")
+				}
+				auth, errPick := f.m.SelectAuth(context.Background(), "claude", seatOpus, opts)
+				if errPick != nil {
+					t.Fatal(errPick)
+				}
+				return auth.ID
+			}
+			first := pick()
+			if second := pick(); second != first {
+				t.Fatalf("inactive host bypassed affinity: %s -> %s", first, second)
+			}
+			f.quota(t, f.ids[0], 10)
+			f.quota(t, f.ids[1], 100)
+			if got := f.request(t, "fresh-with-host", seatOpus, "", "execute"); got != f.ids[1] {
+				t.Fatalf("inactive host bypassed scarcity: %s", got)
+			}
+		})
+	}
+}
+
+func TestClaudeSeatRoutingWeightedEligibility(t *testing.T) {
+	for _, entrypoint := range []string{"single", "mixed"} {
+		t.Run(entrypoint, func(t *testing.T) {
+			f := newSeatRoutingFixture(t, &WeightedRoundRobinSelector{})
+			auth, _ := f.m.GetByID(f.ids[0])
+			auth.Attributes[AttributeWeight] = "0"
+			if _, errUpdate := f.m.Update(context.Background(), auth); errUpdate != nil {
+				t.Fatal(errUpdate)
+			}
+			retry := time.Hour
+			f.m.MarkResult(context.Background(), Result{AuthID: f.ids[1], Provider: "claude", Model: seatOpus,
+				Error: &Error{HTTPStatus: 429, Message: "model limit"}, RetryAfter: &retry})
+			var errPick error
+			if entrypoint == "single" {
+				_, errPick = f.m.SelectAuth(context.Background(), "claude", seatOpus, cliproxyexecutor.Options{})
+			} else {
+				_, _, _, errPick = f.m.pickNextMixed(context.Background(), []string{"claude"}, seatOpus, cliproxyexecutor.Options{}, nil)
+			}
+			var cooldown *modelCooldownError
+			if !errors.As(errPick, &cooldown) || cooldown.StatusCode() != 429 || cooldown.Headers().Get("Retry-After") == "" {
+				t.Fatalf("zero weight masked eligible cooldown: %v", errPick)
+			}
+		})
+	}
+}
+
+func TestClaudeSeatRoutingWeightedForcedCredits(t *testing.T) {
+	for _, entrypoint := range []string{"single", "mixed"} {
+		for _, forced := range []string{"pin", "warm"} {
+			t.Run(entrypoint+"/"+forced, func(t *testing.T) {
+				f := newSeatRoutingFixture(t, &WeightedRoundRobinSelector{})
+				auth, _ := f.m.GetByID(f.ids[0])
+				auth.Attributes[AttributeWeight] = "3"
+				if _, errUpdate := f.m.Update(context.Background(), auth); errUpdate != nil {
+					t.Fatal(errUpdate)
+				}
+				pick := func(client, pin string) string {
+					opts := cliproxyexecutor.Options{Headers: http.Header{"X-Session-Id": {client}}, Metadata: map[string]any{}}
+					if pin != "" {
+						opts.Metadata[cliproxyexecutor.PinnedAuthMetadataKey] = pin
+					}
+					var selected *Auth
+					var errPick error
+					if entrypoint == "single" {
+						selected, errPick = f.m.SelectAuth(context.Background(), "claude", seatOpus, opts)
+					} else {
+						selected, _, _, errPick = f.m.pickNextMixed(context.Background(), []string{"claude"}, seatOpus, opts, nil)
+					}
+					if errPick != nil {
+						t.Fatal(errPick)
+					}
+					return selected.ID
+				}
+				for i := 0; i < 4; i++ {
+					pin := f.ids[1]
+					if forced == "warm" && i > 0 {
+						pin = ""
+					}
+					if got := pick("bound", pin); got != f.ids[1] {
+						t.Fatalf("forced selection escaped: %s", got)
+					}
+				}
+				for i := 0; i < 12; i++ {
+					if got := pick(fmt.Sprintf("fresh-%d", i), ""); got != f.ids[0] {
+						t.Fatalf("request %d did not compensate forced traffic: %s", i, got)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestClaudeSeatRoutingScarceModelAliases(t *testing.T) {
+	for _, name := range []string{"alias", "prefix"} {
+		t.Run(name, func(t *testing.T) {
+			f := newSeatRoutingFixture(t, &FillFirstSelector{})
+			f.quota(t, f.ids[0], 10)
+			f.quota(t, f.ids[1], 100)
+			if name == "alias" {
+				f.m.SetOAuthModelAlias(map[string][]config.OAuthModelAlias{"claude": {{Name: quotaFable, Alias: "fable"}}})
+			}
+			for _, id := range f.ids {
+				route := "fable"
+				if name == "prefix" {
+					auth, _ := f.m.GetByID(id)
+					auth.Prefix = "seat"
+					if _, errUpdate := f.m.Update(context.Background(), auth); errUpdate != nil {
+						t.Fatal(errUpdate)
+					}
+					route = "seat/" + quotaFable
+				}
+				registry.GetGlobalRegistry().RegisterClient(id, "claude", []*registry.ModelInfo{{ID: route}, {ID: seatOpus}})
+			}
+			if got := f.request(t, "fresh-alias", seatOpus, "", "execute"); got != f.ids[1] {
+				t.Fatalf("scarce upstream model hidden behind %s: selected %s", name, got)
+			}
+		})
+	}
+}
+
+func TestClaudeSeatRoutingConfiguredIdentity(t *testing.T) {
+	for _, scenario := range []string{"parent", "lcp", "lookup"} {
+		t.Run(scenario, func(t *testing.T) {
+			selector := NewSessionAffinitySelector(&RoundRobinSelector{})
+			t.Cleanup(selector.Stop)
+			f := newSeatRoutingFixture(t, selector)
+			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude,
+				Headers: http.Header{"X-Claude-Code-Session-Id": {"root"}}, Metadata: map[string]any{cliproxyexecutor.CallerScopeMetadataKey: "caller"},
+				OriginalRequest: []byte(`{"messages":[{"role":"user","content":"root task"}]}`)}
+			if scenario == "lcp" {
+				opts.Headers = nil
+			}
+			first, errFirst := f.m.SelectAuth(context.Background(), "claude", seatOpus, opts)
+			if errFirst != nil {
+				t.Fatal(errFirst)
+			}
+			switch scenario {
+			case "parent":
+				opts.Headers.Set("X-Claude-Code-Agent-Id", "child")
+			case "lcp":
+				if opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey] == nil {
+					t.Fatal("configured LCP identity was discarded")
+				}
+				opts.Metadata = map[string]any{cliproxyexecutor.CallerScopeMetadataKey: "caller"}
+				opts.OriginalRequest = []byte(`{"messages":[{"role":"user","content":"root task"},{"role":"assistant","content":"answer"},{"role":"user","content":"continue"}]}`)
+			case "lookup":
+				auth, status := f.m.LookupSessionAffinity("claude", seatOpus, "root")
+				if auth == nil || auth.ID != first.ID || status != "bound" {
+					t.Fatalf("lookup lost active affinity: %v %s", auth, status)
+				}
+				return
+			}
+			second, errSecond := f.m.SelectAuth(context.Background(), "claude", seatOpus, opts)
+			if errSecond != nil || second.ID != first.ID {
+				t.Fatalf("configured %s identity lost its seat: %v %v", scenario, second, errSecond)
+			}
+		})
+	}
+}
+
+func TestClaudeSeatRoutingAvailabilityOverridesLegacyRebindMode(t *testing.T) {
+	for _, mode := range []string{SessionAffinityRebindOnNever, SessionAffinityRebindOnQuota} {
+		t.Run(mode, func(t *testing.T) {
+			selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &RoundRobinSelector{}, RebindOn: mode})
+			t.Cleanup(selector.Stop)
+			f := newSeatRoutingFixture(t, selector)
+			first := f.request(t, "required-failover", seatOpus, "", "execute")
+			f.failSeat = first
+			second := f.request(t, "required-failover", seatOpus, "", "execute")
+			if second == first {
+				t.Fatal("legacy mode refused the available alternative")
+			}
+			f.failSeat = ""
+			if got := f.request(t, "required-failover", seatOpus, "", "execute"); got != second {
+				t.Fatal("legacy mode restored the failed seat instead of retaining the new cache")
 			}
 		})
 	}

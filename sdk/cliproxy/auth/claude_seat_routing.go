@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	cliproxysession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -19,15 +21,17 @@ import (
 // State is process-local and survives selector/config reloads on this manager.
 type claudeSeatRouting struct {
 	mu          sync.Mutex
-	bindings    map[string]claudeSeatBinding
+	bindings    map[string]*claudeSeatBinding
 	counts      map[claudeSeatCountKey]uint64
 	nextCleanup time.Time
 }
 
 type claudeSeatBinding struct {
-	authID    string
-	authIndex string
-	expiresAt time.Time
+	authID     string
+	authIndex  string
+	clientKey  string
+	identities map[string]bool
+	expiresAt  time.Time
 }
 
 type claudeSeatCountKey struct {
@@ -39,6 +43,7 @@ type claudeSeatCountKey struct {
 type claudeSeatSelector struct {
 	manager  *Manager
 	fallback Selector
+	affinity *SessionAffinitySelector
 	tried    map[string]struct{}
 }
 
@@ -59,17 +64,17 @@ func (m *Manager) claudeSelector(selector Selector, providers []string, tried ma
 		return selector
 	}
 	fallback := selector
-	if affinity, ok := fallback.(*SessionAffinitySelector); ok {
+	affinity, hasAffinity := fallback.(*SessionAffinitySelector)
+	if hasAffinity {
 		fallback = affinity.fallback
 	}
 	if !isBuiltInSelector(fallback) {
 		return selector
 	}
-	return &claudeSeatSelector{manager: m, fallback: fallback, tried: tried}
+	return &claudeSeatSelector{manager: m, fallback: fallback, affinity: affinity, tried: tried}
 }
 
-func claudeClientKey(opts cliproxyexecutor.Options) string {
-	identity := CanonicalSessionID(opts.Headers, opts.OriginalRequest, opts.Metadata)
+func claudeClientKey(identity string, opts cliproxyexecutor.Options) string {
 	if identity == "" {
 		return ""
 	}
@@ -116,20 +121,36 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 		auths = positiveWeightAuths(auths)
 	}
 	now := time.Now()
-	key := claudeClientKey(opts)
 	routing := &s.manager.claudeSeats
 	routing.mu.Lock()
 	defer routing.mu.Unlock()
+	opts.EnsureMetadata()
+	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "claude"
+	rootIdentity := CanonicalSessionID(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	rootKey := claudeClientKey(rootIdentity, opts)
+	identity, parentID, lcp := s.conversationIdentity(model, opts)
+	key := claudeClientKey(identity, opts)
 	if routing.bindings == nil {
-		routing.bindings = make(map[string]claudeSeatBinding)
+		routing.bindings = make(map[string]*claudeSeatBinding)
 		routing.counts = make(map[claudeSeatCountKey]uint64)
 	}
-	previous, hadBinding := routing.bindings[key]
+	binding := routing.bindings[key]
+	if binding == nil {
+		binding = routing.bindings[rootKey]
+	}
+	var previous claudeSeatBinding
+	hadBinding := binding != nil
+	if hadBinding {
+		previous = *binding
+		key = binding.clientKey
+	}
 	if !now.Before(routing.nextCleanup) {
-		for client, binding := range routing.bindings {
-			if client != key && !now.Before(binding.expiresAt) {
-				log.WithFields(log.Fields{"provider": "claude", "client_hash": client,
-					"auth_index": binding.authIndex, "reason": "cache_expired"}).Info("claude routing: binding expired")
+		for client, cached := range routing.bindings {
+			if cached != binding && !now.Before(cached.expiresAt) {
+				if client == cached.clientKey {
+					log.WithFields(log.Fields{"provider": "claude", "client_hash": client,
+						"auth_index": cached.authIndex, "reason": "cache_expired"}).Info("claude routing: binding expired")
+				}
 				delete(routing.bindings, client)
 			}
 		}
@@ -153,6 +174,17 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 			reason = "cache_expired"
 		}
 	}
+	if !hadBinding && parentID != "" {
+		if parent, ok := routing.bindings[claudeClientKey(parentID, opts)]; ok && now.Before(parent.expiresAt) {
+			for _, auth := range auths {
+				if auth.ID == parent.authID {
+					selected = auth
+					reason = "parent_affinity"
+					break
+				}
+			}
+		}
+	}
 	if selected == nil {
 		candidates := s.preferScarceModelUnavailable(ctx, auths, model, opts, now)
 		var errPick error
@@ -163,14 +195,50 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 		if errPick != nil || selected == nil {
 			return selected, errPick
 		}
+	} else if weighted, ok := s.fallback.(*WeightedRoundRobinSelector); ok {
+		// A warm selection is forced, but still owes traffic to eligible peers.
+		var reservation *weightedReservation
+		var errPick error
+		selected, reservation, errPick = weighted.reserveForRequest(ctx, "claude", model, opts, auths, selected)
+		reservation.finish(errPick == nil && selected != nil)
+		if errPick != nil || selected == nil {
+			return selected, errPick
+		}
 	}
+	if lcp {
+		// Reuse the configured matcher's identity/tree bookkeeping after the seat
+		// decision. A single forced candidate prevents it from changing placement.
+		identitySelector := *s.affinity
+		identitySelector.fallback = &FillFirstSelector{}
+		identitySelector.rebindOnNever = false
+		identitySelector.rebindOnQuotaOnly = false
+		var reservation *weightedReservation
+		_, _, _ = identitySelector.pickLCP(ctx, "claude", model, opts, []*Auth{selected}, selectorLogEntry(ctx), &reservation)
+		reservation.finish(false)
+		if matched := sessionMetadataString(opts.Metadata, cliproxyexecutor.LCPAffinitySessionIDMetadataKey); matched != "" {
+			identity = cliproxysession.BoundSessionIdentity(matched)
+		}
+	}
+	opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = identity
 	index := selected.EnsureIndex()
 	if key != "" {
 		expiresAt := now.Add(claudePromptCacheTTL(opts.OriginalRequest))
 		if previous.authID == selected.ID && previous.expiresAt.After(expiresAt) {
 			expiresAt = previous.expiresAt
 		}
-		routing.bindings[key] = claudeSeatBinding{authID: selected.ID, authIndex: index, expiresAt: expiresAt}
+		if binding == nil {
+			binding = &claudeSeatBinding{clientKey: key, identities: make(map[string]bool)}
+		}
+		binding.authID, binding.authIndex, binding.expiresAt = selected.ID, index, expiresAt
+		binding.identities[identity] = true
+		binding.identities[rootIdentity] = true
+		routing.bindings[key] = binding
+		if rootKey != "" {
+			routing.bindings[rootKey] = binding
+		}
+		if identityKey := claudeClientKey(identity, opts); identityKey != "" {
+			routing.bindings[identityKey] = binding
+		}
 		if hadBinding && previous.authID != selected.ID {
 			log.WithFields(log.Fields{"provider": "claude", "model": model, "client_hash": key,
 				"previous_auth_index": previous.authIndex, "auth_index": index, "reason": reason}).Info("claude routing: client moved")
@@ -181,6 +249,72 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 	log.WithFields(log.Fields{"provider": "claude", "model": countKey.model, "client_hash": key,
 		"auth_index": index, "request_count": routing.counts[countKey], "reason": reason}).Info("claude routing: request")
 	return selected, nil
+}
+
+// Keep configured parent and prefix identities while letting cache lifetime and
+// current availability, rather than legacy rebind modes, govern seat placement.
+func (s *claudeSeatSelector) conversationIdentity(model string, opts cliproxyexecutor.Options) (identity, parent string, lcp bool) {
+	identity = CanonicalSessionID(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	if s.affinity == nil {
+		return identity, "", false
+	}
+	if explicit, fallback := extractExplicitSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata); explicit != "" {
+		isFork, _ := opts.Metadata[cliproxyexecutor.IsForkMetadataKey].(bool)
+		if s.affinity.subagentAffinity && !isFork {
+			parent = cliproxysession.BoundSessionIdentity(fallback)
+		}
+		return identity, parent, false
+	}
+	if s.affinity.matcher == nil {
+		return identity, "", false
+	}
+	turns := cliproxysession.ExtractCanonicalTurns(opts.SourceFormat, opts.OriginalRequest)
+	if len(turns) == 0 {
+		return identity, "", false
+	}
+	if match, ok := s.affinity.matcher.Match(lcpAffinityNamespace("claude", model, opts.Metadata), turns); ok {
+		identity = cliproxysession.BoundSessionIdentity(match.SessionID)
+		parent = cliproxysession.BoundSessionIdentity(match.ParentSessionID)
+	}
+	return identity, parent, true
+}
+
+func (r *claudeSeatRouting) lookup(sessionID string) (string, string) {
+	identity := cliproxysession.BoundSessionIdentity(strings.TrimSpace(sessionID))
+	if identity == "" {
+		return "", "unbound"
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var found string
+	now := time.Now()
+	candidates := []string{identity}
+	hasPrefix := false
+	for _, prefix := range cliproxysession.CandidateSessionPrefixes {
+		hasPrefix = hasPrefix || strings.HasPrefix(identity, prefix)
+	}
+	if !hasPrefix {
+		for _, prefix := range cliproxysession.CandidateSessionPrefixes {
+			candidates = append(candidates, cliproxysession.BoundSessionIdentity(prefix+identity))
+		}
+	}
+	for _, binding := range r.bindings {
+		matches := false
+		for _, candidate := range candidates {
+			matches = matches || binding.identities[candidate]
+		}
+		if !matches || !now.Before(binding.expiresAt) {
+			continue
+		}
+		if found != "" && found != binding.authID {
+			return "", "ambiguous"
+		}
+		found = binding.authID
+	}
+	if found != "" {
+		return found, "bound"
+	}
+	return "", "unbound"
 }
 
 // A scarce model is defined by the existing configured model-window mapping.
@@ -195,6 +329,12 @@ func (s *claudeSeatSelector) preferScarceModelUnavailable(ctx context.Context, a
 	var preferred []*Auth
 	for _, auth := range auths {
 		requested := canonicalModelKey(s.manager.selectionModelForAuth(auth, model))
+		supported := make(map[string]bool)
+		for _, advertised := range registry.GetGlobalRegistry().GetModelsForClient(auth.ID) {
+			if advertised != nil {
+				supported[canonicalModelKey(s.manager.selectionModelForAuth(auth, advertised.ID))] = true
+			}
+		}
 		prefer := false
 		for _, models := range quota.ModelWindows {
 			includesRequested := false
@@ -207,7 +347,7 @@ func (s *claudeSeatSelector) preferScarceModelUnavailable(ctx context.Context, a
 				continue
 			}
 			for _, scarce := range models {
-				if !s.manager.authSupportsRouteModel(registry.GetGlobalRegistry(), auth, scarce) {
+				if !supported[canonicalModelKey(s.manager.selectionModelForAuth(auth, scarce))] {
 					continue
 				}
 				blocked, _, _ := isAuthBlockedForModelForRequest(ctx, auth, s.manager.selectionModelForAuth(auth, scarce), now, opts.Headers)

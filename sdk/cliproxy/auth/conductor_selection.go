@@ -35,6 +35,10 @@ func (m *Manager) hasPluginScheduler() bool {
 	m.mu.RLock()
 	scheduler := m.pluginScheduler
 	m.mu.RUnlock()
+	return pluginSchedulerActive(scheduler)
+}
+
+func pluginSchedulerActive(scheduler PluginScheduler) bool {
 	if scheduler == nil {
 		return false
 	}
@@ -771,7 +775,7 @@ func (m *Manager) LookupSessionAffinity(provider, model, sessionID string) (*Aut
 		return nil, "unsupported"
 	}
 	m.mu.RLock()
-	if m.pluginScheduler != nil {
+	if pluginSchedulerActive(m.pluginScheduler) {
 		m.mu.RUnlock()
 		return nil, "unsupported"
 	}
@@ -797,7 +801,9 @@ func (m *Manager) LookupSessionAffinity(provider, model, sessionID string) (*Aut
 	}
 
 	var authID, status string
-	if observerWithFilter, ok := sel.(interface {
+	if _, automaticClaude := m.claudeSelector(sel, []string{provider}, nil).(*claudeSeatSelector); automaticClaude {
+		authID, status = m.claudeSeats.lookup(sessionID)
+	} else if observerWithFilter, ok := sel.(interface {
 		LookupAffinity(provider, model, sessionID string, authFilters ...func(authID string) bool) (string, string)
 	}); ok && observerWithFilter != nil {
 		authID, status = observerWithFilter.LookupAffinity(provider, model, sessionID, authFilter)
@@ -938,7 +944,11 @@ func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Select
 	if _, claudeAffinity := selector.(*claudeSeatSelector); claudeAffinity {
 		sessionAffinity = true
 	}
-	if _, weighted := selector.(*WeightedRoundRobinSelector); weighted {
+	_, weighted := selector.(*WeightedRoundRobinSelector)
+	if claude, ok := selector.(*claudeSeatSelector); ok {
+		_, weighted = claude.fallback.(*WeightedRoundRobinSelector)
+	}
+	if weighted {
 		// Exclude zero-weight credentials before priority selection, just as the
 		// scheduler predicate does, including when only a lower tier has weight.
 		auths = positiveWeightAuths(auths)
@@ -2249,7 +2259,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 
 	m.mu.RLock()
 	selector := m.selector
-	if pluginScheduler == nil {
+	if !pluginSchedulerActive(pluginScheduler) {
 		selector = m.claudeSelector(selector, []string{provider}, tried)
 	}
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(selector, model)
@@ -2274,6 +2284,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	_, weighted := selector.(*WeightedRoundRobinSelector)
 	if hasAffinity && affinitySelector != nil {
 		_, weighted = affinitySelector.fallback.(*WeightedRoundRobinSelector)
+	}
+	if claude, ok := selector.(*claudeSeatSelector); ok {
+		_, weighted = claude.fallback.(*WeightedRoundRobinSelector)
 	}
 	trackPinnedAccounting := pinnedAuthID != "" && weighted
 	var accountingCandidates, affinityCandidates []*Auth
@@ -2703,7 +2716,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 
 	m.mu.RLock()
 	selector := m.selector
-	if pluginScheduler == nil {
+	if !pluginSchedulerActive(pluginScheduler) {
 		selector = m.claudeSelector(selector, providers, tried)
 	}
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(selector, model)
@@ -2722,6 +2735,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	_, weighted := selector.(*WeightedRoundRobinSelector)
 	if hasAffinity && affinitySelector != nil {
 		_, weighted = affinitySelector.fallback.(*WeightedRoundRobinSelector)
+	}
+	if claude, ok := selector.(*claudeSeatSelector); ok {
+		_, weighted = claude.fallback.(*WeightedRoundRobinSelector)
 	}
 	trackPinnedAccounting := pinnedAuthID != "" && weighted
 	var accountingCandidates, affinityCandidates []*Auth
