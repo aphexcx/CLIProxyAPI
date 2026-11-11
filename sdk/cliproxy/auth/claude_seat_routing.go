@@ -22,8 +22,17 @@ import (
 type claudeSeatRouting struct {
 	mu          sync.Mutex
 	bindings    map[string]*claudeSeatBinding
+	placements  map[string]*claudeSeatPlacement
 	counts      map[claudeSeatCountKey]uint64
 	nextCleanup time.Time
+}
+
+// Keep only the last seat per hashed identity for process-lifetime move accounting.
+// This history never participates in selection or extends an affinity binding.
+// Aliases share a record, so a return through any known alias sees the latest seat.
+type claudeSeatPlacement struct {
+	authID    string
+	authIndex string
 }
 
 type claudeSeatBinding struct {
@@ -132,6 +141,7 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 	key := claudeClientKey(identity, opts)
 	if routing.bindings == nil {
 		routing.bindings = make(map[string]*claudeSeatBinding)
+		routing.placements = make(map[string]*claudeSeatPlacement)
 		routing.counts = make(map[claudeSeatCountKey]uint64)
 	}
 	binding := routing.bindings[key]
@@ -221,6 +231,10 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 	}
 	opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = identity
 	index := selected.EnsureIndex()
+	placement := "fresh"
+	if reason == "cache_warm" {
+		placement = "warm"
+	}
 	if key != "" {
 		expiresAt := now.Add(claudePromptCacheTTL(opts.OriginalRequest))
 		if previous.authID == selected.ID && previous.expiresAt.After(expiresAt) {
@@ -239,15 +253,36 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 		if identityKey := claudeClientKey(identity, opts); identityKey != "" {
 			routing.bindings[identityKey] = binding
 		}
-		if hadBinding && previous.authID != selected.ID {
+		last := routing.placements[key]
+		if last == nil {
+			last = routing.placements[rootKey]
+		}
+		if last != nil && !hadBinding {
+			reason = "cache_expired"
+		}
+		if last != nil && last.authID != selected.ID {
+			placement = "move"
 			log.WithFields(log.Fields{"provider": "claude", "model": model, "client_hash": key,
-				"previous_auth_index": previous.authIndex, "auth_index": index, "reason": reason}).Info("claude routing: client moved")
+				"previous_auth_index": last.authIndex, "auth_index": index, "reason": reason}).Info("claude routing: client moved")
+		}
+		if last == nil {
+			last = &claudeSeatPlacement{}
+		}
+		last.authID, last.authIndex = selected.ID, index
+		routing.placements[key] = last
+		if rootKey != "" {
+			routing.placements[rootKey] = last
+		}
+		if identityKey := claudeClientKey(identity, opts); identityKey != "" {
+			routing.placements[identityKey] = last
 		}
 	}
 	countKey := claudeSeatCountKey{authID: selected.ID, model: canonicalModelKey(model)}
 	routing.counts[countKey]++
+	_, limited := s.scarceModelAvailability(ctx, selected, model, opts, now)
 	log.WithFields(log.Fields{"provider": "claude", "model": countKey.model, "client_hash": key,
-		"auth_index": index, "request_count": routing.counts[countKey], "reason": reason}).Info("claude routing: request")
+		"auth_index": index, "request_count": routing.counts[countKey], "reason": reason, "placement": placement,
+		"scarce_model_limited": limited}).Info("claude routing: request")
 	return selected, nil
 }
 
@@ -321,40 +356,9 @@ func (r *claudeSeatRouting) lookup(sessionID string) (string, string) {
 // Prefer a seat blocked on such a model only when that window excludes this
 // request's model. The ready pool is never emptied by this preference.
 func (s *claudeSeatSelector) preferScarceModelUnavailable(ctx context.Context, auths []*Auth, model string, opts cliproxyexecutor.Options, now time.Time) []*Auth {
-	cfg, _ := s.manager.runtimeConfig.Load().(*internalconfig.Config)
-	if cfg == nil {
-		return auths
-	}
-	quota := cfg.Claude.Quota.WithDefaults()
 	var preferred []*Auth
 	for _, auth := range auths {
-		requested := canonicalModelKey(s.manager.selectionModelForAuth(auth, model))
-		supported := make(map[string]bool)
-		for _, advertised := range registry.GetGlobalRegistry().GetModelsForClient(auth.ID) {
-			if advertised != nil {
-				supported[canonicalModelKey(s.manager.selectionModelForAuth(auth, advertised.ID))] = true
-			}
-		}
-		prefer := false
-		for _, models := range quota.ModelWindows {
-			includesRequested := false
-			for _, scarce := range models {
-				if canonicalModelKey(s.manager.selectionModelForAuth(auth, scarce)) == requested {
-					includesRequested = true
-				}
-			}
-			if includesRequested {
-				continue
-			}
-			for _, scarce := range models {
-				if !supported[canonicalModelKey(s.manager.selectionModelForAuth(auth, scarce))] {
-					continue
-				}
-				blocked, _, _ := isAuthBlockedForModelForRequest(ctx, auth, s.manager.selectionModelForAuth(auth, scarce), now, opts.Headers)
-				prefer = prefer || blocked
-			}
-		}
-		if prefer {
+		if unavailable, _ := s.scarceModelAvailability(ctx, auth, model, opts, now); unavailable {
 			preferred = append(preferred, auth)
 		}
 	}
@@ -362,6 +366,47 @@ func (s *claudeSeatSelector) preferScarceModelUnavailable(ctx context.Context, a
 		return preferred
 	}
 	return auths
+}
+
+// Selection prefers any unavailable scarce model; accounting distinguishes quota
+// limits from unrelated failures such as an upstream 503 or a disabled model.
+func (s *claudeSeatSelector) scarceModelAvailability(ctx context.Context, auth *Auth, model string, opts cliproxyexecutor.Options, now time.Time) (unavailable, limited bool) {
+	cfg, _ := s.manager.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil {
+		return false, false
+	}
+	quota := cfg.Claude.Quota.WithDefaults()
+	requested := canonicalModelKey(s.manager.selectionModelForAuth(auth, model))
+	supported := make(map[string]bool)
+	for _, advertised := range registry.GetGlobalRegistry().GetModelsForClient(auth.ID) {
+		if advertised != nil {
+			supported[canonicalModelKey(s.manager.selectionModelForAuth(auth, advertised.ID))] = true
+		}
+	}
+	for _, models := range quota.ModelWindows {
+		includesRequested := false
+		for _, scarce := range models {
+			if canonicalModelKey(s.manager.selectionModelForAuth(auth, scarce)) == requested {
+				includesRequested = true
+			}
+		}
+		if includesRequested {
+			continue
+		}
+		for _, scarce := range models {
+			if !supported[canonicalModelKey(s.manager.selectionModelForAuth(auth, scarce))] {
+				continue
+			}
+			blocked, reason, _ := isAuthBlockedForModelForRequest(ctx, auth, s.manager.selectionModelForAuth(auth, scarce), now, opts.Headers)
+			if blocked {
+				unavailable = true
+				if reason == blockReasonCooldown {
+					return true, true
+				}
+			}
+		}
+	}
+	return unavailable, false
 }
 
 func (s *claudeSeatSelector) moveReason(ctx context.Context, id, model string, opts cliproxyexecutor.Options, now time.Time) string {
