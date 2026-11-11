@@ -935,6 +935,9 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 // or scheduler additionally receives lower priority tiers.
 func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Selector, auths []*Auth, provider, routeModel string, now time.Time, schedulerAcross bool, clientHeaders ...http.Header) (priorityAuths, selectorAuths []*Auth, err error) {
 	_, sessionAffinity := selector.(*SessionAffinitySelector)
+	if _, claudeAffinity := selector.(*claudeSeatSelector); claudeAffinity {
+		sessionAffinity = true
+	}
 	if _, weighted := selector.(*WeightedRoundRobinSelector); weighted {
 		// Exclude zero-weight credentials before priority selection, just as the
 		// scheduler predicate does, including when only a lower tier has weight.
@@ -983,7 +986,9 @@ func selectorContextForAvailableAuths(ctx context.Context, selector Selector, ro
 	ctx = withWeightedSelectorStateModel(ctx, selector, routeModel)
 	if !isBuiltInSelector(selector) {
 		if _, sessionAffinity := selector.(*SessionAffinitySelector); !sessionAffinity {
-			return ctx
+			if _, claudeAffinity := selector.(*claudeSeatSelector); !claudeAffinity {
+				return ctx
+			}
 		}
 	}
 	if ctx == nil {
@@ -2244,6 +2249,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 
 	m.mu.RLock()
 	selector := m.selector
+	if pluginScheduler == nil {
+		selector = m.claudeSelector(selector, []string{provider}, tried)
+	}
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(selector, model)
 	executor, okExecutor := m.executorLocked(provider)
 	if !okExecutor {
@@ -2549,7 +2557,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
 
-	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {
+	if canonicalSchedulingProvider(provider) == "claude" || m.hasPluginScheduler() || !m.useSchedulerFastPath() {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
@@ -2695,6 +2703,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 
 	m.mu.RLock()
 	selector := m.selector
+	if pluginScheduler == nil {
+		selector = m.claudeSelector(selector, providers, tried)
+	}
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(selector, model)
 	candidates := make([]*Auth, 0, len(m.auths))
 	modelKey := strings.TrimSpace(model)
@@ -2861,7 +2872,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "mixed"
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
 
-	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {
+	if onlyClaudeProviders(providers) || m.hasPluginScheduler() || !m.useSchedulerFastPath() {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 
