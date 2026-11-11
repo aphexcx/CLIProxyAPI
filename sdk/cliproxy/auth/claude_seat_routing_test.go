@@ -418,6 +418,30 @@ func TestClaudeSeatRoutingRequestLogFacts(t *testing.T) {
 	}
 }
 
+func TestClaudeSeatRoutingLogDistinguishesQuotaFromFailures(t *testing.T) {
+	for _, path := range []string{"execute", "stream", "count"} {
+		for _, status := range []int{http.StatusServiceUnavailable, http.StatusInternalServerError, http.StatusNotFound, http.StatusTooManyRequests} {
+			t.Run(fmt.Sprintf("%s/status=%d", path, status), func(t *testing.T) {
+				f := newSeatRoutingFixture(t, &RoundRobinSelector{})
+				f.quota(t, f.ids[0], 10)
+				f.quota(t, f.ids[1], 10)
+				retry := time.Hour
+				f.m.MarkResult(context.Background(), Result{AuthID: f.ids[1], Provider: "claude", Model: quotaFable,
+					Error: &Error{HTTPStatus: status, Message: "fake scarce model failure"}, RetryAfter: &retry})
+				for turn := 0; turn < 2; turn++ {
+					if got := f.request(t, "failure-log-client", seatOpus, "", path); got != f.ids[1] {
+						t.Fatalf("existing unavailable-model preference changed: got %s, want %s", got, f.ids[1])
+					}
+					events := f.events("claude routing: request")
+					if got, want := events[len(events)-1].Data["scarce_model_limited"], status == http.StatusTooManyRequests; got != want {
+						t.Errorf("status %d, turn %d: scarce_model_limited=%v, want %t", status, turn, got, want)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestClaudeSeatRoutingIndependentClients(t *testing.T) {
 	f := newSeatRoutingFixture(t, &RoundRobinSelector{})
 	a := f.request(t, "client-a", seatOpus, "", "execute")

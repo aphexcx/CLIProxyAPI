@@ -279,9 +279,10 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 	}
 	countKey := claudeSeatCountKey{authID: selected.ID, model: canonicalModelKey(model)}
 	routing.counts[countKey]++
+	_, limited := s.scarceModelAvailability(ctx, selected, model, opts, now)
 	log.WithFields(log.Fields{"provider": "claude", "model": countKey.model, "client_hash": key,
 		"auth_index": index, "request_count": routing.counts[countKey], "reason": reason, "placement": placement,
-		"scarce_model_limited": s.scarceModelUnavailable(ctx, selected, model, opts, now)}).Info("claude routing: request")
+		"scarce_model_limited": limited}).Info("claude routing: request")
 	return selected, nil
 }
 
@@ -357,7 +358,7 @@ func (r *claudeSeatRouting) lookup(sessionID string) (string, string) {
 func (s *claudeSeatSelector) preferScarceModelUnavailable(ctx context.Context, auths []*Auth, model string, opts cliproxyexecutor.Options, now time.Time) []*Auth {
 	var preferred []*Auth
 	for _, auth := range auths {
-		if s.scarceModelUnavailable(ctx, auth, model, opts, now) {
+		if unavailable, _ := s.scarceModelAvailability(ctx, auth, model, opts, now); unavailable {
 			preferred = append(preferred, auth)
 		}
 	}
@@ -367,10 +368,12 @@ func (s *claudeSeatSelector) preferScarceModelUnavailable(ctx context.Context, a
 	return auths
 }
 
-func (s *claudeSeatSelector) scarceModelUnavailable(ctx context.Context, auth *Auth, model string, opts cliproxyexecutor.Options, now time.Time) bool {
+// Selection prefers any unavailable scarce model; accounting distinguishes quota
+// limits from unrelated failures such as an upstream 503 or a disabled model.
+func (s *claudeSeatSelector) scarceModelAvailability(ctx context.Context, auth *Auth, model string, opts cliproxyexecutor.Options, now time.Time) (unavailable, limited bool) {
 	cfg, _ := s.manager.runtimeConfig.Load().(*internalconfig.Config)
 	if cfg == nil {
-		return false
+		return false, false
 	}
 	quota := cfg.Claude.Quota.WithDefaults()
 	requested := canonicalModelKey(s.manager.selectionModelForAuth(auth, model))
@@ -394,13 +397,16 @@ func (s *claudeSeatSelector) scarceModelUnavailable(ctx context.Context, auth *A
 			if !supported[canonicalModelKey(s.manager.selectionModelForAuth(auth, scarce))] {
 				continue
 			}
-			blocked, _, _ := isAuthBlockedForModelForRequest(ctx, auth, s.manager.selectionModelForAuth(auth, scarce), now, opts.Headers)
+			blocked, reason, _ := isAuthBlockedForModelForRequest(ctx, auth, s.manager.selectionModelForAuth(auth, scarce), now, opts.Headers)
 			if blocked {
-				return true
+				unavailable = true
+				if reason == blockReasonCooldown {
+					return true, true
+				}
 			}
 		}
 	}
-	return false
+	return unavailable, false
 }
 
 func (s *claudeSeatSelector) moveReason(ctx context.Context, id, model string, opts cliproxyexecutor.Options, now time.Time) string {
