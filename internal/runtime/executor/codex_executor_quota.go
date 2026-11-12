@@ -12,6 +12,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -46,7 +47,7 @@ func (e *CodexExecutor) PollQuotaUsage(ctx context.Context, auth *cliproxyauth.A
 	client := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
 	// Do not follow a usage redirect with a seat's account headers.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	resp, errDo := client.Do(req)
+	resp, errDo := httptransport.Do(client, req)
 	if errDo != nil {
 		return nil, nil, fmt.Errorf("codex quota: usage request failed")
 	}

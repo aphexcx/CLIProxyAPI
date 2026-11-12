@@ -8,12 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
@@ -46,15 +45,11 @@ func setLatestReleaseRequestHeaders(req *http.Request) {
 
 // GetLatestVersion returns the latest release version from GitHub without downloading assets.
 func (h *Handler) GetLatestVersion(c *gin.Context) {
-	client := &http.Client{Timeout: 10 * time.Second}
 	proxyURL := ""
 	if h != nil && h.cfg != nil {
 		proxyURL = strings.TrimSpace(h.cfg.ProxyURL)
 	}
-	if proxyURL != "" {
-		sdkCfg := &sdkconfig.SDKConfig{ProxyURL: proxyURL}
-		util.SetProxy(sdkCfg, client)
-	}
+	client := newManagementHTTPClient(buildProxyTransport(proxyURL))
 
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, latestReleaseURL, nil)
 	if err != nil {
@@ -63,7 +58,7 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 	}
 	setLatestReleaseRequestHeaders(req)
 
-	resp, err := client.Do(req)
+	resp, err := httptransport.Do(client, req)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "request_failed", "message": err.Error()})
 		return

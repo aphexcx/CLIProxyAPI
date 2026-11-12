@@ -17,11 +17,14 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 )
 
 const defaultAPICallTimeout = 60 * time.Second
+
+var errResetRateLimitsDenied = httptransport.ErrResetRateLimitsDenied
 
 const (
 	antigravityOAuthClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
@@ -124,6 +127,10 @@ func (h *Handler) APICall(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid url"})
 		return
 	}
+	if deniesResetRateLimits(parsedURL) {
+		c.JSON(http.StatusForbidden, gin.H{"error": errResetRateLimitsDenied.Error()})
+		return
+	}
 
 	requestProxyURL := strings.TrimSpace(body.ProxyURL)
 	if requestProxyURL != "" {
@@ -216,13 +223,15 @@ func (h *Handler) APICall(c *gin.Context) {
 		req.Host = hostOverride
 	}
 
-	httpClient := &http.Client{
-		Timeout: defaultAPICallTimeout,
-	}
-	httpClient.Transport = h.apiCallTransport(auth, requestProxyURL)
+	httpClient := newManagementHTTPClient(h.apiCallTransport(auth, requestProxyURL))
+	httpClient.Timeout = defaultAPICallTimeout
 
-	resp, errDo := httpClient.Do(req)
+	resp, errDo := httptransport.Do(httpClient, req)
 	if errDo != nil {
+		if errors.Is(errDo, errResetRateLimitsDenied) {
+			c.JSON(http.StatusForbidden, gin.H{"error": errResetRateLimitsDenied.Error()})
+			return
+		}
 		log.WithError(errDo).Debug("management APICall request failed")
 		c.JSON(http.StatusBadGateway, gin.H{"error": "request failed"})
 		return
@@ -572,11 +581,9 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	httpClient := &http.Client{
-		Timeout:   defaultAPICallTimeout,
-		Transport: h.apiCallTransport(auth, requestProxyURL),
-	}
-	resp, errDo := httpClient.Do(req)
+	httpClient := newManagementHTTPClient(h.apiCallTransport(auth, requestProxyURL))
+	httpClient.Timeout = defaultAPICallTimeout
+	resp, errDo := httptransport.Do(httpClient, req)
 	if errDo != nil {
 		return "", errDo
 	}
@@ -841,6 +848,10 @@ func (h *Handler) authByIndex(authIndex string) *coreauth.Auth {
 }
 
 func (h *Handler) apiCallTransport(auth *coreauth.Auth, requestProxyURL string) http.RoundTripper {
+	return guardManagementTransport(h.apiCallBaseTransport(auth, requestProxyURL))
+}
+
+func (h *Handler) apiCallBaseTransport(auth *coreauth.Auth, requestProxyURL string) http.RoundTripper {
 	if proxyStr := strings.TrimSpace(requestProxyURL); proxyStr != "" {
 		if transport := buildProxyTransport(proxyStr); transport != nil {
 			return transport

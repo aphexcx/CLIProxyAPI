@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -122,7 +123,7 @@ func (h *Handler) HandleDirectWebsocket(c *gin.Context) {
 		})
 		dialer := newProxyAwareSidebandDialer(helpersConfig, current)
 		dialer.Subprotocols = websocket.Subprotocols(c.Request)
-		return dialer.DialContext(ctx, upstreamURL, request.Header)
+		return httptransport.DialWebSocket(ctx, dialer, upstreamURL, request.Header)
 	}
 
 	upstream, handshakeResponse, errDial := dialUpstream(selected)

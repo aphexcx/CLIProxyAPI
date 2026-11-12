@@ -3927,8 +3927,15 @@ func TestServerResponsesWebsocketReauthorizesEachTurn(t *testing.T) {
 		registry.GetGlobalRegistry().UnregisterClient(authEntry.ID)
 	})
 
-	httpServer := httptest.NewServer(server.engine)
-	defer httpServer.Close()
+	// httptest.Close does not wait for hijacked WebSocket handlers. Join their
+	// request logging before TempDir cleanup can remove the log directory.
+	var handlers sync.WaitGroup
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlers.Add(1)
+		defer handlers.Done()
+		server.engine.ServeHTTP(w, r)
+	}))
+	defer func() { httpServer.Close(); handlers.Wait() }()
 
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/v1/responses"
 	headers := http.Header{"Authorization": []string{"Bearer key-1"}}

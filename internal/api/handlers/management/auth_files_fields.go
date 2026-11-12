@@ -368,6 +368,15 @@ func (e *authFileFieldPatchError) Error() string {
 }
 
 func applyAuthFileFieldsPatch(targetAuth *coreauth.Auth, req map[string]json.RawMessage, requestRetryPatch authFileRequestRetryPatch) error {
+	// Identity and destination are chosen when a credential is installed. A
+	// metadata edit must never repurpose its existing secret for another provider.
+	// Validate every key before applying any part of this atomic patch.
+	for key := range req {
+		switch strings.ToLower(rootAuthFileField(strings.TrimSpace(key))) {
+		case "type", "provider", "base_url", "base-url", "api_base_url", "api-base-url":
+			return &authFileFieldPatchError{message: "type, provider, base_url and api_base_url are immutable credential fields"}
+		}
+	}
 	coreauth.NormalizeCredentialMetadata(targetAuth.Metadata)
 
 	changed := false

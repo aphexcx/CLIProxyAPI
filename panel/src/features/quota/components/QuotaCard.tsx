@@ -39,8 +39,7 @@ import {
   splitSeatWindows,
   type SeatFreshness,
 } from '../seatCard';
-import { useClaudeResetGrants } from '../providers/claude/ClaudeResetGrants';
-import { ClaudeResetGrantDetails } from '../providers/claude/ClaudeResetGrantDetails';
+import { ClaudeLimitResets } from '../providers/claude/ClaudeLimitResets';
 import { hasClaudeUsageData } from '../providers/claude/data';
 import { getCodexPlanLabel } from '../providers/codex/planLabel';
 import { hasCodexUsageData } from '../providers/codex/data';
@@ -99,8 +98,8 @@ export function QuotaCard(props: QuotaCardProps) {
   const codexQuota = entry.type === 'codex' ? (quota as CodexQuotaState | undefined) : undefined;
   const retainedClaudeUsage = hasClaudeUsageData(claudeQuota) || hasCodexUsageData(codexQuota);
   const displayName = getQuotaDisplayName(file);
-  // The Codex body used to own this subscription; seat cards keep it while details are closed.
-  useQuotaCacheReads(Boolean(codexQuota?.serverCache));
+  // Native seat cards need credential updates even while Details is closed.
+  useQuotaCacheReads(Boolean(codexQuota?.serverCache || claudeQuota?.serverCache));
 
   // Capture the entrance delay only at mount, without a render-time ref read.
   const [mountEntranceDelayMs] = useState<number | null>(entranceDelayMs ?? null);
@@ -111,12 +110,6 @@ export function QuotaCard(props: QuotaCardProps) {
 
   const status = quota?.status ?? 'idle';
   const loading = status === 'loading';
-  const claudeReset = useClaudeResetGrants(
-    file,
-    entry.type === 'claude' && status !== 'idle',
-    !canRefresh || loading || resetting,
-    onRefresh
-  );
   const providerType =
     entry.type === 'plugin'
       ? String(
@@ -130,24 +123,10 @@ export function QuotaCard(props: QuotaCardProps) {
     quota?.errorStatus,
     quota?.error || t('common.unknown_error')
   );
-  // Claude banked resets join the plan chip row; their expiry list follows it.
-  const showClaudeReset = entry.type === 'claude' && status === 'success';
-  const claudePlanItems = showClaudeReset ? (
-    <span className={quotaClasses.codexPlanItem}>
-      <span className={detailClasses.codexPlanLabel}>{t('claude_reset.title')}</span>
-      <span className={quotaClasses.codexPlanValue}>{claudeReset.count ?? '--'}</span>
-    </span>
-  ) : undefined;
-  const claudeAfterPlan = showClaudeReset ? (
-    <>
-      <ClaudeResetGrantDetails grants={claudeReset.grants} classes={detailClasses} />
-      {claudeReset.message && (
-        <div role="status" className={quotaClasses.codexResetCreditsError}>
-          {t(`claude_reset.${claudeReset.message}`)}
-        </div>
-      )}
-    </>
-  ) : undefined;
+  const claudeAfterPlan =
+    entry.type === 'claude' ? (
+      <ClaudeLimitResets name={file.name} generation={file.credential_generation} />
+    ) : undefined;
   const showReset =
     status === 'success' &&
     Boolean(adapter.resetQuota) &&
@@ -174,29 +153,6 @@ export function QuotaCard(props: QuotaCardProps) {
 
   const actions = (
     <>
-      {entry.type === 'claude' && (
-        <button
-          type="button"
-          className={styles.actionPill}
-          disabled={claudeReset.readBlocked}
-          onClick={claudeReset.refresh}
-        >
-          <IconRefreshCw size={13} className={claudeReset.reading ? styles.spinning : undefined} />
-          {t('claude_quota.cache_check_grants')}
-        </button>
-      )}
-      {entry.type === 'claude' && (
-        <button
-          type="button"
-          className={styles.actionPill}
-          disabled={claudeReset.blocked}
-          onClick={claudeReset.confirm}
-          title={t(`claude_reset.${claudeReset.buttonLabel}`)}
-        >
-          <IconRefreshCw size={13} className={claudeReset.busy ? styles.spinning : undefined} />
-          {t(`claude_reset.${claudeReset.buttonLabel}`)}
-        </button>
-      )}
       {showReset && (
         <button
           type="button"
@@ -213,7 +169,7 @@ export function QuotaCard(props: QuotaCardProps) {
         type="button"
         className={styles.actionPill}
         onClick={onRefresh}
-        disabled={isQuotaRefreshDisabled(canRefresh, loading, resetting || claudeReset.busy)}
+        disabled={isQuotaRefreshDisabled(canRefresh, loading, resetting)}
         title={t('auth_files.quota_refresh_hint')}
       >
         <IconRefreshCw size={13} className={loading ? styles.spinning : undefined} />
@@ -345,6 +301,8 @@ export function QuotaCard(props: QuotaCardProps) {
           </>
         )}
 
+        {claudeAfterPlan && <div className={styles.resetColumn}>{claudeAfterPlan}</div>}
+
         {status !== 'idle' && (
           <>
             <footer className={styles.seatFooter}>
@@ -390,15 +348,7 @@ export function QuotaCard(props: QuotaCardProps) {
               {detailsOpen && (
                 <>
                   <SeatWindowRows windows={rest} classes={quotaClasses} />
-                  {hasData && (
-                    <adapter.Body
-                      quota={quota}
-                      classes={detailClasses}
-                      planItems={claudePlanItems}
-                      afterPlan={claudeAfterPlan}
-                      extrasOnly
-                    />
-                  )}
+                  {hasData && <adapter.Body quota={quota} classes={detailClasses} extrasOnly />}
                   <dl className={styles.facts}>
                     {observedAt && (
                       <div className={styles.fact}>
@@ -449,12 +399,7 @@ export function QuotaCard(props: QuotaCardProps) {
         ) : status === 'error' ? (
           errorStrip
         ) : quota && !retainedClaudeUsage ? (
-          <adapter.Body
-            quota={quota}
-            classes={quotaClasses}
-            planItems={claudePlanItems}
-            afterPlan={claudeAfterPlan}
-          />
+          <adapter.Body quota={quota} classes={quotaClasses} afterPlan={claudeAfterPlan} />
         ) : !retainedClaudeUsage ? (
           <div className={styles.idleHint}>{t(`${adapter.i18nPrefix}.idle`)}</div>
         ) : null}
@@ -464,12 +409,7 @@ export function QuotaCard(props: QuotaCardProps) {
           </div>
         )}
         {retainedClaudeUsage && quota && (
-          <adapter.Body
-            quota={quota}
-            classes={quotaClasses}
-            planItems={claudePlanItems}
-            afterPlan={claudeAfterPlan}
-          />
+          <adapter.Body quota={quota} classes={quotaClasses} afterPlan={claudeAfterPlan} />
         )}
       </div>
 

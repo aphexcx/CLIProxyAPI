@@ -14,6 +14,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -167,7 +168,7 @@ func (e *AntigravityExecutor) refreshTokenSingleFlight(ctx context.Context, auth
 	httpReq.Header.Set("User-Agent", "Go-http-client/2.0")
 
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
-	httpResp, errDo := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "oauth_refresh").Do(httpReq)
+	httpResp, errDo := httptransport.Do(helps.WithAntigravityHTTPClientTrace(httpClient, auth, "oauth_refresh"), httpReq)
 	if errDo != nil {
 		return nil, errDo
 	}

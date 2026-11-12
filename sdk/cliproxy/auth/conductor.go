@@ -239,8 +239,9 @@ type Manager struct {
 	quotaPollDone   chan struct{}
 	quotaPollWake   chan struct{} // Broadcast channel protected by mu.
 	// Quota scheduling survives loop restarts. Protected by mu.
-	quotaPollSeats map[string]*claudeQuotaPollSeat
-	quotaNextStart time.Time
+	quotaPollSeats  map[string]*claudeQuotaPollSeat
+	limitResetSeats map[string]*claudeLimitResetPollSeat
+	quotaNextStart  time.Time
 	// refreshJobs retains queued and running jobs across loop restarts under m.mu.
 	refreshJobs map[string]*authRefreshJob
 

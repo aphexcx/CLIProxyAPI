@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 )
@@ -109,7 +110,7 @@ func FetchAntigravityAvailableModels(ctx context.Context, req AntigravityModelPr
 	httpReq.Header.Set("Authorization", "Bearer "+accessToken)
 	httpReq.Header.Set("User-Agent", userAgent)
 
-	resp, errDo := client.Do(httpReq)
+	resp, errDo := httptransport.Do(client, httpReq)
 	if errDo != nil {
 		return AntigravityModelCapabilityHints{}, AntigravityProbeStatusTransientError
 	}

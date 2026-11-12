@@ -700,6 +700,7 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 	entry["recent_requests"] = auth.RecentRequestsSnapshot(time.Now())
 	entry["quota"] = quotaObservationPayloadForProvider(auth.Provider, auth.Quota)
 	if quota.v8 {
+		entry["credential_generation"] = auth.CredentialGeneration()
 		// Only expose provider identity fields, never the credential metadata itself.
 		for _, identityField := range authFileIdentityFields(auth.Provider) {
 			if value, ok := auth.Metadata[identityField].(string); ok {

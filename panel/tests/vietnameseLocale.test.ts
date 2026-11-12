@@ -30,3 +30,21 @@ describe('Vietnamese locale', () => {
     expect(mismatches).toEqual([]);
   });
 });
+
+test('banked reset observations have complete translations in all six locales', async () => {
+  const english = flattenLeaves(
+    (await Bun.file('src/i18n/locales/en.json').json()).claude_limit_resets
+  );
+  for (const locale of ['en', 'vi', 'zh-CN', 'zh-TW', 'ko', 'ru']) {
+    const data = await Bun.file(`src/i18n/locales/${locale}.json`).json();
+    expect(data.claude_reset).toBeUndefined();
+    const translated = flattenLeaves(data.claude_limit_resets);
+    expect(Object.keys(translated).sort()).toEqual(Object.keys(english).sort());
+    for (const [key, value] of Object.entries(english)) {
+      expect(translated[key].trim().length).toBeGreaterThan(0);
+      expect(interpolationTokens(translated[key]).sort()).toEqual(
+        interpolationTokens(value).sort()
+      );
+    }
+  }
+});

@@ -34,6 +34,7 @@ const logout = document.getElementById('logout');
 const seats = document.getElementById('seats');
 const status = document.getElementById('status');
 let key = '', timer, revision = 0, loading = false;
+let lastFiles = [], lastResets = { seats: [] }, resetReadAt = 0;
 const node = (tag, text, parent, className) => {
   const element = document.createElement(tag);
   if (text !== undefined) element.textContent = text;
@@ -56,11 +57,23 @@ async function request(path, body) {
   if (!response.ok) throw new Error('Management request failed (' + response.status + ').');
   return response.json();
 }
-function render(files) {
+function render(files, resets) {
   seats.replaceChildren();
   for (const file of files.filter(file => file.provider === 'claude')) {
     const card = node('article', undefined, seats);
     node('h2', file.label || file.name, card);
+    const reset = (resets.seats || []).find(seat => seat.name === file.name && file.credential_generation && seat.credential_generation === file.credential_generation);
+    const grants = reset?.cedar_ember?.grants || [];
+    const column = node('div', undefined, card, 'resets');
+    column.title = resets.ranking_rule || '';
+    node('strong', 'Resets: ' + (reset?.cedar_ember?.eligible ? grants.reduce((sum, grant) => sum + grant.resets_left, 0) : '—') + (reset?.cedar_ember?.eligible && reset.best_click_rank && !reset.stale ? ' · Best click #' + reset.best_click_rank : ''), column);
+    node('div', reset?.error || reset?.rank_reason || 'Reset status unavailable', column);
+    if (reset?.cedar_ember?.eligible === false && reset.cedar_ember.ineligible_reason) {
+      const reason = reset.cedar_ember.ineligible_reason;
+      node('div', reason === 'surface' ? 'Not visible on this surface' : 'Ineligible: ' + reason, column);
+    }
+    if (reset?.age_seconds != null) node('small', 'Last good read: ' + reset.age_seconds + 's ago' + (reset.stale ? ' · stale' : ''), column);
+    for (const grant of grants) node('div', (grant.label || grant.id) + ': ' + grant.resets_left + ' left · expires ' + date(grant.ends_at) + ' · ' + (!reset.stale && reset.cedar_ember.eligible && grant.usable_now ? 'usable now' : 'not usable now'), column);
     const usage = file.claude_usage;
     if (!usage) { node('p', 'Cached usage is unavailable for this credential.', card); continue; }
     node('p', usage.polled_at ? 'Last successful poll: ' + date(usage.polled_at) + ' · ' + usage.age_seconds + 's ago' : 'Not polled yet', card, 'muted');
@@ -85,8 +98,8 @@ function render(files) {
       try {
         await request('credentials/quota', { auth_index: file.auth_index });
         if (current !== revision) return;
-        await load();
-        if (current === revision) status.textContent = 'Refresh shares this seat’s next poll slot. Showing cached usage until then.';
+        const loaded = await load();
+        if (loaded && current === revision) status.textContent = 'Refresh shares this seat’s next poll slot. Showing cached usage until then.';
       } catch (error) { if (current === revision) { status.textContent = error.message; refresh.disabled = false; } }
     };
   }
@@ -99,10 +112,23 @@ async function load() {
   try {
     const data = await request('credentials');
     if (current !== revision) return;
-    render(data.files || []);
+    const resets = await request('claude/limit-resets');
+    if (current !== revision) return;
+    lastFiles = data.files || []; lastResets = resets; resetReadAt = Date.now();
+    render(lastFiles, lastResets);
     login.hidden = true; logout.hidden = false;
     status.textContent = 'Updated ' + new Date().toLocaleTimeString();
-  } catch (error) { if (current === revision) status.textContent = error.message + ' Displayed values may be stale.'; }
+    return true;
+  } catch (error) {
+    if (current === revision) {
+      if (lastFiles.length) render(lastFiles, { ...lastResets, seats: (lastResets.seats || []).map(seat => ({
+        ...seat, stale: true, best_click_rank: null, error: 'Reset status unavailable',
+        age_seconds: seat.age_seconds == null ? null : seat.age_seconds + Math.max(0, Math.floor((Date.now() - resetReadAt) / 1000))
+      })) });
+      status.textContent = error.message + ' Displayed values may be stale.';
+    }
+    return false;
+  }
   finally { loading = false; }
 }
 login.onsubmit = event => {
@@ -111,6 +137,7 @@ login.onsubmit = event => {
 };
 function lockView(message = '') {
   revision++; key = ''; keyInput.value = ''; clearInterval(timer); seats.replaceChildren(); status.textContent = message;
+  lastFiles = []; lastResets = { seats: [] }; resetReadAt = 0;
   login.hidden = false; logout.hidden = true; keyInput.focus();
 }
 logout.onclick = () => lockView();

@@ -17,6 +17,7 @@ import (
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -125,7 +126,7 @@ func (s *DevinAuthService) ExchangeCodeForToken(ctx context.Context, code, codeV
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	resp, errDo := s.client.Do(req)
+	resp, errDo := httptransport.Do(s.client, req)
 	if errDo != nil {
 		return "", fmt.Errorf("devin token exchange failed: %w", errDo)
 	}
@@ -160,7 +161,7 @@ func (s *DevinAuthService) FetchSelfProfile(ctx context.Context, sessionToken st
 	req.Header.Set("Authorization", "Bearer "+sessionToken)
 	req.Header.Set("Accept", "application/json")
 
-	resp, errDo := s.client.Do(req)
+	resp, errDo := httptransport.Do(s.client, req)
 	if errDo != nil {
 		return "", "", "", errDo
 	}

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -38,7 +39,7 @@ func getPublicIP() (string, error) {
 			continue
 		}
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := httptransport.Do(http.DefaultClient, req)
 		if err != nil {
 			log.Debugf("Failed to get public IP from %s: %v", service, err)
 			continue

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpfetch"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -225,7 +226,7 @@ func pluginStoreGetNoRedirect(ctx context.Context, client HTTPDoer, requestURL s
 		return nil, fmt.Errorf("create request: %w", errRequest)
 	}
 	req.Header = headers.Clone()
-	resp, errDo := pluginStoreNoRedirectClient(client).Do(req)
+	resp, errDo := httptransport.Do(pluginStoreNoRedirectClient(client), req)
 	if errDo != nil {
 		return nil, pluginStoreRequestError(requestURL, errDo)
 	}

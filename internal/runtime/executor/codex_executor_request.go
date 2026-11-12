@@ -24,6 +24,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 )
@@ -136,7 +137,7 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 		return nil, err
 	}
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
-	return httpClient.Do(httpReq)
+	return httptransport.Do(httpClient, httpReq)
 }
 
 func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, req cliproxyexecutor.Request, rawJSON []byte, auth *cliproxyauth.Auth, headerSets ...http.Header) (*http.Request, []byte, error) {
@@ -318,7 +319,7 @@ func decodeCodexUpstreamResponse(resp *http.Response) error {
 func doCodexRequest(client *http.Client, req *http.Request, upstreamBody []byte, prepareHeaders func(*http.Request), responseReady func(*http.Response)) (*http.Response, error) {
 	alignCodexContentEncoding(req)
 	compressed := req.Header.Get("Content-Encoding") == "zstd"
-	resp, errDo := client.Do(req)
+	resp, errDo := httptransport.Do(client, req)
 	if errDo != nil {
 		return nil, errDo
 	}
@@ -342,7 +343,7 @@ func doCodexRequest(client *http.Client, req *http.Request, upstreamBody []byte,
 	plainReq.Header.Del("Content-Encoding")
 	prepareHeaders(plainReq)
 	alignCodexContentEncoding(plainReq)
-	resp, errDo = client.Do(plainReq)
+	resp, errDo = httptransport.Do(client, plainReq)
 	if errDo != nil {
 		return nil, errDo
 	}

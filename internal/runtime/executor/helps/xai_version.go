@@ -13,6 +13,7 @@ import (
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -134,7 +135,7 @@ func FetchXAINPMLatestVersion(ctx context.Context, client *http.Client) (string,
 		client = xaiVersionHTTPClient()
 	}
 
-	resp, errDo := client.Do(req)
+	resp, errDo := httptransport.Do(client, req)
 	if errDo != nil {
 		return "", fmt.Errorf("npm registry request failed: %w", errDo)
 	}

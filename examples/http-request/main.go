@@ -18,6 +18,7 @@ import (
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	clipexec "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -51,7 +52,7 @@ func (EchoExecutor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *h
 	if errPrep := (EchoExecutor{}).PrepareRequest(httpReq, auth); errPrep != nil {
 		return nil, errPrep
 	}
-	return http.DefaultClient.Do(httpReq)
+	return httptransport.Do(http.DefaultClient, httpReq)
 }
 
 func (EchoExecutor) Execute(context.Context, *coreauth.Auth, clipexec.Request, clipexec.Options) (clipexec.Response, error) {
@@ -99,7 +100,7 @@ func main() {
 	if errReqPrepared != nil {
 		panic(errReqPrepared)
 	}
-	respPrepared, errDoPrepared := http.DefaultClient.Do(reqPrepared)
+	respPrepared, errDoPrepared := httptransport.Do(http.DefaultClient, reqPrepared)
 	if errDoPrepared != nil {
 		panic(errDoPrepared)
 	}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 )
 
 // RefreshJournal records consumption before sending a refresh grant. Claims never
@@ -240,5 +241,5 @@ func (j *memoryRefreshJournal) RefreshComplete(_ context.Context, key string, re
 func (o *CodexAuth) doRefreshRequest(req *http.Request) (*http.Response, error) {
 	client := *o.httpClient
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return client.Do(req)
+	return httptransport.Do(&client, req)
 }

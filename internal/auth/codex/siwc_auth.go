@@ -17,6 +17,7 @@ import (
 
 	"github.com/MoeForge/moego/base64"
 	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
 )
@@ -133,7 +134,7 @@ func (o *CodexAuth) requestSIWCToken(ctx context.Context, form url.Values, clien
 	req.Header.Set("Accept", "application/json")
 
 	stage = "transport"
-	request := o.httpClient.Do
+	request := func(req *http.Request) (*http.Response, error) { return httptransport.Do(o.httpClient, req) }
 	if form.Get("grant_type") == "refresh_token" {
 		request = o.doRefreshRequest
 	}

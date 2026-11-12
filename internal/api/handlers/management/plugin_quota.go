@@ -2,6 +2,7 @@ package management
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -15,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 	xcurrency "golang.org/x/text/currency"
@@ -120,6 +122,10 @@ func (h *Handler) FetchCredentialQuota(c *gin.Context) {
 				quotaResp, handledProbe, errProbe := h.executeQuotaProbe(c, auth, probeMap)
 				if handledProbe {
 					if errProbe != nil {
+						if errors.Is(errProbe, errResetRateLimitsDenied) {
+							c.JSON(http.StatusForbidden, gin.H{"error": errResetRateLimitsDenied.Error()})
+							return
+						}
 						c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("quota probe failed: %v", errProbe)})
 						return
 					}
@@ -445,11 +451,9 @@ func (h *Handler) executeQuotaProbe(c *gin.Context, auth *coreauth.Auth, probe m
 		}
 	}
 
-	client := &http.Client{
-		Transport: h.apiCallTransport(auth, ""),
-	}
+	client := newManagementHTTPClient(h.apiCallTransport(auth, ""))
 
-	resp, errDo := client.Do(req)
+	resp, errDo := httptransport.Do(client, req)
 	if errDo != nil {
 		return pluginapi.QuotaFetchResponse{}, true, fmt.Errorf("probe request failed: %w", errDo)
 	}

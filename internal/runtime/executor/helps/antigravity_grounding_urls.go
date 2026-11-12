@@ -10,6 +10,7 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -36,7 +37,7 @@ func resolveAntigravityGroundingURL(ctx context.Context, cfg *config.Config, aut
 		log.WithError(errReq).Debug("antigravity grounding url: create redirect request failed")
 		return rawURL
 	}
-	resp, errDo := client.Do(req)
+	resp, errDo := httptransport.Do(client, req)
 	if errDo != nil {
 		log.WithError(errDo).Debug("antigravity grounding url: resolve redirect failed")
 		return rawURL

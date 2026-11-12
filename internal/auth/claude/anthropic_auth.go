@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
 )
@@ -24,10 +25,11 @@ const (
 	AuthURL = "https://claude.ai/oauth/authorize"
 	// TokenURL is the authorization-code exchange endpoint. Claude Code 2.1.220
 	// posts the code exchange to platform.claude.com, not api.anthropic.com.
-	TokenURL        = "https://platform.claude.com/v1/oauth/token"
-	RefreshTokenURL = "https://platform.claude.com/v1/oauth/token"
-	ProfileURL      = "https://api.anthropic.com/api/oauth/profile"
-	UsageURL        = "https://api.anthropic.com/api/oauth/usage"
+	TokenURL            = "https://platform.claude.com/v1/oauth/token"
+	RefreshTokenURL     = "https://platform.claude.com/v1/oauth/token"
+	ProfileURL          = "https://api.anthropic.com/api/oauth/profile"
+	UsageURL            = "https://api.anthropic.com/api/oauth/usage"
+	LimitResetsUsageURL = UsageURL + "?cedar_ember=1&skip_spend=1"
 	// RolesURL is the claude_cli role endpoint the native client queries right
 	// after a successful token exchange, alongside the profile lookup.
 	RolesURL            = "https://api.anthropic.com/api/oauth/claude_cli/roles"
@@ -283,12 +285,12 @@ func (o *ClaudeAuth) fetchOAuthControlPlaneJSON(ctx context.Context, endpoint, a
 	applyClaudeOAuthAxiosHeaders(req)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Cache-Control", "no-cache")
-	if endpoint == UsageURL {
+	if endpoint == UsageURL || endpoint == LimitResetsUsageURL {
 		req.Header.Set("Anthropic-Beta", "oauth-2025-04-20")
 		req = req.WithContext(context.WithValue(req.Context(), claudeUsageConnectTimeoutContextKey{}, claudeUsageConnectTimeout))
 	}
 
-	resp, errDo := o.httpClient.Do(req)
+	resp, errDo := httptransport.Do(o.httpClient, req)
 	observedAt := time.Now() // Header receipt, before any potentially stalled body read.
 	if errDo != nil {
 		return nil, time.Time{}, fmt.Errorf("fetch Claude OAuth %s: %w", label, errDo)
@@ -334,7 +336,25 @@ func (o *ClaudeAuth) FetchOAuthUsage(ctx context.Context, accessToken string) (m
 // FetchOAuthUsageSnapshot preserves optional usage fields for management clients
 // while parsing the canonical windows used by the routing guard.
 func (o *ClaudeAuth) FetchOAuthUsageSnapshot(ctx context.Context, accessToken string) (map[string]OAuthUsageWindow, json.RawMessage, error) {
-	body, observedAt, errFetch := o.fetchOAuthControlPlaneJSON(ctx, UsageURL, accessToken, "usage")
+	return o.fetchOAuthUsageSnapshot(ctx, UsageURL, accessToken)
+}
+
+// FetchOAuthLimitResets is independent of routine quota usage. Its response is
+// never authoritative for usage windows, even if the server includes them.
+func (o *ClaudeAuth) FetchOAuthLimitResets(ctx context.Context, accessToken string) (json.RawMessage, error) {
+	body, _, errFetch := o.fetchOAuthControlPlaneJSON(ctx, LimitResetsUsageURL, accessToken, "reset status")
+	if errFetch != nil {
+		return nil, errFetch
+	}
+	windows, errParse := parseOAuthUsage(body)
+	if errParse != nil || len(windows) == 0 {
+		return nil, fmt.Errorf("reset status response has no valid usage windows")
+	}
+	return json.RawMessage(body), nil
+}
+
+func (o *ClaudeAuth) fetchOAuthUsageSnapshot(ctx context.Context, endpoint, accessToken string) (map[string]OAuthUsageWindow, json.RawMessage, error) {
+	body, observedAt, errFetch := o.fetchOAuthControlPlaneJSON(ctx, endpoint, accessToken, "usage")
 	if errFetch != nil {
 		return nil, nil, errFetch
 	}
@@ -479,7 +499,7 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 	}
 	applyClaudeOAuthAxiosHeaders(req)
 
-	resp, err := o.httpClient.Do(req)
+	resp, err := httptransport.Do(o.httpClient, req)
 	if err != nil {
 		return nil, fmt.Errorf("token exchange request failed: %w", err)
 	}
@@ -618,7 +638,7 @@ func (o *ClaudeAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken
 	}
 	applyClaudeOAuthAxiosHeaders(req)
 
-	resp, err := o.httpClient.Do(req)
+	resp, err := httptransport.Do(o.httpClient, req)
 	if err != nil {
 		return nil, fmt.Errorf("token refresh request failed: %w", err)
 	}

@@ -30,6 +30,7 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	clipexec "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/logging"
 	sdktr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
@@ -127,7 +128,7 @@ func (MyExecutor) Execute(ctx context.Context, a *coreauth.Auth, req clipexec.Re
 		return clipexec.Response{}, errPrep
 	}
 
-	resp, errDo := client.Do(httpReq)
+	resp, errDo := httptransport.Do(client, httpReq)
 	if errDo != nil {
 		return clipexec.Response{}, errDo
 	}
@@ -152,7 +153,7 @@ func (MyExecutor) HttpRequest(ctx context.Context, a *coreauth.Auth, req *http.R
 		return nil, errPrep
 	}
 	client := buildHTTPClient(a)
-	return client.Do(httpReq)
+	return httptransport.Do(client, httpReq)
 }
 
 func (MyExecutor) CountTokens(context.Context, *coreauth.Auth, clipexec.Request, clipexec.Options) (clipexec.Response, error) {

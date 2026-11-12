@@ -1,4 +1,5 @@
-// Package httptransport exposes an additive, request-scoped observation seam.
+// Package httptransport provides the shared outbound guard and an additive,
+// request-scoped observation seam.
 // A decorator wraps the transport already selected by the executor: it must not
 // replace provider fingerprints, proxy routing, pools, or HTTP protocol policy.
 package httptransport

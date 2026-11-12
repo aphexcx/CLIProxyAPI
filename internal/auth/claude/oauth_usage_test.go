@@ -105,6 +105,45 @@ func TestFetchOAuthUsageCurrentTokenOnly(t *testing.T) {
 	}
 }
 
+func TestFetchOAuthLimitResetsUsesSeparateReadAndBeta(t *testing.T) {
+	calls := 0
+	fixture, errRead := os.ReadFile("testdata/limit_resets_surface.json")
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	auth := &ClaudeAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if req.URL.String() != LimitResetsUsageURL || req.Method != http.MethodGet || req.Body != nil {
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+		}
+		if req.Header.Get("Authorization") != "Bearer fixture-only" || req.Header.Get("Anthropic-Beta") != "oauth-2025-04-20" || req.Header.Get("User-Agent") != "axios/1.15.2" {
+			t.Fatal("missing honest OAuth usage headers")
+		}
+		if _, deadline := req.Context().Deadline(); deadline {
+			t.Fatal("added response deadline")
+		}
+		for _, key := range []string{"X-App", "X-Client-Version", "Anthropic-Version", "X-Stainless-Package-Version"} {
+			if req.Header.Get(key) != "" {
+				t.Fatalf("unexpected client/version header %s", key)
+			}
+		}
+		return jsonResponse(req, string(fixture)), nil
+	})}}
+	usage, err := auth.FetchOAuthLimitResets(context.Background(), "fixture-only")
+	if err != nil || calls != 1 || !strings.Contains(string(usage), `"cedar_ember"`) {
+		t.Fatalf("calls=%d err=%v", calls, err)
+	}
+}
+
+func TestFetchOAuthLimitResetsRejectsBodyWithoutUsageWindows(t *testing.T) {
+	auth := &ClaudeAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(req, `{"cedar_ember":{"eligible":false,"grants":[]}}`), nil
+	})}}
+	if _, err := auth.FetchOAuthLimitResets(context.Background(), "fixture-only"); err == nil {
+		t.Fatal("reset-only response accepted without usage windows")
+	}
+}
+
 type neverAnsweringUsageDialer struct{ t *testing.T }
 
 func (d neverAnsweringUsageDialer) Dial(_, _ string) (net.Conn, error) {
