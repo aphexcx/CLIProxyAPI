@@ -76,7 +76,8 @@ func deniedRequest(req *http.Request) bool {
 }
 
 func (t *guardedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if deniedRequest(req) {
+	// The one exception (guard_claim.go) is spent here, by the actual send.
+	if deniedRequest(req) && !bankedResetClaimPermitted(req, true) {
 		return nil, ErrResetRateLimitsDenied
 	}
 	return t.base.RoundTrip(req)
@@ -117,7 +118,7 @@ type Doer interface {
 // receive the same guarded transport, including every redirect. Adapter calls
 // are checked here too; their own outbound sends must use this boundary.
 func Do(client Doer, req *http.Request) (*http.Response, error) {
-	if deniedRequest(req) {
+	if deniedRequest(req) && !bankedResetClaimPermitted(req, false) {
 		return nil, ErrResetRateLimitsDenied
 	}
 	if client == nil {

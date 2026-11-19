@@ -34,6 +34,11 @@ type ClaudeResetGrant struct {
 	Paused           bool       `json:"paused,omitempty"`
 	UseRequiresLimit *bool      `json:"use_requires_limit,omitempty"`
 	GivesBackWeekly  *bool      `json:"gives_back_weekly,omitempty"`
+	// UnavailableReason is the provider's word for why a grant is not usable now.
+	UnavailableReason *string `json:"unavailable_reason,omitempty"`
+	// Kind is computed by ClaudeResetGrantKind on every parse; a value the
+	// provider sends under this name is overwritten, never trusted.
+	Kind string `json:"kind"`
 }
 
 // ParseClaudeLimitResets accepts the captured cedar_ember shape and ignores
@@ -72,6 +77,7 @@ func ParseClaudeLimitResets(usage json.RawMessage) (*ClaudeLimitResets, error) {
 		if g.Clears == nil {
 			g.Clears = []string{}
 		}
+		g.Kind = ClaudeResetGrantKind(*g)
 	}
 	if status.Grants == nil {
 		status.Grants = []ClaudeResetGrant{}

@@ -20,7 +20,11 @@ type claudeLimitResetSeat struct {
 	FableUtilization *float64 `json:"fable_utilization"`
 	BestClickRank    *int     `json:"best_click_rank"`
 	RankReason       string   `json:"rank_reason"`
-	grantExpiry      time.Time
+	// Kinds is what remains of each kind in the cached read; a spend re-reads fresh.
+	Kinds map[string]coreauth.ClaudeResetKindSummary `json:"kinds"`
+	// LastSpend is the last reset spent through this hub, or null.
+	LastSpend   *claudeResetSpendRecord `json:"last_spend"`
+	grantExpiry time.Time
 }
 
 // GetClaudeLimitResets reads only the quota loop's cache, including when filtered.
@@ -38,6 +42,11 @@ func (h *Handler) GetClaudeLimitResets(c *gin.Context) {
 				name = auth.ID
 			}
 			seat := claudeLimitResetSeat{Name: name, AuthIndex: auth.Index, ClaudeLimitResetsSnapshot: h.authManager.ClaudeLimitResetsCached(auth.ID)}
+			seat.Kinds = map[string]coreauth.ClaudeResetKindSummary{}
+			if seat.CedarEmber != nil {
+				seat.Kinds = coreauth.SummarizeClaudeResetKinds(seat.CedarEmber.Grants, now)
+			}
+			seat.LastSpend = h.claudeResetSpends.lastSpend(h.logDirectory(), auth.EnsureIndex())
 			quota, _ := h.authManager.ClaudeQuotaCached(auth.ID)
 			for windowName, window := range quota.Windows {
 				if quota.Stale {

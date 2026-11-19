@@ -718,6 +718,10 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 		if snapshot, ok := h.cachedClaudeUsage(auth, false); ok {
 			entry["claude_usage"] = claudeUsagePayload(snapshot)
 		}
+		if strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") {
+			// Null means no reset was ever spent through this hub.
+			entry["claude_last_reset_spend"] = h.claudeResetSpends.lastSpend(h.logDirectory(), auth.Index)
+		}
 		if snapshot, ok := h.cachedCodexUsage(auth, false); ok {
 			entry["codex_usage"] = codexUsagePayload(snapshot)
 		}

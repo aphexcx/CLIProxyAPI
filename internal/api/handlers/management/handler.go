@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
@@ -64,6 +65,10 @@ type Handler struct {
 	siwcOAuthFactory        func(*config.Config) siwcOAuthService
 	siwcCommitMu            sync.Mutex
 	pluginLoginSaveMu       sync.Mutex
+	// claudeResetSpends serializes banked-reset spends per seat (cp-g33).
+	claudeResetSpends claudeResetSpendLedger
+	// claudeResetClient replaces the seat's Anthropic client in tests only.
+	claudeResetClient func(cfg *config.Config, proxyURL string) *claudeauth.ClaudeAuth
 }
 
 type configReloadSnapshot struct {
