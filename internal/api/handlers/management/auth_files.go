@@ -720,7 +720,11 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 		}
 		if strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") {
 			// Null means no reset was ever spent through this hub.
-			entry["claude_last_reset_spend"] = h.claudeResetSpends.lastSpend(h.claudeResetLedgerDir(), auth.Index)
+			last, errLast := h.claudeResetSpends.lastSpend(h.claudeResetLedgerDir(), auth.Index)
+			entry["claude_last_reset_spend"] = last
+			if errLast != nil {
+				entry["claude_last_reset_spend_error"] = errLast.Error()
+			}
 		}
 		if snapshot, ok := h.cachedCodexUsage(auth, false); ok {
 			entry["codex_usage"] = codexUsagePayload(snapshot)

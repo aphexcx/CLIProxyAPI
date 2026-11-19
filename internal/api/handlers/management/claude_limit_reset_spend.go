@@ -85,13 +85,22 @@ func claudeResetAccount(organization string) string {
 	return hex.EncodeToString(sum[:12])
 }
 
-// claudeResetLedgerDir is the ledger's directory, read without racing a
-// configuration reload.
+// claudeResetConfig is the spend's own copy of the configuration, taken
+// under the handler's lock: management writes edit h.cfg in place under it.
+func (h *Handler) claudeResetConfig() *config.Config {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cfg.CloneForRuntime()
+}
+
+// claudeResetLedgerDir is the ledger's directory, read under the same lock.
 func (h *Handler) claudeResetLedgerDir() string {
 	if h.logDir != "" {
 		return h.logDir
 	}
-	return logging.ResolveLogDirectory(h.configSnapshot())
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return logging.ResolveLogDirectory(h.cfg)
 }
 
 // claudeResetSpendLedger serializes spends per seat and per account, and
@@ -209,17 +218,23 @@ func (l *claudeResetSpendLedger) loadLocked(dir string) error {
 	}
 }
 
-func (l *claudeResetSpendLedger) lastSpend(dir, authIndex string) *claudeResetSpendRecord {
+// errClaudeResetHistoryUnavailable is what a read shows in place of a seat's
+// last spend while the ledger cannot be read: unknown, not "never spent".
+var errClaudeResetHistoryUnavailable = errors.New("the reset spend ledger cannot be read")
+
+// lastSpend is the seat's last ledger line; nil with no error means no reset
+// was ever spent through this hub.
+func (l *claudeResetSpendLedger) lastSpend(dir, authIndex string) (*claudeResetSpendRecord, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if errLoad := l.loadLocked(dir); errLoad != nil {
-		return nil
+		return nil, errClaudeResetHistoryUnavailable
 	}
 	record, ok := l.last[authIndex]
 	if !ok {
-		return nil
+		return nil, nil
 	}
-	return &record
+	return &record, nil
 }
 
 // openLocked returns the seat's unknown claim inside its retry window.
@@ -444,9 +459,8 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 		return
 	}
 
-	// One configuration snapshot, read under the handler's lock, serves the
-	// whole spend.
-	cfg := h.configSnapshot()
+	// One private copy of the configuration serves the whole spend.
+	cfg := h.claudeResetConfig()
 	ledger, dir := &h.claudeResetSpends, h.claudeResetLedgerDir()
 	retry, heldStatus, held := ledger.begin(dir, authIndex, retryRequestID, ledger.clock())
 	if held != "" {

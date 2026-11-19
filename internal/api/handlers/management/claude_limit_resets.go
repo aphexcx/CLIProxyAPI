@@ -22,9 +22,11 @@ type claudeLimitResetSeat struct {
 	RankReason       string   `json:"rank_reason"`
 	// Kinds is what remains of each kind in the cached read; a spend re-reads fresh.
 	Kinds map[string]coreauth.ClaudeResetKindSummary `json:"kinds"`
-	// LastSpend is the last reset spent through this hub, or null.
-	LastSpend   *claudeResetSpendRecord `json:"last_spend"`
-	grantExpiry time.Time
+	// LastSpend is the last reset spent through this hub, or null; while the
+	// spend ledger cannot be read it is null and LastSpendError says so.
+	LastSpend      *claudeResetSpendRecord `json:"last_spend"`
+	LastSpendError string                  `json:"last_spend_error,omitempty"`
+	grantExpiry    time.Time
 }
 
 // GetClaudeLimitResets reads only the quota loop's cache, including when filtered.
@@ -46,7 +48,11 @@ func (h *Handler) GetClaudeLimitResets(c *gin.Context) {
 			if seat.CedarEmber != nil {
 				seat.Kinds = coreauth.SummarizeClaudeResetKinds(seat.CedarEmber.Grants, now)
 			}
-			seat.LastSpend = h.claudeResetSpends.lastSpend(h.claudeResetLedgerDir(), auth.EnsureIndex())
+			if last, errLast := h.claudeResetSpends.lastSpend(h.claudeResetLedgerDir(), auth.EnsureIndex()); errLast != nil {
+				seat.LastSpendError = errLast.Error()
+			} else {
+				seat.LastSpend = last
+			}
 			quota, _ := h.authManager.ClaudeQuotaCached(auth.ID)
 			for windowName, window := range quota.Windows {
 				if quota.Stale {

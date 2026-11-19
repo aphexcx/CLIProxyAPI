@@ -876,24 +876,111 @@ func TestClaudeResetSpendJudgesGrantsAtTheTimeOfTheClaim(t *testing.T) {
 // Run with -race to see the race it guards against.
 func TestClaudeResetSpendReadsConfigurationUnderTheLock(t *testing.T) {
 	f := newResetSpendFixture(t, resetFixtureGrants()...)
+	// The spend works from its own copy: the live object is edited in place
+	// by management writes, so holding it after the lock is released races.
+	build := f.h.claudeResetClient
+	f.h.claudeResetClient = func(cfg *config.Config, proxyURL string) *claudeauth.ClaudeAuth {
+		f.h.mu.Lock()
+		live := cfg == f.h.cfg
+		f.h.mu.Unlock()
+		if live {
+			t.Error("the spend holds the live configuration object")
+		}
+		return build(cfg, proxyURL)
+	}
 	stop := make(chan struct{})
 	reloaded := make(chan struct{})
 	go func() {
 		defer close(reloaded)
-		for {
+		for i := 0; ; i++ {
 			select {
 			case <-stop:
 				return
 			default:
-				f.h.SetConfig(&config.Config{})
 			}
+			if i%10 == 0 {
+				f.h.SetConfig(&config.Config{})
+				continue
+			}
+			// Management writes edit the live configuration in place, under
+			// the handler's lock (updateStringField, PutProxyURL).
+			f.h.mu.Lock()
+			f.h.cfg.ProxyURL = ""
+			f.h.mu.Unlock()
 		}
 	}()
-	for _, kind := range []string{"fable", "full", "weekly"} {
+	// "already_used" leaves the grants in place, so every spend reaches the claim.
+	f.provider.set(func(p *fakeResetProvider) { p.claimResult = "already_used" })
+	for i := 0; i < 30; i++ {
+		kind := []string{"fable", "full", "weekly"}[i%3]
 		if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": kind})); code != http.StatusOK {
 			t.Fatalf("%s: status=%d answer=%v", kind, code, answer)
 		}
 	}
 	close(stop)
 	<-reloaded
+}
+
+// Codex round 2: a ledger the hub cannot read is reported as such by both
+// reads, never as "never spent through this hub".
+func TestClaudeResetSpendHistoryReportsAnUnreadableLedger(t *testing.T) {
+	f := newResetSpendFixture(t, resetFixtureGrants()...)
+	if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"})); code != http.StatusOK {
+		t.Fatalf("status=%d answer=%v", code, answer)
+	}
+	ledger, err := os.OpenFile(filepath.Join(f.logDir, claudeResetSpendLedgerName), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ledger.WriteString("not a record\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err = ledger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.restart()
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v8/management/credentials", nil)
+	ctx.Set(ConfigV8ContextKey, true)
+	f.h.ListAuthFiles(ctx)
+	var list struct {
+		Files []map[string]any `json:"files"`
+	}
+	if errDecode := json.Unmarshal(rec.Body.Bytes(), &list); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	claudeSeats := 0
+	for _, entry := range list.Files {
+		if entry["provider"] != "claude" {
+			continue
+		}
+		claudeSeats++
+		if entry["claude_last_reset_spend"] != nil || entry["claude_last_reset_spend_error"] == nil {
+			t.Fatalf("credentials entry hides the unreadable ledger: %v", entry)
+		}
+	}
+	if claudeSeats != 3 {
+		t.Fatalf("list=%s", rec.Body)
+	}
+
+	rec = httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v8/management/claude/limit-resets", nil)
+	f.h.GetClaudeLimitResets(ctx)
+	var resets struct {
+		Seats []map[string]any `json:"seats"`
+	}
+	if errDecode := json.Unmarshal(rec.Body.Bytes(), &resets); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	if len(resets.Seats) != 3 {
+		t.Fatalf("limit-resets=%s", rec.Body)
+	}
+	for _, seat := range resets.Seats {
+		if seat["last_spend"] != nil || seat["last_spend_error"] == nil {
+			t.Fatalf("limit-resets seat hides the unreadable ledger: %v", seat)
+		}
+	}
 }
