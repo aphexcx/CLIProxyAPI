@@ -921,6 +921,59 @@ func TestClaudeResetSpendReadsConfigurationUnderTheLock(t *testing.T) {
 	<-reloaded
 }
 
+// Codex round 3, class "provider reset not reconciled with routing": a reset
+// the provider confirms lifts the hub's own cooldowns on the seat, as the
+// Codex reset does; an unknown outcome or a refusal leaves them in place.
+func TestClaudeResetSpendLiftsTheHubCooldownOnlyAfterAReset(t *testing.T) {
+	block := func(t *testing.T, f *resetSpendFixture) {
+		t.Helper()
+		next := time.Now().Add(7 * 24 * time.Hour)
+		auth, ok := f.h.authManager.GetByID("fixture")
+		if !ok {
+			t.Fatal("fixture seat missing")
+		}
+		auth.Status, auth.StatusMessage, auth.Unavailable, auth.NextRetryAfter = coreauth.StatusError, "quota exhausted", true, next
+		auth.Quota = coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next, BackoffLevel: 2}
+		auth.ModelStates = map[string]*coreauth.ModelState{"claude-fixture-model": {
+			Status: coreauth.StatusError, StatusMessage: "quota exhausted", Unavailable: true, NextRetryAfter: next,
+			Quota: coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next, BackoffLevel: 2},
+		}}
+		if _, err := f.h.authManager.Update(context.Background(), auth); err != nil {
+			t.Fatal(err)
+		}
+		if blocked, _ := f.h.authManager.GetByID("fixture"); !blocked.Unavailable || !blocked.Quota.Exceeded {
+			t.Fatalf("precondition: the seat is not blocked: %+v", blocked.Quota)
+		}
+	}
+	blocked := func(f *resetSpendFixture) bool {
+		auth, _ := f.h.authManager.GetByID("fixture")
+		state := auth.ModelStates["claude-fixture-model"]
+		return auth.Unavailable || auth.Quota.Exceeded || !auth.NextRetryAfter.IsZero() || (state != nil && (state.Unavailable || state.Quota.Exceeded))
+	}
+	for name, tc := range map[string]struct {
+		update func(*fakeResetProvider)
+		lifted bool
+	}{
+		"reset":        {func(*fakeResetProvider) {}, true},
+		"already used": {func(p *fakeResetProvider) { p.claimResult = "already_used" }, true},
+		"unknown":      {func(p *fakeResetProvider) { p.claimStatus = http.StatusBadGateway }, false},
+		"refused":      {func(p *fakeResetProvider) { p.claimResult = "cooldown" }, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newResetSpendFixture(t, resetFixtureGrants()...)
+			block(t, f)
+			f.provider.set(tc.update)
+			if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "weekly"})); code != http.StatusOK {
+				t.Fatalf("status=%d answer=%v", code, answer)
+			}
+			if blocked(f) == tc.lifted {
+				auth, _ := f.h.authManager.GetByID("fixture")
+				t.Fatalf("lifted=%v want %v: unavailable=%v quota=%+v", !blocked(f), tc.lifted, auth.Unavailable, auth.Quota)
+			}
+		})
+	}
+}
+
 // Codex round 2: a ledger the hub cannot read is reported as such by both
 // reads, never as "never spent through this hub".
 func TestClaudeResetSpendHistoryReportsAnUnreadableLedger(t *testing.T) {

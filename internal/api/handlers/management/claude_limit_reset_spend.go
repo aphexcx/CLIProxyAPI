@@ -617,6 +617,18 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 		}
 		answer["retry_until"] = firstSent.Add(claudeResetRetryWindow)
 	}
+	if outcome.Result == claudeauth.LimitResetResultReset || outcome.Result == claudeauth.LimitResetResultAlreadyUsed {
+		// The provider refilled the seat: lift the hub's own cooldowns on it,
+		// as the Codex reset does (an unauthorized failure is kept), and queue
+		// a fresh usage poll so a limit this kind did not clear is held again
+		// from the provider's own numbers.
+		answer["routing"] = "cooldowns cleared; usage poll queued"
+		if _, _, errReset := h.authManager.ResetQuota(context.WithoutCancel(ctx), auth.ID); errReset != nil {
+			log.WithError(errReset).Warn("Claude reset spent, but the hub's cooldown was not cleared")
+			answer["routing"] = "the hub's cooldown could not be cleared; reset it from the routing controls"
+		}
+		h.authManager.RequestClaudeQuotaPoll(auth.ID)
+	}
 	after, _, errAfter := readClaudeResetStatus(ctx, client, token, userAgent)
 	if errAfter == nil {
 		kindsAfter := coreauth.SummarizeClaudeResetKinds(after.Grants, ledger.clock())
