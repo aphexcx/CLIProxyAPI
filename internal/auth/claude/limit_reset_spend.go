@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/resetclaim"
@@ -28,6 +29,27 @@ const (
 	// answer came back. Only a retry with the same request id may follow.
 	LimitResetResultUnknown = "unknown"
 )
+
+// limitResetReasonCodePattern is the only shape of provider reason the hub
+// keeps: a code of lowercase letters and underscores. Free text, which could
+// carry an email, an organization id or a credential, is never kept.
+var limitResetReasonCodePattern = regexp.MustCompile(`^[a-z][a-z_]{0,47}$`)
+
+// LimitResetReasonUnrecognized replaces a provider reason that is not a code.
+const LimitResetReasonUnrecognized = "unrecognized"
+
+// ValidLimitResetReasonCode reports whether reason is a code the hub keeps.
+func ValidLimitResetReasonCode(reason string) bool {
+	return limitResetReasonCodePattern.MatchString(reason)
+}
+
+// limitResetReasonCode keeps a provider reason only when it is a code.
+func limitResetReasonCode(reason string) string {
+	if reason == "" || ValidLimitResetReasonCode(reason) {
+		return reason
+	}
+	return LimitResetReasonUnrecognized
+}
 
 // LimitResetUserAgent is the client name a spend's reads and claim carry: the
 // Claude Code shape the hub's earlier dashboard used, the only one observed to
@@ -73,6 +95,8 @@ func (o *ClaudeAuth) fetchLimitResetSpendJSON(ctx context.Context, endpoint, acc
 		return nil, fmt.Errorf("create Claude %s request: %w", label, errRequest)
 	}
 	applyLimitResetSpendHeaders(req.Header, accessToken, userAgent)
+	// The established control-plane reader's freshness rule: never a cached copy.
+	req.Header.Set("Cache-Control", "no-cache")
 	req.Close = true
 	resp, errDo := httptransport.Do(o.httpClient, req)
 	if errDo != nil {
@@ -110,11 +134,17 @@ func (o *ClaudeAuth) FetchLimitResetSpendProfile(ctx context.Context, accessToke
 }
 
 // FetchLimitResetSpendStatus reads the seat's banked reset grants fresh,
-// never from a cache. The body is returned raw for the shared parser.
+// never from a cache, with the established reader's checks: a response with
+// no valid usage window is refused. The body is returned raw for the shared
+// parser.
 func (o *ClaudeAuth) FetchLimitResetSpendStatus(ctx context.Context, accessToken, userAgent string) (json.RawMessage, error) {
 	body, errFetch := o.fetchLimitResetSpendJSON(ctx, LimitResetsUsageURL, accessToken, userAgent, "reset status")
 	if errFetch != nil {
 		return nil, errFetch
+	}
+	windows, errParse := parseOAuthUsage(body)
+	if errParse != nil || len(windows) == 0 {
+		return nil, errors.New("reset status response has no valid usage windows")
 	}
 	return json.RawMessage(body), nil
 }
@@ -180,7 +210,7 @@ func (o *ClaudeAuth) ClaimLimitReset(ctx context.Context, accessToken, userAgent
 			return result, nil
 		}
 		if answer.Reason != nil {
-			result.Reason = *answer.Reason
+			result.Reason = limitResetReasonCode(*answer.Reason)
 		}
 		result.ResetsLeft, result.Cleared = answer.ResetsLeft, answer.Cleared
 		result.WeeklyResetsAt, result.CooldownUntil = answer.WeeklyResetsAt, answer.CooldownUntil

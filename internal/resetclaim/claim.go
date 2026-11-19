@@ -9,8 +9,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"sync/atomic"
 )
 
@@ -24,6 +26,12 @@ var (
 	requestPattern      = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 )
 
+// ValidGrantID reports whether id is a grant id a claim can name.
+func ValidGrantID(id string) bool { return grantPattern.MatchString(id) }
+
+// ValidRequestID reports whether id is a request id a claim can carry.
+func ValidRequestID(id string) bool { return requestPattern.MatchString(id) }
+
 // Claim names the one grant a deliberate operator spend claims.
 type Claim struct {
 	OrganizationUUID string
@@ -34,11 +42,14 @@ type Claim struct {
 // claimMarkerKey is unexported, so no other package can mark a request.
 type claimMarkerKey struct{}
 
-// claimMarker binds the exception to the exact request built here. It opens
-// the guard for one transport send only.
+// claimMarker binds the exception to the exact request built here: its URL,
+// its body and every header, the credential included. It opens the guard for
+// one transport send only.
 type claimMarker struct {
-	url  string
-	sent atomic.Bool
+	url    string
+	body   []byte
+	header http.Header
+	sent   atomic.Bool
 }
 
 // NewMarkedClaimRequest builds the claim from validated identifiers: a fixed
@@ -72,6 +83,7 @@ func NewMarkedClaimRequest(ctx context.Context, claim Claim, header http.Header)
 		req.Header[http.CanonicalHeaderKey(key)] = append([]string(nil), values...)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	marker.body, marker.header = body, req.Header.Clone()
 	return req, nil
 }
 
@@ -87,19 +99,48 @@ func NoRedirectClaimClient(client *http.Client) *http.Client {
 	return &once
 }
 
-// ClaimPermitted reports whether req is a claim NewMarkedClaimRequest built
-// and no transport has sent yet. consume spends the marker, so a redirect hop,
-// a replay or a request reusing the context is refused.
-func ClaimPermitted(req *http.Request, consume bool) bool {
+// markerOf returns the marker of a claim NewMarkedClaimRequest built whose
+// method, URL, host and headers are still the ones it minted.
+func markerOf(req *http.Request) *claimMarker {
 	if req == nil || req.URL == nil {
-		return false
+		return nil
 	}
 	marker, _ := req.Context().Value(claimMarkerKey{}).(*claimMarker)
 	if marker == nil || req.Method != http.MethodPost || req.URL.String() != marker.url || (req.Host != "" && req.Host != "api.anthropic.com") {
-		return false
+		return nil
 	}
-	if consume {
-		return marker.sent.CompareAndSwap(false, true)
+	if len(req.Header) != len(marker.header) {
+		return nil
 	}
-	return !marker.sent.Load()
+	for key, values := range marker.header {
+		if !slices.Equal(req.Header[key], values) {
+			return nil
+		}
+	}
+	return marker
+}
+
+// ClaimPermitted reports whether req is an unsent claim NewMarkedClaimRequest
+// built, with its minted headers. It is the preflight; only PermittedClaim,
+// at the transport, sends one.
+func ClaimPermitted(req *http.Request) bool {
+	marker := markerOf(req)
+	return marker != nil && !marker.sent.Load()
+}
+
+// PermittedClaim spends the marker of an unsent claim and returns the request
+// a transport sends in its place: req with the minted body and headers, so a
+// body changed after minting is never sent. A redirect hop, a replay, a
+// request reusing the context, or a claim whose headers changed is refused.
+func PermittedClaim(req *http.Request) (*http.Request, bool) {
+	marker := markerOf(req)
+	if marker == nil || !marker.sent.CompareAndSwap(false, true) {
+		return nil, false
+	}
+	claim := req.Clone(req.Context())
+	claim.Header = marker.header.Clone()
+	claim.Body = io.NopCloser(bytes.NewReader(marker.body))
+	claim.ContentLength = int64(len(marker.body))
+	claim.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(marker.body)), nil }
+	return claim, true
 }

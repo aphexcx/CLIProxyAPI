@@ -2,7 +2,10 @@ package auth
 
 import (
 	"sort"
+	"strings"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/resetclaim"
 )
 
 // The kinds of a banked Claude reset grant, and the one table that maps a
@@ -50,10 +53,11 @@ func ClaudeResetKindNames() []string {
 }
 
 // ClaudeResetGrantSpendable reports whether a grant of a nameable kind can be
-// claimed at now, by the grant's own fields. Seat-level eligibility and
-// cooldown are the caller's to check.
+// claimed at now, by the grant's own fields. A grant whose id a claim cannot
+// carry is never spendable, so it is never selected or counted usable.
+// Seat-level eligibility and cooldown are the caller's to check.
 func ClaudeResetGrantSpendable(grant ClaudeResetGrant, now time.Time) bool {
-	if !ValidClaudeResetKind(ClaudeResetGrantKind(grant)) || grant.ResetsLeft <= 0 || !grant.UsableNow || grant.Paused {
+	if !resetclaim.ValidGrantID(grant.ID) || !ValidClaudeResetKind(ClaudeResetGrantKind(grant)) || grant.ResetsLeft <= 0 || !grant.UsableNow || grant.Paused {
 		return false
 	}
 	if grant.StartsAt != nil && grant.StartsAt.After(now) {
@@ -120,4 +124,43 @@ func SummarizeClaudeResetKinds(grants []ClaudeResetGrant, now time.Time) map[str
 		}
 	}
 	return summaries
+}
+
+// ClaudeResetSpendToken returns the access token a banked-reset spend may
+// use. Only an enabled OAuth Claude seat qualifies, by the same rule and the
+// same access-token selection as the Claude quota poll: an API-key, cookie or
+// session-token seat has none.
+func ClaudeResetSpendToken(auth *Auth) (string, bool) {
+	if auth == nil || !strings.EqualFold(auth.Provider, "claude") || !quotaPollEligible(auth) {
+		return "", false
+	}
+	token := quotaPollToken(auth)
+	return token, token != ""
+}
+
+// ClaudeResetCredentialCurrent reports whether the manager still holds the
+// credential base was taken from: the same registration and credential
+// version, the same access token, still an enabled OAuth Claude seat. A spend
+// checks it at dispatch, so a seat replaced, disabled or removed during its
+// reads sends nothing.
+func (m *Manager) ClaudeResetCredentialCurrent(base *Auth) bool {
+	if m == nil || base == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	current := m.auths[base.ID]
+	if _, spends := ClaudeResetSpendToken(current); !spends {
+		return false
+	}
+	return sameClaudeQuotaCredential(current, base)
+}
+
+// RequestClaudeResetFollowUpPoll asks for a usage poll after a spend, only
+// while the manager still holds the credential that spent.
+func (m *Manager) RequestClaudeResetFollowUpPoll(base *Auth) bool {
+	if !m.ClaudeResetCredentialCurrent(base) {
+		return false
+	}
+	return m.RequestClaudeQuotaPoll(base.ID)
 }

@@ -26,6 +26,7 @@ func TestClaudeLimitResetSpendRouteRequiresManagementKey(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"auth_index":"fixture","kind":"fable"}`))
 		req.RemoteAddr = "127.0.0.1:1234"
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", "fixture-route-operation")
 		if key != "" {
 			req.Header.Set("Authorization", "Bearer "+key)
 		}

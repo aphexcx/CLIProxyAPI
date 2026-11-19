@@ -35,6 +35,7 @@ func (h *Handler) GetClaudeLimitResets(c *gin.Context) {
 	seats := make([]claudeLimitResetSeat, 0)
 	now := time.Now()
 	if h.authManager != nil {
+		history := h.claudeResetHistory()
 		for _, auth := range h.authManager.List() {
 			if auth == nil || !strings.EqualFold(auth.Provider, "claude") {
 				continue
@@ -48,7 +49,7 @@ func (h *Handler) GetClaudeLimitResets(c *gin.Context) {
 			if seat.CedarEmber != nil {
 				seat.Kinds = coreauth.SummarizeClaudeResetKinds(seat.CedarEmber.Grants, now)
 			}
-			if last, errLast := h.claudeResetSpends.lastSpend(h.claudeResetLedgerDir(), auth.EnsureIndex()); errLast != nil {
+			if last, errLast := history.seat(auth.EnsureIndex()); errLast != nil {
 				seat.LastSpendError = errLast.Error()
 			} else {
 				seat.LastSpend = last

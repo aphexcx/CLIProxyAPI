@@ -122,7 +122,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	h.mu.Lock()
 	host := h.pluginHost
 	h.mu.Unlock()
-	quota := authFileQuotaContext{v8: c.GetBool(ConfigV8ContextKey)}
+	quota := authFileQuotaContext{v8: c.GetBool(ConfigV8ContextKey), claudeResetHistory: h.claudeResetHistory()}
 	if host != nil {
 		quota.pluginIDs = host.QuotaProviderPluginIDs(c.Request.Context())
 	}
@@ -501,6 +501,9 @@ type authFileQuotaContext struct {
 	pluginIDs map[string]string
 	// v8 hides declarative quota_probe support because v8 only serves plugin quota routes.
 	v8 bool
+	// claudeResetHistory is the reset spend ledger read once for a listing;
+	// nil reads it for the one entry built.
+	claudeResetHistory *claudeResetHistory
 }
 
 func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth, quota authFileQuotaContext) gin.H {
@@ -720,7 +723,11 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 		}
 		if strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") {
 			// Null means no reset was ever spent through this hub.
-			last, errLast := h.claudeResetSpends.lastSpend(h.claudeResetLedgerDir(), auth.Index)
+			history := quota.claudeResetHistory
+			if history == nil {
+				history = h.claudeResetHistory()
+			}
+			last, errLast := history.seat(auth.Index)
 			entry["claude_last_reset_spend"] = last
 			if errLast != nil {
 				entry["claude_last_reset_spend_error"] = errLast.Error()

@@ -166,3 +166,69 @@ func TestBankedResetClaimURLStaysDeniedForOtherRequests(t *testing.T) {
 		}
 	}
 }
+
+type claimTestDoer func(*http.Request) (*http.Response, error)
+
+func (f claimTestDoer) Do(r *http.Request) (*http.Response, error) { return f(r) }
+
+// Gate r1 MINOR 16: the exception carries the claim exactly as it was minted.
+// A credential or other header changed after minting is refused before any
+// send, a changed body is never sent (the minted one is), and an adapter that
+// is not an http.Client, whose send the guarded transport cannot count, is
+// refused at preflight.
+func TestBankedResetClaimSendsOnlyTheMintedClaim(t *testing.T) {
+	const minted = `{"program":"cedar_ember","grant_id":"fixture-grant","request_id":"fixture-request"}`
+	var bodies []string
+	client := &http.Client{Transport: claimTestTransport(func(req *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(req.Body)
+		bodies = append(bodies, string(body))
+		if req.Header.Get("Authorization") != "Bearer fixture-only" {
+			t.Errorf("a changed credential was sent")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"result":"reset"}`)), Request: req}, nil
+	})}
+	mint := func() *http.Request {
+		req, err := resetclaim.NewMarkedClaimRequest(context.Background(), fixtureClaim(), http.Header{"Authorization": {"Bearer fixture-only"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return req
+	}
+	for name, change := range map[string]func(*http.Request){
+		"credential replaced": func(req *http.Request) { req.Header.Set("Authorization", "Bearer fixture-other") },
+		"header added":        func(req *http.Request) { req.Header.Set("X-Fixture", "added") },
+		"header removed":      func(req *http.Request) { req.Header.Del("Content-Type") },
+	} {
+		req := mint()
+		change(req)
+		if _, err := httptransport.Do(resetclaim.NoRedirectClaimClient(client), req); !errors.Is(err, httptransport.ErrResetRateLimitsDenied) {
+			t.Fatalf("%s: got %v", name, err)
+		}
+		changed := mint()
+		change(changed)
+		if _, err := httptransport.GuardTransport(client.Transport).RoundTrip(changed); !errors.Is(err, httptransport.ErrResetRateLimitsDenied) {
+			t.Fatalf("%s at the transport: got %v", name, err)
+		}
+	}
+	if len(bodies) != 0 {
+		t.Fatalf("a changed claim was sent: %q", bodies)
+	}
+	req := mint()
+	req.Body = io.NopCloser(strings.NewReader(`{"program":"cedar_ember","grant_id":"fixture-other","request_id":"fixture-request"}`))
+	resp, err := httptransport.Do(resetclaim.NoRedirectClaimClient(client), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if len(bodies) != 1 || bodies[0] != minted {
+		t.Fatalf("sent bodies=%q", bodies)
+	}
+	var adapterCalls atomic.Int32
+	adapter := claimTestDoer(func(*http.Request) (*http.Response, error) {
+		adapterCalls.Add(1)
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})
+	if _, err = httptransport.Do(adapter, mint()); !errors.Is(err, httptransport.ErrResetRateLimitsDenied) || adapterCalls.Load() != 0 {
+		t.Fatalf("an adapter carried the claim: err=%v calls=%d", err, adapterCalls.Load())
+	}
+}

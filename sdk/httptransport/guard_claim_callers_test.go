@@ -18,7 +18,8 @@ import (
 // route, registered once in the v8 management group (behind the management key):
 //
 //	registerManagementV8Routes -> SpendClaudeLimitReset -> sendClaudeResetClaim
-//	  -> ClaimLimitReset -> NewMarkedClaimRequest -> Do/RoundTrip -> ClaimPermitted
+//	  -> ClaimLimitReset -> NewMarkedClaimRequest -> Do (ClaimPermitted, the
+//	  preflight) -> RoundTrip (PermittedClaim, the one send)
 //
 // Each link may be referenced exactly once, at its one allowed site, and never
 // from inside a function literal, a go or defer statement, or a loop, so a
@@ -26,8 +27,9 @@ import (
 // A tracked name in a string literal (reflection) fails it too.
 func TestBankedResetClaimHasOneCallerChain(t *testing.T) {
 	allowed := map[string]map[string]int{
-		"claimMarkerKey":        {"internal/resetclaim/claim.go:NewMarkedClaimRequest": 1, "internal/resetclaim/claim.go:ClaimPermitted": 1},
-		"ClaimPermitted":        {"sdk/httptransport/guard.go:Do": 1, "sdk/httptransport/guard.go:RoundTrip": 1},
+		"claimMarkerKey":        {"internal/resetclaim/claim.go:NewMarkedClaimRequest": 1, "internal/resetclaim/claim.go:markerOf": 1},
+		"ClaimPermitted":        {"sdk/httptransport/guard.go:Do": 1},
+		"PermittedClaim":        {"sdk/httptransport/guard.go:RoundTrip": 1},
 		"NewMarkedClaimRequest": {"internal/auth/claude/limit_reset_spend.go:ClaimLimitReset": 1},
 		"NoRedirectClaimClient": {"internal/auth/claude/limit_reset_spend.go:ClaimLimitReset": 1},
 		"ClaimLimitReset":       {"internal/api/handlers/management/claude_limit_reset_spend.go:sendClaudeResetClaim": 1},
