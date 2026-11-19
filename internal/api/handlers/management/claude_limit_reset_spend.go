@@ -300,7 +300,7 @@ type claudeResetJournal struct {
 	tail   []byte
 	lastAt time.Time
 	// syncDirs are the directories whose entries the first append makes
-	// durable: the ledger's own and the parent of each one the open created.
+	// durable: the ledger's own and every ancestor it can open.
 	syncDirs        []string
 	synced          bool
 	busy            map[string]bool
@@ -473,20 +473,19 @@ func (j *claudeResetJournal) refuseLocked(code string, line int, problem, cure s
 }
 
 // claudeResetMakeDirs creates dir and its missing parents, and returns the
-// directories whose entries the first append must make durable: dir and the
-// parent of each directory it created.
+// directories whose entries the first append must make durable: dir and
+// every ancestor.
 func claudeResetMakeDirs(dir string) ([]string, error) {
+	// Every ancestor, not only those created here: logging or an earlier
+	// process may have created one without syncing its parent.
 	syncDirs := []string{dir}
-	for missing := dir; ; {
-		if _, errStat := os.Stat(missing); !os.IsNotExist(errStat) {
-			break
-		}
-		parent := filepath.Dir(missing)
-		if parent == missing {
+	for current := dir; ; {
+		parent := filepath.Dir(current)
+		if parent == current {
 			break
 		}
 		syncDirs = append(syncDirs, parent)
-		missing = parent
+		current = parent
 	}
 	return syncDirs, os.MkdirAll(dir, 0o700)
 }
@@ -827,9 +826,14 @@ func syncClaudeResetDirectories(dirs []string) error {
 	if runtime.GOOS == "windows" {
 		return nil
 	}
-	for _, dir := range dirs {
+	for i, dir := range dirs {
 		handle, errOpen := os.Open(dir)
 		if errOpen != nil {
+			// An ancestor the service may traverse but not read cannot be
+			// synced by it; only the ledger's own directory must open.
+			if i > 0 && os.IsPermission(errOpen) {
+				continue
+			}
 			return errOpen
 		}
 		errSync := handle.Sync()
@@ -1001,16 +1005,18 @@ func claudeResetNotSentStatus(reason string) int {
 	return http.StatusConflict
 }
 
-// dispatchable checks the ledger again right before a claim leaves: a
-// journal that has started refusing, or a ledger that is no longer the file
-// it wrote, sends nothing.
-func (j *claudeResetJournal) dispatchable() error {
+// dispatch judges a claim right before it leaves: under the journal's lock it
+// checks the ledger again, then runs check on a fresh clock, so no wait for
+// the ledger falls between the judgment and the send. A journal that has
+// started refusing, or a ledger that is no longer the file it wrote, sends
+// nothing. It returns the reason code of a claim not to send.
+func (j *claudeResetJournal) dispatch(check func() string) string {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if refusal := j.verifyLocked(); refusal != nil {
-		return refusal
+		return claudeResetAbortLedgerRefused
 	}
-	return nil
+	return check()
 }
 
 // replayLocked answers a key delivered again with what the ledger holds: the
@@ -1030,15 +1036,17 @@ func (j *claudeResetJournal) replayLocked(record claudeResetSpendRecord) (int, g
 		answer["recorded"] = "the claim was sent and no answer was recorded: no retry of it is accepted"
 		return status, answer
 	case record.Result == claudeResetResultNotSent:
+		// The first answer's status, and still the newest record of the
+		// claim, which a later retry may have settled.
 		answer["error"] = "the claim was not sent; nothing spent"
-		return claudeResetNotSentStatus(record.Reason), answer
+		status = claudeResetNotSentStatus(record.Reason)
 	}
 	settled := claudeResetSettles(record)
 	if latest := j.claims[record.RequestID]; latest.Operation != "" && latest.Operation != record.Operation {
 		answer["latest"] = gin.H{"retry": latest.Retry, "phase": latest.Phase, "result": latest.Result, "at": latest.At}
 		settled = settled || (latest.Phase == claudeResetPhaseAnswered && claudeResetSettles(latest))
 	}
-	if first, ok := j.firstSends[record.RequestID]; ok && !settled {
+	if first, ok := j.firstSends[record.RequestID]; ok && !settled && record.Result != claudeResetResultNotSent {
 		answer["retry_until"] = first.At.Add(claudeResetRetryWindow)
 	}
 	return status, answer
@@ -1438,12 +1446,16 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 		}
 		c.JSON(claudeResetNotSentStatus(reason), answer)
 	}
-	if abort := h.claudeResetDispatchAbort(auth, grant, sentAt, firstSentAt, ledger.clock()); abort != "" {
-		notSent(abort, "the claim was judged again after its record was written and not sent")
+	abort := journal.dispatch(func() string {
+		return h.claudeResetDispatchAbort(auth, grant, sentAt, firstSentAt, ledger.clock())
+	})
+	switch abort {
+	case "":
+	case claudeResetAbortLedgerRefused:
+		notSent(abort, "the spend ledger stopped being trusted before the claim left, so it was not sent")
 		return
-	}
-	if errLedger := journal.dispatchable(); errLedger != nil {
-		notSent(claudeResetAbortLedgerRefused, "the spend ledger stopped being trusted before the claim left, so it was not sent")
+	default:
+		notSent(abort, "the claim was judged again after its record was written and not sent")
 		return
 	}
 	claim := resetclaim.Claim{OrganizationUUID: organization, GrantID: grant.ID, RequestID: requestID}

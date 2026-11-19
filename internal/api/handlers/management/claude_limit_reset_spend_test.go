@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1818,12 +1819,12 @@ func TestClaudeResetSpendKeepsOnlyAReasonCode(t *testing.T) {
 func TestClaudeResetSpendLedgerIsDurableBeforeAnyClaim(t *testing.T) {
 	f := newResetSpendFixture(t, resetFixtureGrants()...)
 	var syncs atomic.Int32
-	var synced []string
+	var calls [][]string
 	claudeResetSyncDirectories = func(dirs []string) error {
 		if syncs.Add(1) == 1 {
 			return errors.New("fixture directory sync failure")
 		}
-		synced = append(synced, dirs...)
+		calls = append(calls, append([]string(nil), dirs...))
 		return syncClaudeResetDirectories(dirs)
 	}
 	t.Cleanup(func() { claudeResetSyncDirectories = syncClaudeResetDirectories })
@@ -1846,10 +1847,12 @@ func TestClaudeResetSpendLedgerIsDurableBeforeAnyClaim(t *testing.T) {
 	if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"})); code != http.StatusOK || answer["result"] != "reset" {
 		t.Fatalf("after a restart: status=%d answer=%v", code, answer)
 	}
-	// The first durable append synced the ledger's directory twice (the
-	// ledger's entry, then the sentinel's), and no directory above it.
-	if len(synced) != 2 || synced[0] != synced[1] {
-		t.Fatalf("directories synced=%v", synced)
+	// The first durable append synced the ledger's directory and every
+	// ancestor before the claim left (the ledger's entry), then the
+	// ledger's directory again (the sentinel's); Codex round 6 MAJOR 3.
+	dir := f.h.claudeResetSpends.mustDir(t, f.logDir)
+	if len(calls) != 2 || len(calls[0]) < 2 || calls[0][0] != dir || calls[0][1] != filepath.Dir(dir) || len(calls[1]) != 1 || calls[1][0] != dir {
+		t.Fatalf("directories synced=%v", calls)
 	}
 	if _, _, claims := f.provider.counts(); len(claims) != 1 {
 		t.Fatalf("claims=%+v", claims)
@@ -2624,15 +2627,19 @@ func TestClaudeResetSpendR2OwnReviewFindings(t *testing.T) {
 	t.Run("a ledger refused before the dispatch sends nothing", func(t *testing.T) {
 		f := newResetSpendFixture(t, round2Grants()...)
 		path := filepath.Join(f.logDir, claudeResetSpendLedgerName)
+		// The ledger goes as the sent line's write completes: the last sync
+		// of that append is the sentinel's.
 		var removed atomic.Bool
-		f.h.claudeResetSpends.now = func() time.Time {
-			if raw, err := os.ReadFile(path); err == nil && strings.Contains(string(raw), `"phase":"sent"`) && removed.CompareAndSwap(false, true) {
+		claudeResetSyncFile = func(file *os.File) error {
+			errSync := file.Sync()
+			if strings.HasSuffix(file.Name(), claudeResetLedgerSentinelName) && removed.CompareAndSwap(false, true) {
 				if errRemove := os.Remove(path); errRemove != nil {
 					t.Error(errRemove)
 				}
 			}
-			return f.clock.now()
+			return errSync
 		}
+		t.Cleanup(func() { claudeResetSyncFile = func(f *os.File) error { return f.Sync() } })
 		code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
 		if _, _, claims := f.provider.counts(); len(claims) != 0 || code != http.StatusServiceUnavailable || answer["reason"] != claudeResetAbortLedgerRefused {
 			t.Fatalf("claims=%d status=%d answer=%v", len(claims), code, answer)
@@ -2652,6 +2659,88 @@ func TestClaudeResetSpendR2OwnReviewFindings(t *testing.T) {
 		code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.seatIndex(t, "other"), "kind": "weekly"}))
 		if _, _, claims := f.provider.counts(); len(claims) != 1 || code != http.StatusServiceUnavailable || answer["ledger_refusal"] != claudeResetRefusalChanged {
 			t.Fatalf("claims=%d status=%d answer=%v", len(claims), code, answer)
+		}
+	})
+}
+
+// Round 2, the one Codex round (round 6) on the delta.
+func TestClaudeResetSpendR2CodexRoundFindings(t *testing.T) {
+	// MAJOR 2: the claim is judged on a fresh clock after any wait for the
+	// ledger's lock, not before it.
+	t.Run("the dispatch judges the claim after the wait for the ledger", func(t *testing.T) {
+		f := newResetSpendFixture(t, round2Grants()...)
+		journal, err := f.h.claudeResetSpends.journal(f.logDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal.mu.Lock()
+		if refusal := journal.startLocked(); refusal != nil {
+			journal.mu.Unlock()
+			t.Fatal(refusal)
+		}
+		started := f.clock.now()
+		done := make(chan string, 1)
+		go func() {
+			done <- journal.dispatch(func() string {
+				if f.clock.now().Sub(started) >= claudeResetRetryWindow {
+					return claudeResetAbortRetryWindow
+				}
+				return ""
+			})
+		}()
+		f.clock.advance(claudeResetRetryWindow)
+		journal.mu.Unlock()
+		if got := <-done; got != claudeResetAbortRetryWindow {
+			t.Fatalf("the claim was judged before the wait: %q", got)
+		}
+	})
+	// MAJOR 3: every ancestor is synced; one the service may traverse but
+	// not read is skipped, while the ledger's own directory must open.
+	t.Run("an unreadable ancestor is skipped, the ledger's directory is not", func(t *testing.T) {
+		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+			t.Skip("needs a directory its owner can traverse but not read")
+		}
+		root := t.TempDir()
+		ancestor := filepath.Join(root, "traverse-only")
+		dir := filepath.Join(ancestor, "logs")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(ancestor, 0o311); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(ancestor, 0o700) })
+		if err := syncClaudeResetDirectories([]string{dir, ancestor, root}); err != nil {
+			t.Fatalf("an unreadable ancestor failed the sync: %v", err)
+		}
+		if err := syncClaudeResetDirectories([]string{ancestor}); err == nil {
+			t.Fatal("an unreadable ledger directory was skipped")
+		}
+	})
+	// MINOR 4: a replay of a retry that was not sent keeps its status and
+	// still shows the retry that settled the claim afterwards.
+	t.Run("a replay of an aborted retry shows the settling retry", func(t *testing.T) {
+		f := newResetSpendFixture(t, round2Grants()...)
+		f.provider.set(func(p *fakeResetProvider) { p.claimStatus = http.StatusBadGateway })
+		_, first := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
+		requestID, _ := first["request_id"].(string)
+		if first["result"] != "unknown" {
+			t.Fatalf("setup: %v", first)
+		}
+		f.provider.set(func(p *fakeResetProvider) { p.claimStatus = 0 })
+		retryBody := spendBody(map[string]any{"auth_index": f.index, "kind": "fable", "retry_request_id": requestID})
+		f.jumpWhenSentIsDurable(claudeResetDispatchLimit)
+		codeB, retryB := f.spendKeyed(t, "round2-retry-b", retryBody)
+		if codeB != http.StatusConflict || retryB["reason"] != claudeResetAbortLedgerStall {
+			t.Fatalf("setup of the aborted retry: status=%d answer=%v", codeB, retryB)
+		}
+		if _, retryC := f.spendKeyed(t, "round2-retry-c", retryBody); retryC["result"] != "reset" {
+			t.Fatalf("setup of the settling retry: %v", retryC)
+		}
+		code, replay := f.spendKeyed(t, "round2-retry-b", retryBody)
+		latest, _ := replay["latest"].(map[string]any)
+		if code != codeB || replay["result"] != claudeResetResultNotSent || latest["result"] != "reset" || replay["retry_until"] != nil {
+			t.Fatalf("status=%d answer=%v", code, replay)
 		}
 	})
 }
