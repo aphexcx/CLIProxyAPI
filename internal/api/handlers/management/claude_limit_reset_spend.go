@@ -490,16 +490,6 @@ func (j *claudeResetJournal) startLocked() *claudeResetLedgerRefusal {
 	if j.refused != nil || j.opened {
 		return j.refused
 	}
-	j.busy = make(map[string]bool)
-	j.keysInFlight = make(map[string]bool)
-	j.accountInFlight = make(map[string]string)
-	j.unsettled = make(map[string]*claudeResetUnsettledClaim)
-	j.awaiting = make(map[string]claudeResetSpendRecord)
-	j.last = make(map[string]claudeResetSpendRecord)
-	j.operations = make(map[string]claudeResetSpendRecord)
-	j.claims = make(map[string]claudeResetSpendRecord)
-	j.firstSends = make(map[string]claudeResetSpendRecord)
-	j.balanced = make(map[string]bool)
 	syncDirs, errMkdir := claudeResetMakeDirs(j.dir)
 	if errMkdir != nil {
 		return j.refuseLocked(claudeResetRefusalUnreadable, 0, "its directory cannot be created: "+errMkdir.Error(), claudeResetCureRestart)
@@ -569,6 +559,16 @@ func readClaudeResetSentinel(path string) (length int64, exists bool, err error)
 // write cut short, refused whatever it parses as, the same way on every
 // start: the hub never appends to a ledger it refused.
 func (j *claudeResetJournal) loadLocked() *claudeResetLedgerRefusal {
+	j.busy = make(map[string]bool)
+	j.keysInFlight = make(map[string]bool)
+	j.accountInFlight = make(map[string]string)
+	j.unsettled = make(map[string]*claudeResetUnsettledClaim)
+	j.awaiting = make(map[string]claudeResetSpendRecord)
+	j.last = make(map[string]claudeResetSpendRecord)
+	j.operations = make(map[string]claudeResetSpendRecord)
+	j.claims = make(map[string]claudeResetSpendRecord)
+	j.firstSends = make(map[string]claudeResetSpendRecord)
+	j.balanced = make(map[string]bool)
 	recorded, sentinelExists, errSentinel := readClaudeResetSentinel(j.sentinelPath())
 	if errSentinel != nil {
 		return j.refuseLocked(claudeResetRefusalUnreadable, 0, "its sentinel cannot be read: "+errSentinel.Error(), claudeResetCureRestore)
