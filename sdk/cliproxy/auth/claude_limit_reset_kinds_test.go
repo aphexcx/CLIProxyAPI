@@ -297,3 +297,68 @@ func TestPublishClaudeResetSpendReadLeavesSiblingsOfARefusal(t *testing.T) {
 		t.Fatalf("a refused claim marked another seat stale: %+v", got)
 	}
 }
+
+// Gate r2 MINOR 12: a spend's after-read on a current credential that has no
+// reset cache entry yet (registered, not polled) starts its entry; the
+// listing does not say "not polled yet" after a verified read.
+func TestPublishClaudeResetSpendReadStartsTheEntryOfANewCredential(t *testing.T) {
+	m, id, _ := newClaudeQuotaManager(t)
+	base, _ := m.GetByID(id)
+	if got := m.ClaudeLimitResetsCached(id); got.CedarEmber != nil {
+		t.Fatalf("precondition: %+v", got)
+	}
+	m.PublishClaudeResetSpendRead(base, "launch", true, time.Now(), json.RawMessage(limitResetsFixture), nil)
+	if got := m.ClaudeLimitResetsCached(id); got.Stale || got.CedarEmber == nil || cachedLaunchLeft(t, m, id) != 2 {
+		t.Fatalf("the verified after-read was dropped: %+v", got)
+	}
+}
+
+// Gate r2 MINOR 11: the claim's seat reads stale from the moment the outcome
+// is known, and a sibling's read that was in flight when the claim was sent
+// publishes stale when it lists the grant, though nothing was cached before.
+func TestClaudeResetClaimMarksReadsInFlightStale(t *testing.T) {
+	m, id, twin := newClaudeQuotaManager(t)
+	cfg := m.runtimeConfig.Load().(*config.Config)
+	base, _ := m.GetByID(id)
+	twinBase, _ := m.GetByID(twin)
+	m.mu.Lock()
+	if m.limitResetSeats == nil {
+		m.limitResetSeats = make(map[string]*claudeLimitResetPollSeat)
+	}
+	m.limitResetSeats[twin] = &claudeLimitResetPollSeat{generation: twinBase.CredentialGeneration(), running: true, attemptedAt: time.Now().Add(-time.Second)}
+	m.mu.Unlock()
+	m.PublishClaudeResetSpendRead(base, "launch", true, time.Now(), nil, errors.New("fixture after-read pending"))
+	if got := m.ClaudeLimitResetsCached(id); !got.Stale || got.Error == "" {
+		t.Fatalf("the claim's seat read fresh while its after-read was pending: %+v", got)
+	}
+	m.recordClaudeLimitResets(context.Background(), cfg, twinBase, json.RawMessage(limitResetsFixture), nil, time.Now())
+	if got := m.ClaudeLimitResetsCached(twin); !got.Stale || got.Error == "" || got.CedarEmber == nil {
+		t.Fatalf("a read in flight at the claim published the pre-claim count as fresh: %+v", got)
+	}
+	// The sibling's next read, begun after the claim, is fresh again.
+	setClaudeLimitResetAttempt(m, twin, time.Now())
+	m.recordClaudeLimitResets(context.Background(), cfg, twinBase, json.RawMessage(limitResetsFixture), nil, time.Now())
+	if got := m.ClaudeLimitResetsCached(twin); got.Stale {
+		t.Fatalf("a read begun after the claim stayed stale: %+v", got)
+	}
+}
+
+// Gate r2 MINOR 15: a successful poll ends the rate-limit backoff even when a
+// newer spend observation keeps its result out of the cache.
+func TestClaudeResetPollBackoffEndsWithAnySuccessfulRead(t *testing.T) {
+	m, id, _ := newClaudeQuotaManager(t)
+	cfg := m.runtimeConfig.Load().(*config.Config)
+	base, _ := m.GetByID(id)
+	m.recordClaudeLimitResets(context.Background(), cfg, base, json.RawMessage(limitResetsFixture), nil, time.Now())
+	m.mu.Lock()
+	seat := m.limitResetSeats[id]
+	seat.rateLimits, seat.attemptedAt, seat.observedFrom = 2, time.Now(), time.Now().Add(time.Hour)
+	m.mu.Unlock()
+	m.recordClaudeLimitResets(context.Background(), cfg, base, json.RawMessage(limitResetsFixture), nil, time.Now())
+	m.mu.Lock()
+	rateLimits := seat.rateLimits
+	m.mu.Unlock()
+	if rateLimits != 0 {
+		t.Fatalf("an older successful poll left the backoff at %d rate limits", rateLimits)
+	}
+}

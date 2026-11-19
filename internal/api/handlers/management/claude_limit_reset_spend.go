@@ -8,12 +8,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,12 +35,22 @@ const (
 	// claudeResetSpendLedgerName is the append-only record of every spend, in
 	// the hub's log directory. Log cleanup removes only main.log rotations.
 	claudeResetSpendLedgerName = "claude-limit-reset-spends.jsonl"
-	// claudeResetLedgerSentinelName marks that the ledger was created. A
-	// ledger missing beside it is refused, never read as "no spend ever".
+	// claudeResetLedgerSentinelName records that the ledger was created and
+	// the ledger's length after its last durable write. A ledger missing,
+	// emptied or shorter than that length is refused, never read as fewer
+	// spends.
 	claudeResetLedgerSentinelName = "claude-limit-reset-spends.created"
+	// claudeResetLedgerLockName is the file whose exclusive lock one hub
+	// process holds for its whole life; a second process refuses every spend.
+	claudeResetLedgerLockName = "claude-limit-reset-spends.lock"
 	// claudeResetRetryWindow bounds the explicit retry of a claim whose outcome
 	// is unknown; the hub never retries on its own.
 	claudeResetRetryWindow = 10 * time.Minute
+	// claudeResetDispatchLimit bounds the time from a sent line's stamp to its
+	// claim's dispatch. A claim whose line took longer to become durable is
+	// not sent, so its hold and retry window never start long before it
+	// leaves, in the running hub or after a restart.
+	claudeResetDispatchLimit = 5 * time.Second
 	// claudeResetIdempotencyHeader names the caller's key for one spend: the
 	// same key delivered again returns the recorded outcome and sends nothing.
 	claudeResetIdempotencyHeader = "Idempotency-Key"
@@ -50,9 +62,6 @@ const (
 	claudeResetPhaseSent     = "sent"
 	claudeResetPhaseAnswered = "answered"
 	claudeResetPhaseBalance  = "balance"
-	// claudeResetPhaseTornClosed follows a torn line (a write cut short, which
-	// no claim followed) that a later append closed; only such a line is skipped.
-	claudeResetPhaseTornClosed = "torn_line_closed"
 	// claudeResetResultNotSent records a claim the hub certainly did not send.
 	claudeResetResultNotSent = "not_sent"
 )
@@ -63,17 +72,45 @@ const (
 	claudeResetAbortCredential     = "credential_changed_at_dispatch"
 	claudeResetAbortGrantExpired   = "grant_expired_at_dispatch"
 	claudeResetAbortRetryWindow    = "retry_window_passed_at_dispatch"
-	claudeResetLedgerErrorText     = "the outcome is not in the spend ledger: the seat stays held and no retry of this claim is accepted"
-	claudeResetBalanceErrorText    = "what is left after the claim is not in the spend ledger"
+	claudeResetAbortLedgerStall    = "ledger_write_stalled_at_dispatch"
+	claudeResetLedgerErrorText     = "the outcome is not in the spend ledger: the ledger refuses every spend until the hub restarts, the seat stays held, and no retry of this claim is accepted"
+	claudeResetBalanceErrorText    = "what is left after the claim is not in the spend ledger, which refuses every spend until the hub restarts"
 	claudeResetCredentialRefusal   = "only an enabled OAuth Claude seat can spend a banked reset"
-	claudeResetIdempotencyRequired = "an Idempotency-Key header is required: a fresh key for each new spend, the same key to deliver one again"
+	claudeResetIdempotencyRequired = "exactly one Idempotency-Key header is required, with no comma in it: a fresh key for each new spend, the same key to deliver one again"
+)
+
+// Codes of a spend ledger the hub refuses. A refusal also names the ledger,
+// the first line it could not accept, and the cure.
+const (
+	claudeResetRefusalUnreadable  = "ledger_unreadable"
+	claudeResetRefusalInvalidLine = "ledger_invalid_line"
+	claudeResetRefusalMissing     = "ledger_missing"
+	claudeResetRefusalShortened   = "ledger_shortened"
+	claudeResetRefusalHeld        = "ledger_held_by_another_process"
+	claudeResetRefusalChanged     = "ledger_changed_under_running_hub"
+	claudeResetRefusalWriteFailed = "ledger_write_failed"
+
+	claudeResetCureRepair  = "check the usage page of every seat with a claim in the last ten minutes; then repair or remove that line (an incomplete last line is a write cut short, which no claim followed), or move the ledger and its sentinel aside together, which forgets every recorded Idempotency-Key and hold; then restart the hub"
+	claudeResetCureRestore = "restore the ledger the hub wrote; or, after checking the usage page of every seat with a claim in the last ten minutes, move the sentinel aside as well, which forgets every recorded Idempotency-Key and hold; then restart the hub"
+	claudeResetCureHeld    = "stop the other hub process that uses this log directory, or give each hub its own log directory; then restart this hub"
+	claudeResetCureRestart = "check the ledger file and the disk, then restart the hub: a restart loads the ledger again and refuses it if it does not validate"
 )
 
 var (
-	claudeResetOperationPattern      = regexp.MustCompile(`^[0-9a-f]{32}$`)
-	claudeResetAccountPattern        = regexp.MustCompile(`^[0-9a-f]{24}$`)
-	claudeResetIdempotencyKeyPattern = regexp.MustCompile(`^[\x21-\x7e]{1,200}$`)
+	claudeResetOperationPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+	claudeResetAccountPattern   = regexp.MustCompile(`^[0-9a-f]{24}$`)
+	// A key is printable ASCII with no comma, so two header fields can never
+	// be read as one key joined by a comma.
+	claudeResetIdempotencyKeyPattern = regexp.MustCompile(`^[\x21-\x2b\x2d-\x7e]{1,200}$`)
 )
+
+// errClaudeResetLedgerLocked is what the lock attempt returns when another
+// process, or another open of the lock file, holds the ledger directory.
+var errClaudeResetLedgerLocked = errors.New("another process holds the reset spend ledger lock")
+
+// errClaudeResetAfterReadPending marks a seat's cached reset status stale
+// while the grants read after a claim is still in flight.
+var errClaudeResetAfterReadPending = errors.New("the grants read after the claim has not returned yet")
 
 // claudeResetSpendRequest is the spend's body. A selector the caller sends
 // must name something: grant_id and retry_request_id are never empty here.
@@ -102,12 +139,40 @@ type claudeResetSpendRecord struct {
 	ResetsLeftAfter  map[string]int `json:"resets_left_after"`
 }
 
+// claudeResetUnsettledClaim is a first claim whose outcome is unknown; it
+// holds its seat and its account from its sent line's stamp for the retry
+// window.
 type claudeResetUnsettledClaim struct {
 	kind, grantID, requestID, account string
 	sentAt                            time.Time
-	// unrecorded is a known outcome the ledger could not record: the hold
-	// stays, and no retry may follow.
-	unrecorded string
+}
+
+// claudeResetLedgerRefusal is why a journal refuses every spend: what is
+// wrong, where, and what an operator does about it.
+type claudeResetLedgerRefusal struct {
+	code, path, problem, cure string
+	// line is the first line the hub could not accept, from 1; 0 when the
+	// refusal is not about one line.
+	line int
+}
+
+func (r *claudeResetLedgerRefusal) Error() string {
+	if r.line > 0 {
+		return fmt.Sprintf("%s: %s line %d: %s", r.code, r.path, r.line, r.problem)
+	}
+	return fmt.Sprintf("%s: %s: %s", r.code, r.path, r.problem)
+}
+
+// answer is what a spend or a replay refused by the ledger says.
+func (r *claudeResetLedgerRefusal) answer() gin.H {
+	answer := gin.H{
+		"error":          "the spend ledger cannot be read or trusted, so earlier claims cannot be ruled out (" + r.problem + "); this request sent nothing",
+		"ledger_refusal": r.code, "ledger": r.path, "cure": r.cure,
+	}
+	if r.line > 0 {
+		answer["ledger_line"] = r.line
+	}
+	return answer
 }
 
 // claudeResetAccount is the opaque account binding the ledger keeps in place
@@ -204,15 +269,32 @@ func claudeResetJournalDir(dir string) (string, error) {
 	}
 }
 
-// claudeResetJournal is one ledger's state: the seats and operations in
-// flight, the reserved accounts, the claims whose outcome is unknown, and the
-// last spend of each seat. Holds are per hub process and per journal.
+// claudeResetJournal is one ledger's state. From the journal's first open the
+// process holds the ledger directory's lock for its whole life, and it trusts
+// the ledger file only while the file is provably the one it loaded and
+// wrote: the same file, the length of its last durable write, ending in the
+// record it last wrote. Any doubt refuses every spend until a restart loads a
+// ledger that validates.
 type claudeResetJournal struct {
-	mu     sync.Mutex
-	dir    string
-	loaded bool
-	// durable is set once an append has synced the ledger's directory entries.
-	durable         bool
+	mu  sync.Mutex
+	dir string
+	// opened is set once the journal took the lock and loaded the ledger.
+	opened bool
+	// refused, once set, refuses every spend, replay and listing until the
+	// hub restarts.
+	refused *claudeResetLedgerRefusal
+	// lock, file and sentinel stay open for the life of the process; file and
+	// sentinel are nil until they exist.
+	lock, file, sentinel *os.File
+	// size is the ledger's length after this process's last durable write,
+	// tail the last line it holds, and lastAt the newest stamp.
+	size   int64
+	tail   []byte
+	lastAt time.Time
+	// syncDirs are the directories whose entries the first append makes
+	// durable: the ledger's own and the parent of each one the open created.
+	syncDirs        []string
+	synced          bool
 	busy            map[string]bool
 	keysInFlight    map[string]bool
 	accountInFlight map[string]string
@@ -220,8 +302,19 @@ type claudeResetJournal struct {
 	awaiting        map[string]claudeResetSpendRecord
 	last            map[string]claudeResetSpendRecord
 	operations      map[string]claudeResetSpendRecord
-	// claims is the newest record of each claim, by request id.
-	claims map[string]claudeResetSpendRecord
+	// claims is the newest record of each claim and firstSends its first sent
+	// line, by request id; balanced marks the operations with a balance.
+	claims     map[string]claudeResetSpendRecord
+	firstSends map[string]claudeResetSpendRecord
+	balanced   map[string]bool
+}
+
+func (j *claudeResetJournal) ledgerPath() string {
+	return filepath.Join(j.dir, claudeResetSpendLedgerName)
+}
+
+func (j *claudeResetJournal) sentinelPath() string {
+	return filepath.Join(j.dir, claudeResetLedgerSentinelName)
 }
 
 func claudeResetSettles(record claudeResetSpendRecord) bool {
@@ -243,7 +336,7 @@ func claudeResetKnownResult(result string) bool {
 	return false
 }
 
-var errClaudeResetRecordInvalid = errors.New("the reset spend ledger holds an incomplete or invalid record")
+var errClaudeResetRecordInvalid = errors.New("the line is an incomplete or invalid record")
 
 // claudeResetRecordValid checks one record's own fields: every field its
 // phase requires, a known result, and a reason that is a code.
@@ -268,40 +361,60 @@ func claudeResetRecordValid(record claudeResetSpendRecord) bool {
 	return claudeResetKnownResult(record.Result)
 }
 
-// checkLocked validates one record against the journal: its own fields and
-// its transition. A sent first claim needs a seat with no claim held, a sent
-// retry needs the held claim it names, an answer needs its sent line, and a
-// balance needs its answer.
+// checkLocked validates one record against the journal, by the rules a live
+// spend is admitted by, whether the record is about to be written or is read
+// back on a start: its own fields, a stamp not before the record above it, an
+// operation and a first request id never used before, no other seat of its
+// account holding a claim with an unknown outcome, a retry only of a held
+// claim whose answer is recorded, an answer only to its sent line, and one
+// balance per answer.
 func (j *claudeResetJournal) checkLocked(record claudeResetSpendRecord) error {
 	if !claudeResetRecordValid(record) {
 		return errClaudeResetRecordInvalid
+	}
+	if record.At.Before(j.lastAt) {
+		return errors.New("the record is stamped before the record above it")
 	}
 	seat := record.AuthIndex
 	switch record.Phase {
 	case claudeResetPhaseSent:
 		if _, used := j.operations[record.Operation]; used {
-			return errors.New("the reset spend ledger records one operation twice")
+			return errors.New("the record repeats an operation already recorded")
+		}
+		for other := range j.unsettled {
+			if held := j.openLocked(other, record.At); other != seat && held != nil && held.account == record.Account {
+				return errors.New("the claim was sent while another seat of its account held a claim with an unknown outcome")
+			}
 		}
 		open := j.openLocked(seat, record.At)
 		if !record.Retry {
+			if _, used := j.claims[record.RequestID]; used {
+				return errors.New("the record sends again a request id already sent")
+			}
 			if open != nil {
-				return errors.New("the reset spend ledger records a claim sent while its seat was held")
+				return errors.New("the claim was sent while its seat was held")
 			}
 			return nil
 		}
 		if open == nil || open.requestID != record.RequestID || open.kind != record.Kind || open.grantID != record.GrantID || open.account != record.Account {
-			return errors.New("the reset spend ledger records a retry of no held claim")
+			return errors.New("the record retries no held claim")
+		}
+		if latest := j.claims[record.RequestID]; latest.Phase != claudeResetPhaseAnswered {
+			return errors.New("the record retries a claim whose answer is not recorded")
 		}
 	case claudeResetPhaseAnswered:
 		waiting, ok := j.awaiting[seat]
 		if !ok || waiting.Operation != record.Operation || waiting.RequestID != record.RequestID || waiting.Retry != record.Retry ||
-			waiting.Kind != record.Kind || waiting.GrantID != record.GrantID || waiting.Account != record.Account {
-			return errors.New("the reset spend ledger records an answer to no sent claim")
+			waiting.Kind != record.Kind || waiting.GrantID != record.GrantID || waiting.NamedGrant != record.NamedGrant || waiting.Account != record.Account {
+			return errors.New("the record answers no sent claim")
 		}
 	case claudeResetPhaseBalance:
 		answered, ok := j.operations[record.Operation]
 		if !ok || answered.Phase != claudeResetPhaseAnswered || answered.RequestID != record.RequestID || answered.AuthIndex != seat {
-			return errors.New("the reset spend ledger records a balance of no answered claim")
+			return errors.New("the record is a balance of no answered claim")
+		}
+		if j.balanced[record.Operation] {
+			return errors.New("the record is a second balance of one answer")
 		}
 	}
 	return nil
@@ -309,12 +422,14 @@ func (j *claudeResetJournal) checkLocked(record claudeResetSpendRecord) error {
 
 // foldLocked applies a checked record to the journal's state.
 func (j *claudeResetJournal) foldLocked(record claudeResetSpendRecord) {
+	j.lastAt = record.At
 	seat := record.AuthIndex
 	switch record.Phase {
 	case claudeResetPhaseSent:
 		j.awaiting[seat] = record
 		if !record.Retry {
 			j.unsettled[seat] = &claudeResetUnsettledClaim{kind: record.Kind, grantID: record.GrantID, requestID: record.RequestID, account: record.Account, sentAt: record.At}
+			j.firstSends[record.RequestID] = record
 		}
 	case claudeResetPhaseAnswered:
 		delete(j.awaiting, seat)
@@ -322,11 +437,15 @@ func (j *claudeResetJournal) foldLocked(record claudeResetSpendRecord) {
 			delete(j.unsettled, seat)
 		}
 	case claudeResetPhaseBalance:
+		j.balanced[record.Operation] = true
 		answered := j.operations[record.Operation]
 		answered.ResetsLeftAfter = record.ResetsLeftAfter
 		j.operations[record.Operation] = answered
 		if last, ok := j.last[seat]; ok && last.Operation == record.Operation {
 			j.last[seat] = answered
+		}
+		if claim, ok := j.claims[record.RequestID]; ok && claim.Operation == record.Operation {
+			j.claims[record.RequestID] = answered
 		}
 		return
 	}
@@ -335,23 +454,41 @@ func (j *claudeResetJournal) foldLocked(record claudeResetSpendRecord) {
 	j.claims[record.RequestID] = record
 }
 
-// latest is the newest record of the claim with requestID.
-func (j *claudeResetJournal) latest(requestID string) claudeResetSpendRecord {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	return j.claims[requestID]
+// refuseLocked makes the journal refuse every spend from now until a
+// restart, and logs why once.
+func (j *claudeResetJournal) refuseLocked(code string, line int, problem, cure string) *claudeResetLedgerRefusal {
+	if j.refused == nil {
+		j.refused = &claudeResetLedgerRefusal{code: code, path: j.ledgerPath(), line: line, problem: problem, cure: cure}
+		log.WithField("ledger_refusal", code).Errorf("Claude reset spend ledger refused; every spend is refused until a restart loads a ledger that validates: %s", j.refused.Error())
+	}
+	return j.refused
 }
 
-// loadLocked restores the journal from the ledger file. It fails closed: a
-// ledger that cannot be opened or read, a ledger missing after one was
-// created, or a line that is not a valid record in a valid order is an error
-// and nothing is kept, so every spend is refused until the ledger is sound.
-// Only a torn line is skipped: the last line cut short, or one a later append
-// closed with a torn_line_closed marker. No claim follows a torn line,
-// because a claim leaves only after its sent line is synced.
-func (j *claudeResetJournal) loadLocked() error {
-	if j.loaded {
-		return nil
+// claudeResetMakeDirs creates dir and its missing parents, and returns the
+// directories whose entries the first append must make durable: dir and the
+// parent of each directory it created.
+func claudeResetMakeDirs(dir string) ([]string, error) {
+	syncDirs := []string{dir}
+	for missing := dir; ; {
+		if _, errStat := os.Stat(missing); !os.IsNotExist(errStat) {
+			break
+		}
+		parent := filepath.Dir(missing)
+		if parent == missing {
+			break
+		}
+		syncDirs = append(syncDirs, parent)
+		missing = parent
+	}
+	return syncDirs, os.MkdirAll(dir, 0o700)
+}
+
+// startLocked opens the journal once: it creates the ledger directory, takes
+// the directory's lock for the life of the process, then loads the ledger.
+// It never runs without the lock: a lock it cannot take refuses every spend.
+func (j *claudeResetJournal) startLocked() *claudeResetLedgerRefusal {
+	if j.refused != nil || j.opened {
+		return j.refused
 	}
 	j.busy = make(map[string]bool)
 	j.keysInFlight = make(map[string]bool)
@@ -361,77 +498,347 @@ func (j *claudeResetJournal) loadLocked() error {
 	j.last = make(map[string]claudeResetSpendRecord)
 	j.operations = make(map[string]claudeResetSpendRecord)
 	j.claims = make(map[string]claudeResetSpendRecord)
-	file, errOpen := os.Open(filepath.Join(j.dir, claudeResetSpendLedgerName))
+	j.firstSends = make(map[string]claudeResetSpendRecord)
+	j.balanced = make(map[string]bool)
+	syncDirs, errMkdir := claudeResetMakeDirs(j.dir)
+	if errMkdir != nil {
+		return j.refuseLocked(claudeResetRefusalUnreadable, 0, "its directory cannot be created: "+errMkdir.Error(), claudeResetCureRestart)
+	}
+	j.syncDirs = syncDirs
+	lock, errOpen := os.OpenFile(filepath.Join(j.dir, claudeResetLedgerLockName), os.O_CREATE|os.O_RDWR, 0o600)
+	if errOpen != nil {
+		return j.refuseLocked(claudeResetRefusalUnreadable, 0, "its directory's lock file cannot be opened: "+errOpen.Error(), claudeResetCureRestart)
+	}
+	if errLock := lockClaudeResetLedgerFile(lock); errLock != nil {
+		closeClaudeResetFile(lock)
+		if errors.Is(errLock, errClaudeResetLedgerLocked) {
+			return j.refuseLocked(claudeResetRefusalHeld, 0, "another process holds its directory's lock", claudeResetCureHeld)
+		}
+		return j.refuseLocked(claudeResetRefusalUnreadable, 0, "its directory's lock cannot be taken: "+errLock.Error(), claudeResetCureRestart)
+	}
+	j.lock = lock
+	if refusal := j.loadLocked(); refusal != nil {
+		return refusal
+	}
+	j.opened = true
+	return nil
+}
+
+func closeClaudeResetFile(f *os.File) {
+	if errClose := f.Close(); errClose != nil {
+		log.WithError(errClose).Warn("Claude reset spend ledger: a file could not be closed")
+	}
+}
+
+// claudeResetSentinelWidth is the fixed width of the length the sentinel
+// records, so each update rewrites it in place at one size.
+const claudeResetSentinelWidth = 20
+
+func claudeResetSentinelContent(length int64) []byte {
+	return []byte(fmt.Sprintf("%0*d\n", claudeResetSentinelWidth, length))
+}
+
+// readClaudeResetSentinel reads the ledger length the sentinel records.
+func readClaudeResetSentinel(path string) (length int64, exists bool, err error) {
+	raw, errRead := os.ReadFile(path)
+	if errRead != nil {
+		if os.IsNotExist(errRead) {
+			return 0, false, nil
+		}
+		return 0, true, errRead
+	}
+	if len(raw) != claudeResetSentinelWidth+1 || raw[claudeResetSentinelWidth] != '\n' {
+		return 0, true, errors.New("it does not record a length")
+	}
+	for _, digit := range raw[:claudeResetSentinelWidth] {
+		if digit < '0' || digit > '9' {
+			return 0, true, errors.New("it does not record a length")
+		}
+	}
+	length, errParse := strconv.ParseInt(string(raw[:claudeResetSentinelWidth]), 10, 64)
+	if errParse != nil {
+		return 0, true, errors.New("it does not record a length")
+	}
+	return length, true, nil
+}
+
+// loadLocked restores the journal from the ledger file. It fails closed: a
+// ledger that cannot be opened or read, a ledger missing, emptied or shorter
+// than the length its sentinel records, or a line that is not a valid record
+// in a valid order refuses every spend. A last line with no newline is a
+// write cut short, refused whatever it parses as, the same way on every
+// start: the hub never appends to a ledger it refused.
+func (j *claudeResetJournal) loadLocked() *claudeResetLedgerRefusal {
+	recorded, sentinelExists, errSentinel := readClaudeResetSentinel(j.sentinelPath())
+	if errSentinel != nil {
+		return j.refuseLocked(claudeResetRefusalUnreadable, 0, "its sentinel cannot be read: "+errSentinel.Error(), claudeResetCureRestore)
+	}
+	file, errOpen := os.OpenFile(j.ledgerPath(), os.O_RDWR|os.O_APPEND, 0)
 	if errOpen != nil {
 		if !os.IsNotExist(errOpen) {
-			return errOpen
+			return j.refuseLocked(claudeResetRefusalUnreadable, 0, "it cannot be opened: "+errOpen.Error(), claudeResetCureRestart)
 		}
-		if _, errSentinel := os.Lstat(filepath.Join(j.dir, claudeResetLedgerSentinelName)); errSentinel == nil {
-			return errors.New("the reset spend ledger is missing although one was created")
-		} else if !os.IsNotExist(errSentinel) {
-			return errSentinel
+		if sentinelExists {
+			return j.refuseLocked(claudeResetRefusalMissing, 0, "it is missing although its sentinel records that one was created", claudeResetCureRestore)
 		}
-		j.loaded = true
 		return nil
 	}
-	defer func() {
-		if errClose := file.Close(); errClose != nil {
-			log.Errorf("failed to close Claude reset spend ledger: %v", errClose)
+	if refusal := j.readLocked(file, recorded, sentinelExists); refusal != nil {
+		closeClaudeResetFile(file)
+		return refusal
+	}
+	j.file = file
+	if sentinelExists {
+		sentinel, errSentinelOpen := os.OpenFile(j.sentinelPath(), os.O_RDWR, 0)
+		if errSentinelOpen != nil {
+			return j.refuseLocked(claudeResetRefusalUnreadable, 0, "its sentinel cannot be opened: "+errSentinelOpen.Error(), claudeResetCureRestart)
 		}
-	}()
+		j.sentinel = sentinel
+	}
+	return nil
+}
+
+// readLocked checks and folds every line of the ledger file.
+func (j *claudeResetJournal) readLocked(file *os.File, recorded int64, sentinelExists bool) *claudeResetLedgerRefusal {
+	if info, errStat := file.Stat(); errStat != nil || !info.Mode().IsRegular() {
+		return j.refuseLocked(claudeResetRefusalUnreadable, 0, "it is not a regular file that can be read", claudeResetCureRestart)
+	}
 	reader := bufio.NewReader(file)
-	invalidPending := false
-	for {
+	var size int64
+	for number := 1; ; number++ {
 		line, errRead := reader.ReadBytes('\n')
 		if errRead != nil && !errors.Is(errRead, io.EOF) {
-			return errRead
+			return j.refuseLocked(claudeResetRefusalUnreadable, number, "it cannot be read: "+errRead.Error(), claudeResetCureRestart)
 		}
-		complete := errRead == nil
+		if len(line) == 0 {
+			break
+		}
+		if line[len(line)-1] != '\n' {
+			return j.refuseLocked(claudeResetRefusalInvalidLine, number, "its last line has no newline: a write cut short, whatever it parses as", claudeResetCureRepair)
+		}
 		var record claudeResetSpendRecord
-		parsed := json.Unmarshal(line, &record) == nil
-		switch {
-		case parsed && record.Phase == claudeResetPhaseTornClosed:
-			// The line before it was cut short: skipped if invalid, kept if
-			// the cut fell just after a complete record.
-			if invalidPending {
-				log.Warn("Claude reset spend ledger holds a closed torn line; it is skipped")
-			}
-			invalidPending = false
-		case invalidPending:
-			return errClaudeResetRecordInvalid
-		case parsed && (complete || claudeResetRecordValid(record)):
-			if errCheck := j.checkLocked(record); errCheck != nil {
-				return errCheck
-			}
-			j.foldLocked(record)
-		case complete:
-			invalidPending = true
-		case len(line) > 0:
-			log.Warn("Claude reset spend ledger ends in a torn line; it is skipped")
+		if json.Unmarshal(line, &record) != nil {
+			return j.refuseLocked(claudeResetRefusalInvalidLine, number, "the line is not a record", claudeResetCureRepair)
 		}
-		if !complete {
-			if invalidPending {
-				return errClaudeResetRecordInvalid
-			}
-			j.loaded = true
-			return nil
+		if errCheck := j.checkLocked(record); errCheck != nil {
+			return j.refuseLocked(claudeResetRefusalInvalidLine, number, errCheck.Error(), claudeResetCureRepair)
+		}
+		j.foldLocked(record)
+		size += int64(len(line))
+		j.tail = line
+	}
+	if sentinelExists && size < recorded {
+		return j.refuseLocked(claudeResetRefusalShortened, 0, fmt.Sprintf("it holds %d bytes, fewer than the %d its sentinel records: it was cut, emptied or replaced by an older copy", size, recorded), claudeResetCureRestore)
+	}
+	j.size = size
+	return nil
+}
+
+// verifyLocked opens the journal, then proves the ledger is still the file
+// this process loaded and wrote, before every reservation, append, replay
+// answer and listing: the same file, of the length of its last durable write,
+// with its last record in place, beside the sentinel it wrote. Any doubt
+// refuses every spend until a restart; nothing is ever created where a ledger
+// or a sentinel already was.
+func (j *claudeResetJournal) verifyLocked() *claudeResetLedgerRefusal {
+	if refusal := j.startLocked(); refusal != nil {
+		return refusal
+	}
+	changed := func(problem string) *claudeResetLedgerRefusal {
+		return j.refuseLocked(claudeResetRefusalChanged, 0, problem, claudeResetCureRestart)
+	}
+	onDisk, errStat := os.Lstat(j.ledgerPath())
+	if j.file == nil {
+		if !os.IsNotExist(errStat) {
+			return changed("a ledger appeared that this process did not write")
+		}
+		if _, errSentinel := os.Lstat(j.sentinelPath()); !os.IsNotExist(errSentinel) {
+			return changed("a sentinel appeared that this process did not write")
+		}
+		return nil
+	}
+	held, errHeld := j.file.Stat()
+	switch {
+	case errStat != nil:
+		return changed("the ledger was removed or cannot be reached")
+	case errHeld != nil || !os.SameFile(onDisk, held):
+		return changed("the ledger was replaced by another file")
+	case held.Size() != j.size:
+		return changed(fmt.Sprintf("the ledger holds %d bytes, not the %d this process last wrote", held.Size(), j.size))
+	}
+	if len(j.tail) > 0 {
+		last := make([]byte, len(j.tail))
+		if _, errRead := j.file.ReadAt(last, j.size-int64(len(j.tail))); errRead != nil || !bytes.Equal(last, j.tail) {
+			return changed("the ledger's last record is not the one this process wrote")
+		}
+	}
+	if j.sentinel != nil {
+		sentinelOnDisk, errSentinel := os.Lstat(j.sentinelPath())
+		sentinelHeld, errSentinelHeld := j.sentinel.Stat()
+		if errSentinel != nil || errSentinelHeld != nil || !os.SameFile(sentinelOnDisk, sentinelHeld) {
+			return changed("the ledger's sentinel was removed or replaced")
+		}
+	}
+	return nil
+}
+
+// stampLocked is the time of a record about to be written: the clock without
+// its monotonic reading, so a stamp means the same in memory and on disk, and
+// never before the newest stamp, so the ledger's times only go forward.
+func (j *claudeResetJournal) stampLocked(clock func() time.Time) time.Time {
+	at := clock().Round(0)
+	if at.Before(j.lastAt) {
+		return j.lastAt
+	}
+	return at
+}
+
+// appendLocked stamps one record, checks it and makes it durable: the line
+// synced, on the first append the directory entries synced, then the length
+// the sentinel records. Any failure, including one that leaves the write
+// uncertain, cuts the line back off where the disk allows and refuses every
+// spend until a restart, so memory never runs ahead of the disk.
+func (j *claudeResetJournal) appendLocked(record *claudeResetSpendRecord, clock func() time.Time) error {
+	if refusal := j.verifyLocked(); refusal != nil {
+		return refusal
+	}
+	record.At = j.stampLocked(clock)
+	if errCheck := j.checkLocked(*record); errCheck != nil {
+		return errCheck
+	}
+	line, errMarshal := json.Marshal(record)
+	if errMarshal != nil {
+		return errMarshal
+	}
+	line = append(line, '\n')
+	length := j.size + int64(len(line))
+	if errWrite := j.writeLocked(line, length); errWrite != nil {
+		j.rollBackLocked()
+		return j.refuseLocked(claudeResetRefusalWriteFailed, 0, "a record could not be made durable: "+errWrite.Error(), claudeResetCureRestart)
+	}
+	j.size, j.tail, j.synced = length, line, true
+	j.foldLocked(*record)
+	return nil
+}
+
+// writeLocked writes one line and makes it durable. The ledger is created
+// only where none was loaded and none exists now.
+func (j *claudeResetJournal) writeLocked(line []byte, length int64) error {
+	if j.file == nil {
+		file, errCreate := os.OpenFile(j.ledgerPath(), os.O_CREATE|os.O_EXCL|os.O_RDWR|os.O_APPEND, 0o600)
+		if errCreate != nil {
+			return errCreate
+		}
+		j.file = file
+	}
+	if _, errWrite := j.file.Write(line); errWrite != nil {
+		return errWrite
+	}
+	if errSync := claudeResetSyncFile(j.file); errSync != nil {
+		return errSync
+	}
+	if !j.synced {
+		if errSync := claudeResetSyncDirectories(j.syncDirs); errSync != nil {
+			return errSync
+		}
+	}
+	return j.recordLengthLocked(length)
+}
+
+// recordLengthLocked writes the ledger's new length into the sentinel. The
+// sentinel is created once the ledger's first record is durable.
+func (j *claudeResetJournal) recordLengthLocked(length int64) error {
+	created := false
+	if j.sentinel == nil {
+		sentinel, errCreate := os.OpenFile(j.sentinelPath(), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+		if errCreate != nil {
+			return errCreate
+		}
+		j.sentinel, created = sentinel, true
+	}
+	if _, errWrite := j.sentinel.WriteAt(claudeResetSentinelContent(length), 0); errWrite != nil {
+		return errWrite
+	}
+	if errSync := claudeResetSyncFile(j.sentinel); errSync != nil {
+		return errSync
+	}
+	if created {
+		return claudeResetSyncDirectories([]string{j.dir})
+	}
+	return nil
+}
+
+// rollBackLocked cuts a failed record back off the ledger and restores the
+// sentinel's length, as far as the disk allows; the journal refuses anyway.
+func (j *claudeResetJournal) rollBackLocked() {
+	if j.file != nil {
+		if errTruncate := j.file.Truncate(j.size); errTruncate != nil {
+			log.WithError(errTruncate).Error("Claude reset spend ledger: a failed record could not be cut back")
+		} else if errSync := j.file.Sync(); errSync != nil {
+			log.WithError(errSync).Error("Claude reset spend ledger: a cut-back record could not be synced")
+		}
+	}
+	if j.sentinel != nil {
+		if _, errWrite := j.sentinel.WriteAt(claudeResetSentinelContent(j.size), 0); errWrite != nil {
+			log.WithError(errWrite).Error("Claude reset spend ledger: the sentinel's length could not be restored")
+		} else if errSync := j.sentinel.Sync(); errSync != nil {
+			log.WithError(errSync).Error("Claude reset spend ledger: the sentinel's restored length could not be synced")
 		}
 	}
 }
+
+// syncClaudeResetDirectories makes the entries of each directory durable, as
+// the refresh journal does before an exchange.
+func syncClaudeResetDirectories(dirs []string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	for _, dir := range dirs {
+		handle, errOpen := os.Open(dir)
+		if errOpen != nil {
+			return errOpen
+		}
+		errSync := handle.Sync()
+		if errClose := handle.Close(); errSync == nil {
+			errSync = errClose
+		}
+		if errSync != nil {
+			return errSync
+		}
+	}
+	return nil
+}
+
+// claudeResetSyncDirectories and claudeResetSyncFile are the syncs appends
+// use; a test replaces them to make a sync fail.
+var (
+	claudeResetSyncDirectories = syncClaudeResetDirectories
+	claudeResetSyncFile        = func(f *os.File) error { return f.Sync() }
+)
 
 // errClaudeResetHistoryUnavailable is what a read shows in place of a seat's
 // last spend while the ledger cannot be read: unknown, not "never spent".
 var errClaudeResetHistoryUnavailable = errors.New("the reset spend ledger cannot be read")
 
-// claudeResetHistory is the last spend of every seat, read once per request.
+// claudeResetHistory is the last spend of every seat, read at most once per
+// listing request, and only once an entry asks for it.
 type claudeResetHistory struct {
+	h    *Handler
+	once sync.Once
 	last map[string]claudeResetSpendRecord
 	err  error
+}
+
+// claudeResetHistory returns a listing request's snapshot of the ledger; it
+// reads nothing until a seat is asked for.
+func (h *Handler) claudeResetHistory() *claudeResetHistory {
+	return &claudeResetHistory{h: h}
 }
 
 // seat is the seat's last spend; nil with no error means no reset was ever
 // spent through this hub.
 func (history *claudeResetHistory) seat(authIndex string) (*claudeResetSpendRecord, error) {
+	history.once.Do(func() { history.read() })
 	if history.err != nil {
 		return nil, history.err
 	}
@@ -442,23 +849,34 @@ func (history *claudeResetHistory) seat(authIndex string) (*claudeResetSpendReco
 	return &record, nil
 }
 
-// claudeResetHistory takes one snapshot of the ledger for a listing request.
-// A ledger that cannot be read is read again by the next request.
-func (h *Handler) claudeResetHistory() *claudeResetHistory {
-	journal, errJournal := h.claudeResetSpends.journal(h.claudeResetLedgerDir())
+// read takes the snapshot. A listing opens a journal only in a directory
+// that exists: none could hold a ledger otherwise.
+func (history *claudeResetHistory) read() {
+	if history.h == nil {
+		history.err = errClaudeResetHistoryUnavailable
+		return
+	}
+	journal, errJournal := history.h.claudeResetSpends.journal(history.h.claudeResetLedgerDir())
 	if errJournal != nil {
-		return &claudeResetHistory{err: errClaudeResetHistoryUnavailable}
+		history.err = errClaudeResetHistoryUnavailable
+		return
 	}
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
-	if errLoad := journal.loadLocked(); errLoad != nil {
-		return &claudeResetHistory{err: errClaudeResetHistoryUnavailable}
+	if !journal.opened && journal.refused == nil {
+		if _, errStat := os.Stat(journal.dir); os.IsNotExist(errStat) {
+			history.last = map[string]claudeResetSpendRecord{}
+			return
+		}
 	}
-	last := make(map[string]claudeResetSpendRecord, len(journal.last))
+	if refusal := journal.verifyLocked(); refusal != nil {
+		history.err = errClaudeResetHistoryUnavailable
+		return
+	}
+	history.last = make(map[string]claudeResetSpendRecord, len(journal.last))
 	for seat, record := range journal.last {
-		last[seat] = record
+		history.last[seat] = record
 	}
-	return &claudeResetHistory{last: last}
 }
 
 // openLocked returns the seat's unknown claim inside its retry window at now.
@@ -481,64 +899,120 @@ func claudeResetSameOperation(recorded claudeResetSpendRecord, request claudeRes
 	return recorded.AuthIndex == request.authIndex && recorded.Kind == kind && recorded.NamedGrant == request.grantID && retryRequestID == request.retryRequestID
 }
 
-// begin reserves the seat and the operation. A key already recorded returns
-// its record and reserves nothing. A claim with an unknown outcome holds the
-// seat for its retry window: only a retry naming its request id may proceed,
-// and that retry is returned.
-func (j *claudeResetJournal) begin(operation string, request claudeResetSpendRequest, kind string, now time.Time) (*claudeResetSpendRecord, *claudeResetUnsettledClaim, int, string) {
+// claudeResetStart is begin's verdict: an answer to give in place of a spend
+// (status non-zero), or the go-ahead with the unknown claim a retry continues.
+type claudeResetStart struct {
+	status int
+	answer gin.H
+	retry  *claudeResetUnsettledClaim
+}
+
+func claudeResetRefuse(status int, message string) claudeResetStart {
+	return claudeResetStart{status: status, answer: gin.H{"error": message}}
+}
+
+// begin reserves the seat and the operation. A key whose outcome the ledger
+// holds is answered from it and reserves nothing, even while its spend is
+// still reading the balance. A claim with an unknown outcome holds the seat
+// for its retry window: only a retry naming its request id may proceed, and
+// only when the claim's answer is recorded.
+func (j *claudeResetJournal) begin(operation string, request claudeResetSpendRequest, kind string, now time.Time) claudeResetStart {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if errLoad := j.loadLocked(); errLoad != nil {
-		log.WithError(errLoad).Error("Claude reset spend ledger unreadable; spends refused")
-		return nil, nil, http.StatusServiceUnavailable, "the spend ledger cannot be read, so earlier claims cannot be ruled out"
+	if refusal := j.verifyLocked(); refusal != nil {
+		return claudeResetStart{status: http.StatusServiceUnavailable, answer: refusal.answer()}
 	}
-	if j.keysInFlight[operation] {
-		return nil, nil, http.StatusConflict, "a spend with this Idempotency-Key is in flight"
+	recorded, known := j.operations[operation]
+	if j.keysInFlight[operation] && (!known || recorded.Phase == claudeResetPhaseSent) {
+		return claudeResetRefuse(http.StatusConflict, "a spend with this Idempotency-Key is in flight and its outcome is not recorded yet: deliver it again once it has answered")
 	}
-	if recorded, ok := j.operations[operation]; ok {
+	if known {
 		if !claudeResetSameOperation(recorded, request, kind) {
-			return nil, nil, http.StatusConflict, "this Idempotency-Key was used for another spend"
+			return claudeResetRefuse(http.StatusConflict, "this Idempotency-Key was used for another spend; nothing spent")
 		}
-		return &recorded, nil, 0, ""
+		status, answer := j.replayLocked(recorded)
+		return claudeResetStart{status: status, answer: answer}
 	}
 	seat := request.authIndex
 	if j.busy[seat] {
-		return nil, nil, http.StatusConflict, "a spend is already in flight for this seat"
+		return claudeResetRefuse(http.StatusConflict, "a spend is already in flight for this seat; nothing spent")
 	}
 	open := j.openLocked(seat, now)
 	switch {
 	case request.retryRequestID == "" && open != nil:
-		return nil, nil, http.StatusConflict, "an earlier claim on this seat has an unknown outcome: retry it with its retry_request_id within ten minutes of sending, or check the account's usage page"
+		return claudeResetRefuse(http.StatusConflict, "an earlier claim on this seat has an unknown outcome: retry it with its retry_request_id within ten minutes of sending, or check the account's usage page; nothing spent")
 	case request.retryRequestID != "" && (open == nil || open.requestID != request.retryRequestID):
-		return nil, nil, http.StatusConflict, "no claim with an unknown outcome has this request id inside its ten-minute retry window"
-	case open != nil && open.unrecorded != "":
-		return nil, nil, http.StatusConflict, "the provider answered this claim (" + open.unrecorded + ") but the spend ledger could not record it"
+		return claudeResetRefuse(http.StatusConflict, "no claim with an unknown outcome has this request id inside its ten-minute retry window; nothing spent")
+	case open != nil && j.claims[open.requestID].Phase != claudeResetPhaseAnswered:
+		return claudeResetRefuse(http.StatusConflict, "the claim was sent and its answer is not in the spend ledger, so the provider may have answered it: no retry is accepted; check the account's usage page; nothing spent")
 	}
 	j.busy[seat], j.keysInFlight[operation] = true, true
 	if open == nil {
-		return nil, nil, 0, ""
+		return claudeResetStart{}
 	}
 	retry := *open
-	return nil, &retry, 0, ""
+	return claudeResetStart{retry: &retry}
+}
+
+// claudeResetNotSentStatus is the status a claim not sent was answered with.
+func claudeResetNotSentStatus(reason string) int {
+	if reason == claudeResetAbortTransport {
+		return http.StatusBadGateway
+	}
+	return http.StatusConflict
+}
+
+// replayLocked answers a key delivered again with what the ledger holds: the
+// recorded outcome with the status and retry deadline its first answer
+// carried, and the newest record of the same claim when a retry followed it.
+func (j *claudeResetJournal) replayLocked(record claudeResetSpendRecord) (int, gin.H) {
+	answer := gin.H{
+		"replayed": true, "auth_index": record.AuthIndex, "kind": record.Kind, "grant_id": record.GrantID, "request_id": record.RequestID,
+		"retry": record.Retry, "result": record.Result, "at": record.At, "resets_left_before": record.ResetsLeftBefore, "resets_left_after": record.ResetsLeftAfter,
+	}
+	if record.Reason != "" {
+		answer["reason"] = record.Reason
+	}
+	status := http.StatusOK
+	switch {
+	case record.Phase == claudeResetPhaseSent:
+		answer["recorded"] = "the claim was sent and no answer was recorded: no retry of it is accepted"
+		return status, answer
+	case record.Result == claudeResetResultNotSent:
+		answer["error"] = "the claim was not sent; nothing spent"
+		return claudeResetNotSentStatus(record.Reason), answer
+	}
+	settled := claudeResetSettles(record)
+	if latest := j.claims[record.RequestID]; latest.Operation != "" && latest.Operation != record.Operation {
+		answer["latest"] = gin.H{"retry": latest.Retry, "phase": latest.Phase, "result": latest.Result, "at": latest.At}
+		settled = settled || (latest.Phase == claudeResetPhaseAnswered && claudeResetSettles(latest))
+	}
+	if first, ok := j.firstSends[record.RequestID]; ok && !settled {
+		answer["retry_until"] = first.At.Add(claudeResetRetryWindow)
+	}
+	return status, answer
 }
 
 // reserveAccount holds the account across seats, for a first claim and for a
 // retry alike: two credential files of one account must not claim while
 // either has a claim in flight or unknown. It is taken before the grants read
 // that authorizes the claim, and lasts until the request finishes.
-func (j *claudeResetJournal) reserveAccount(authIndex, account string, now time.Time) string {
+func (j *claudeResetJournal) reserveAccount(authIndex, account string, now time.Time) (int, gin.H) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if refusal := j.verifyLocked(); refusal != nil {
+		return http.StatusServiceUnavailable, refusal.answer()
+	}
 	if holder, ok := j.accountInFlight[account]; ok && holder != authIndex {
-		return "a spend is in flight on another seat of this account"
+		return http.StatusConflict, gin.H{"error": "a spend is in flight on another seat of this account; nothing spent"}
 	}
 	for seat := range j.unsettled {
 		if open := j.openLocked(seat, now); seat != authIndex && open != nil && open.account == account {
-			return "another seat of this account has a claim with an unknown outcome"
+			return http.StatusConflict, gin.H{"error": "another seat of this account has a claim with an unknown outcome; nothing spent"}
 		}
 	}
 	j.accountInFlight[account] = authIndex
-	return ""
+	return 0, nil
 }
 
 func (j *claudeResetJournal) finish(authIndex, operation string) {
@@ -553,25 +1027,18 @@ func (j *claudeResetJournal) finish(authIndex, operation string) {
 	}
 }
 
-// markSent makes the sent line durable, then holds the seat. When the line
-// cannot be written the claim must not be sent.
-func (j *claudeResetJournal) markSent(record claudeResetSpendRecord) error {
+// markSent makes the sent line durable, which holds the seat from its stamp.
+// When the line cannot be written the claim must not be sent.
+func (j *claudeResetJournal) markSent(record *claudeResetSpendRecord, clock func() time.Time) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if errCheck := j.checkLocked(record); errCheck != nil {
-		return errCheck
-	}
-	if errAppend := j.appendLocked(record); errAppend != nil {
-		return errAppend
-	}
-	j.foldLocked(record)
-	return nil
+	return j.appendLocked(record, clock)
 }
 
 // answer records a known outcome at once. When the line cannot be written
-// the hold stays and no retry of the claim is accepted; a delivery of the same
-// key again still answers with the known outcome.
-func (j *claudeResetJournal) answer(record claudeResetSpendRecord) error {
+// the journal refuses every spend from then on, the hold stays, and after a
+// restart the claim, whose answer is not recorded, cannot be retried.
+func (j *claudeResetJournal) answer(record *claudeResetSpendRecord, clock func() time.Time) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	log.WithFields(log.Fields{
@@ -579,158 +1046,25 @@ func (j *claudeResetJournal) answer(record claudeResetSpendRecord) error {
 		"retry": record.Retry, "result": record.Result, "reason": record.Reason, "http_status": record.HTTPStatus,
 		"resets_left_before": record.ResetsLeftBefore,
 	}).Info("Claude banked reset spend")
-	errWrite := j.checkLocked(record)
-	if errWrite == nil {
-		errWrite = j.appendLocked(record)
-	}
-	if errWrite != nil {
+	if errWrite := j.appendLocked(record, clock); errWrite != nil {
 		log.WithError(errWrite).Error("Claude reset spend outcome not written; the seat stays held")
-		if open := j.unsettled[record.AuthIndex]; open != nil && open.requestID == record.RequestID {
-			open.unrecorded = record.Result
-		}
-		j.operations[record.Operation] = record
 		return errWrite
 	}
-	j.foldLocked(record)
 	return nil
 }
 
 // recordBalance writes what is left of each kind after an answered claim.
-func (j *claudeResetJournal) recordBalance(record claudeResetSpendRecord) error {
+func (j *claudeResetJournal) recordBalance(record *claudeResetSpendRecord, clock func() time.Time) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if errCheck := j.checkLocked(record); errCheck != nil {
-		return errCheck
-	}
 	log.WithFields(log.Fields{
 		"auth_index": record.AuthIndex, "request_id": record.RequestID, "resets_left_after": record.ResetsLeftAfter,
 	}).Info("Claude banked reset spend balance")
-	if errAppend := j.appendLocked(record); errAppend != nil {
+	if errAppend := j.appendLocked(record, clock); errAppend != nil {
 		log.WithError(errAppend).Error("Claude reset spend balance not written")
 		return errAppend
 	}
-	j.foldLocked(record)
 	return nil
-}
-
-// syncClaudeResetDirectories makes every directory entry from dir up to the
-// root durable, as the refresh journal does before an exchange.
-func syncClaudeResetDirectories(dir string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	for {
-		handle, errOpen := os.Open(dir)
-		if errOpen != nil {
-			return errOpen
-		}
-		errSync := handle.Sync()
-		if errClose := handle.Close(); errSync == nil {
-			errSync = errClose
-		}
-		if errSync != nil {
-			return errSync
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return nil
-		}
-		dir = parent
-	}
-}
-
-// claudeResetSyncDirectories is the directory sync appends use; a test
-// replaces it to make the sync fail.
-var claudeResetSyncDirectories = syncClaudeResetDirectories
-
-// ensureClaudeResetSentinel creates the sentinel that records that the
-// ledger in dir exists, its content synced. Its directory entry is made
-// durable by the append's directory sync.
-func ensureClaudeResetSentinel(dir string) error {
-	path := filepath.Join(dir, claudeResetLedgerSentinelName)
-	if _, errStat := os.Lstat(path); errStat == nil || !os.IsNotExist(errStat) {
-		return errStat
-	}
-	sentinel, errCreate := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if errCreate != nil {
-		return errCreate
-	}
-	errSync := sentinel.Sync()
-	if errClose := sentinel.Close(); errSync == nil {
-		errSync = errClose
-	}
-	return errSync
-}
-
-// appendLocked appends one record and syncs it. A ledger file it creates is
-// made durable before the sentinel beside it exists. Until one append has
-// synced the ledger's directory entries (the ledger, the sentinel and every
-// directory above them), each append syncs them after its write, so no
-// record is reported written before they are durable. A failed append is cut
-// back off the file, so memory and disk agree on what was written.
-func (j *claudeResetJournal) appendLocked(record claudeResetSpendRecord) error {
-	line, errMarshal := json.Marshal(record)
-	if errMarshal != nil {
-		return errMarshal
-	}
-	if errMkdir := os.MkdirAll(j.dir, 0o700); errMkdir != nil {
-		return errMkdir
-	}
-	path := filepath.Join(j.dir, claudeResetSpendLedgerName)
-	_, errStat := os.Lstat(path)
-	created := os.IsNotExist(errStat)
-	file, errOpen := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o600)
-	if errOpen != nil {
-		return errOpen
-	}
-	var errWrite error
-	if created {
-		j.durable = false
-		errWrite = claudeResetSyncDirectories(j.dir)
-	}
-	if errWrite == nil {
-		errWrite = ensureClaudeResetSentinel(j.dir)
-	}
-	var info os.FileInfo
-	if errWrite == nil {
-		info, errWrite = file.Stat()
-	}
-	// A torn last line (a write cut short) is closed first, so this record
-	// starts on its own line and is never read as part of the torn one.
-	if errWrite == nil && info.Size() > 0 {
-		last := make([]byte, 1)
-		if _, errWrite = file.ReadAt(last, info.Size()-1); errWrite == nil && last[0] != '\n' {
-			marker, _ := json.Marshal(claudeResetSpendRecord{Phase: claudeResetPhaseTornClosed, At: record.At})
-			line = append(append(append([]byte{'\n'}, marker...), '\n'), line...)
-		}
-	}
-	wrote := false
-	if errWrite == nil {
-		wrote = true
-		_, errWrite = file.Write(append(line, '\n'))
-	}
-	if errWrite == nil {
-		errWrite = file.Sync()
-	}
-	synced := false
-	if errWrite == nil && !j.durable {
-		errWrite = claudeResetSyncDirectories(j.dir)
-		synced = errWrite == nil
-	}
-	if errWrite != nil && wrote {
-		if errTruncate := file.Truncate(info.Size()); errTruncate == nil {
-			_ = file.Sync()
-		} else {
-			log.WithError(errTruncate).Error("Claude reset spend ledger: a failed record could not be cut back")
-		}
-	}
-	if errClose := file.Close(); errWrite == nil {
-		errWrite = errClose
-	}
-	if errWrite == nil && synced {
-		j.durable = true
-	}
-	return errWrite
 }
 
 func claudeResetsLeftByKind(kinds map[string]coreauth.ClaudeResetKindSummary) map[string]int {
@@ -876,47 +1210,27 @@ func claudeResetAuthorizeGrant(status *coreauth.ClaudeLimitResets, kinds map[str
 }
 
 // claudeResetDispatchAbort judges the claim again after its sent line is
-// durable, on a fresh clock: the registry must still hold the same enabled
-// OAuth credential, the grant must not have expired, and a retry must still
-// be inside its window. It returns the reason code of a claim not to send.
-func (h *Handler) claudeResetDispatchAbort(auth *coreauth.Auth, grant coreauth.ClaudeResetGrant, retry *claudeResetUnsettledClaim, at time.Time) string {
+// durable, on a fresh clock, first claim and retry alike: the registry must
+// still hold the same enabled OAuth credential, the grant must not have
+// expired, the claim's retry window (from its first send's stamp) must not
+// have passed, and the sent line must have become durable promptly. It
+// returns the reason code of a claim not to send.
+func (h *Handler) claudeResetDispatchAbort(auth *coreauth.Auth, grant coreauth.ClaudeResetGrant, sentAt, firstSentAt, at time.Time) string {
 	switch {
 	case !h.authManager.ClaudeResetCredentialCurrent(auth):
 		return claudeResetAbortCredential
 	case !coreauth.ClaudeResetGrantSpendable(grant, at):
 		return claudeResetAbortGrantExpired
-	case retry != nil && at.Sub(retry.sentAt) >= claudeResetRetryWindow:
+	case at.Sub(firstSentAt) >= claudeResetRetryWindow:
 		return claudeResetAbortRetryWindow
+	case at.Sub(sentAt) >= claudeResetDispatchLimit:
+		return claudeResetAbortLedgerStall
 	}
 	return ""
 }
 
-// claudeResetReplay answers a key delivered again with what the ledger holds,
-// and with the newest record of the same claim when a retry followed it.
-func claudeResetReplay(record, latest claudeResetSpendRecord) gin.H {
-	answer := gin.H{
-		"replayed": true, "auth_index": record.AuthIndex, "kind": record.Kind, "grant_id": record.GrantID, "request_id": record.RequestID,
-		"retry": record.Retry, "result": record.Result, "at": record.At, "resets_left_before": record.ResetsLeftBefore, "resets_left_after": record.ResetsLeftAfter,
-	}
-	if record.Reason != "" {
-		answer["reason"] = record.Reason
-	}
-	if record.Phase == claudeResetPhaseSent {
-		answer["recorded"] = "the claim was sent and no answer was recorded"
-	}
-	settled := claudeResetSettles(record)
-	if latest.Operation != "" && latest.Operation != record.Operation {
-		answer["latest"] = gin.H{"retry": latest.Retry, "phase": latest.Phase, "result": latest.Result, "at": latest.At}
-		settled = settled || (latest.Phase == claudeResetPhaseAnswered && claudeResetSettles(latest))
-	}
-	if !record.Retry && !settled {
-		answer["retry_until"] = record.At.Add(claudeResetRetryWindow)
-	}
-	return answer
-}
-
 // SpendClaudeLimitReset spends one banked reset of the kind the caller names,
-// on one Claude seat. A request that names no kind, carries no
+// on one Claude seat. A request that names no kind, carries no single
 // Idempotency-Key, or names a kind the seat's fresh grants read does not
 // list, is refused and spends nothing. Only an enabled OAuth seat spends. The
 // organization is reserved before the fresh grants read that authorizes the
@@ -950,8 +1264,8 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "auth_index is required"})
 		return
 	}
-	key := c.GetHeader(claudeResetIdempotencyHeader)
-	if !claudeResetIdempotencyKeyPattern.MatchString(key) {
+	keys := c.Request.Header.Values(claudeResetIdempotencyHeader)
+	if len(keys) != 1 || !claudeResetIdempotencyKeyPattern.MatchString(keys[0]) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": claudeResetIdempotencyRequired})
 		return
 	}
@@ -965,17 +1279,14 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "the spend ledger has no directory; nothing spent"})
 		return
 	}
-	operation := claudeResetOperation(key)
-	replay, retry, heldStatus, held := journal.begin(operation, request, kind, ledger.clock())
-	if held != "" {
-		c.JSON(heldStatus, gin.H{"error": held + "; nothing spent"})
-		return
-	}
 	c.Header("Cache-Control", "no-store")
-	if replay != nil {
-		c.JSON(http.StatusOK, claudeResetReplay(*replay, journal.latest(replay.RequestID)))
+	operation := claudeResetOperation(keys[0])
+	start := journal.begin(operation, request, kind, ledger.clock())
+	if start.status != 0 {
+		c.JSON(start.status, start.answer)
 		return
 	}
+	retry := start.retry
 	defer journal.finish(request.authIndex, operation)
 	auth := h.authByIndex(request.authIndex)
 	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") {
@@ -1013,8 +1324,8 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "the seat's account changed since the unknown claim; nothing spent"})
 		return
 	}
-	if heldAccount := journal.reserveAccount(request.authIndex, account, ledger.clock()); heldAccount != "" {
-		c.JSON(http.StatusConflict, gin.H{"error": heldAccount + "; nothing spent"})
+	if heldStatus, held := journal.reserveAccount(request.authIndex, account, ledger.clock()); heldStatus != 0 {
+		c.JSON(heldStatus, held)
 		return
 	}
 
@@ -1047,49 +1358,57 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 		requestID = retry.requestID
 	}
 	record := claudeResetSpendRecord{
-		Phase: claudeResetPhaseSent, Operation: operation, Account: account, At: now, AuthIndex: request.authIndex, Kind: kind, GrantID: grant.ID,
+		Phase: claudeResetPhaseSent, Operation: operation, Account: account, AuthIndex: request.authIndex, Kind: kind, GrantID: grant.ID,
 		NamedGrant: request.grantID, RequestID: requestID, Retry: retry != nil, Result: claudeauth.LimitResetResultUnknown, ResetsLeftBefore: claudeResetsLeftByKind(kinds),
 	}
-	if errLedger := journal.markSent(record); errLedger != nil {
-		log.WithError(errLedger).Error("Claude reset spend ledger not writable; claim not sent")
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "the spend ledger is not writable; nothing spent"})
+	if errLedger := journal.markSent(&record, ledger.clock); errLedger != nil {
+		log.WithError(errLedger).Error("Claude reset spend ledger did not take the sent line; claim not sent")
+		answer := gin.H{"error": "the spend ledger did not take the claim's record (" + errLedger.Error() + "); nothing spent"}
+		var ledgerRefusal *claudeResetLedgerRefusal
+		if errors.As(errLedger, &ledgerRefusal) {
+			answer = ledgerRefusal.answer()
+		}
+		c.JSON(http.StatusServiceUnavailable, answer)
 		return
 	}
-	notSent := func(status int, reason, message string) {
+	// The hold and the retry window run from the sent line's stamp; a retry's
+	// window runs from its first send's.
+	sentAt, firstSentAt := record.At, record.At
+	if retry != nil {
+		firstSentAt = retry.sentAt
+	}
+	notSent := func(reason, message string) {
 		record.Phase, record.Result, record.Reason = claudeResetPhaseAnswered, claudeResetResultNotSent, reason
 		answer := gin.H{"error": message + "; nothing spent", "reason": reason, "request_id": requestID}
-		if errAnswer := journal.answer(record); errAnswer != nil {
+		if errAnswer := journal.answer(&record, ledger.clock); errAnswer != nil {
 			answer["ledger_error"] = claudeResetLedgerErrorText
 		}
-		c.JSON(status, answer)
+		c.JSON(claudeResetNotSentStatus(reason), answer)
 	}
-	if abort := h.claudeResetDispatchAbort(auth, grant, retry, ledger.clock()); abort != "" {
-		notSent(http.StatusConflict, abort, "the claim was judged again after its record was written and not sent")
+	if abort := h.claudeResetDispatchAbort(auth, grant, sentAt, firstSentAt, ledger.clock()); abort != "" {
+		notSent(abort, "the claim was judged again after its record was written and not sent")
 		return
 	}
 	claim := resetclaim.Claim{OrganizationUUID: organization, GrantID: grant.ID, RequestID: requestID}
 	outcome, errClaim := sendClaudeResetClaim(ctx, client, token, userAgent, claim)
 	if errClaim != nil {
-		notSent(http.StatusBadGateway, claudeResetAbortTransport, "claim not sent")
+		notSent(claudeResetAbortTransport, "claim not sent")
 		return
 	}
 
-	// A known outcome is recorded at once, before and apart from the balance read.
+	// A known outcome is on disk before it is answered, and apart from the
+	// balance read.
 	record.Phase, record.Result, record.Reason, record.HTTPStatus = claudeResetPhaseAnswered, outcome.Result, outcome.Reason, outcome.HTTPStatus
-	errAnswer := journal.answer(record)
+	errAnswer := journal.answer(&record, ledger.clock)
 	answer := gin.H{
 		"auth_index": request.authIndex, "kind": kind, "grant_id": grant.ID, "request_id": requestID, "retry": retry != nil,
 		"result": outcome.Result, "provider": outcome, "kinds_before": kinds, "kinds_after": nil,
 	}
-	if errAnswer != nil {
+	switch {
+	case errAnswer != nil:
 		answer["ledger_error"] = claudeResetLedgerErrorText
-	}
-	if !claudeResetSettles(record) {
-		firstSent := now
-		if retry != nil {
-			firstSent = retry.sentAt
-		}
-		answer["retry_until"] = firstSent.Add(claudeResetRetryWindow)
+	case !claudeResetSettles(record):
+		answer["retry_until"] = firstSentAt.Add(claudeResetRetryWindow)
 	}
 	if outcome.Result == claudeauth.LimitResetResultReset || outcome.Result == claudeauth.LimitResetResultAlreadyUsed {
 		// The spend never edits the hub's routing state: which of the seat's
@@ -1106,11 +1425,13 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 			"note":                 "a confirmed reset does not return the seat to rotation: the hub's own cooldown can hold it until the routing reset is called",
 		}
 	}
+	// The reset cache shows the claim's seat, and every other seat listing the
+	// grant when the claim spent or may have, as awaiting a fresh read from
+	// the moment the outcome is known; the after-read then replaces it.
+	spent := outcome.Result == claudeauth.LimitResetResultReset || outcome.Result == claudeauth.LimitResetResultAlreadyUsed || outcome.Result == claudeauth.LimitResetResultUnknown
+	h.authManager.PublishClaudeResetSpendRead(auth, grant.ID, spent, time.Now(), nil, errClaudeResetAfterReadPending)
 	afterStarted := time.Now()
 	after, afterBody, _, errAfter := readClaudeResetStatus(ctx, client, token, userAgent)
-	// The reset cache shows this read, or marks its older one stale; other
-	// seats listing the grant turn stale when the claim spent or may have.
-	spent := outcome.Result == claudeauth.LimitResetResultReset || outcome.Result == claudeauth.LimitResetResultAlreadyUsed || outcome.Result == claudeauth.LimitResetResultUnknown
 	h.authManager.PublishClaudeResetSpendRead(auth, grant.ID, spent, afterStarted, afterBody, errAfter)
 	if errAfter != nil {
 		answer["after_read_error"] = "the grants read after the claim failed"
@@ -1121,10 +1442,10 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 	answer["kinds_after"] = kindsAfter
 	if errAnswer == nil {
 		balance := claudeResetSpendRecord{
-			Phase: claudeResetPhaseBalance, Operation: operation, At: ledger.clock(), AuthIndex: request.authIndex, RequestID: requestID,
+			Phase: claudeResetPhaseBalance, Operation: operation, AuthIndex: request.authIndex, RequestID: requestID,
 			ResetsLeftAfter: claudeResetsLeftByKind(kindsAfter),
 		}
-		if errBalance := journal.recordBalance(balance); errBalance != nil {
+		if errBalance := journal.recordBalance(&balance, ledger.clock); errBalance != nil {
 			answer["balance_error"] = claudeResetBalanceErrorText
 		}
 	}

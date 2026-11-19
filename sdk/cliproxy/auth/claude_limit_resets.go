@@ -179,6 +179,9 @@ type claudeLimitResetPollSeat struct {
 	// ordering rule serves polls and spends alike: a read that began earlier
 	// changes neither the observation nor its error.
 	observedFrom time.Time
+	// claimedAt is when another seat sent a claim on each grant while this
+	// seat's read was in flight; that read, if it lists one, publishes stale.
+	claimedAt map[string]time.Time
 }
 
 const claudeLimitResetInterval = 15 * time.Minute
@@ -292,6 +295,8 @@ func (m *Manager) recordClaudeLimitResets(ctx context.Context, cfg *internalconf
 		}
 		return
 	}
+	// A read that succeeded ends the rate-limit backoff, whatever its order.
+	seat.rateLimits = 0
 	if older {
 		return
 	}
@@ -303,7 +308,14 @@ func (m *Manager) recordClaudeLimitResets(ctx context.Context, cfg *internalconf
 	}
 	seat.status, _ = json.Marshal(status)
 	seat.polledAt, seat.err = now, ""
-	seat.rateLimits = 0
+	// A claim another seat sent while this read was in flight may have spent
+	// a grant this read lists.
+	for _, grant := range status.Grants {
+		if claimedAt, claimed := seat.claimedAt[grant.ID]; claimed && claimedAt.After(seat.attemptedAt) {
+			seat.err = "a claim on a grant this seat also lists was sent from another seat while this read was in flight; the cached reset status awaits a fresh read"
+		}
+	}
+	seat.claimedAt = nil
 }
 
 // PublishClaudeResetSpendRead keeps the reset cache truthful after a claim of
@@ -321,16 +333,35 @@ func (m *Manager) PublishClaudeResetSpendRead(base *Auth, grantID string, spent 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for id, other := range m.limitResetSeats {
-		if spent && id != base.ID && other != nil && !startedAt.Before(other.observedFrom) && claudeResetStatusListsGrant(other.status, grantID) {
+		if !spent || id == base.ID || other == nil {
+			continue
+		}
+		if !startedAt.Before(other.observedFrom) && claudeResetStatusListsGrant(other.status, grantID) {
 			other.err, other.observedFrom = "a claim on a grant this seat also lists was sent from another seat; the cached reset status awaits a fresh read", startedAt
+		}
+		if other.running && other.attemptedAt.Before(startedAt) {
+			// The seat's read in flight began before the claim: whatever it
+			// lists of the grant is checked when it publishes.
+			if other.claimedAt == nil {
+				other.claimedAt = make(map[string]time.Time)
+			}
+			other.claimedAt[grantID] = startedAt
 		}
 	}
 	if !sameClaudeQuotaCredential(m.auths[base.ID], base) {
 		return
 	}
 	seat := m.limitResetSeats[base.ID]
-	if seat == nil || seat.generation != base.CredentialGeneration() || startedAt.Before(seat.observedFrom) {
-		// Nothing is cached for this credential, or a newer read is.
+	if seat == nil || seat.generation != base.CredentialGeneration() {
+		// The verified current credential has no entry yet: this read starts it.
+		if m.limitResetSeats == nil {
+			m.limitResetSeats = make(map[string]*claudeLimitResetPollSeat)
+		}
+		seat = &claudeLimitResetPollSeat{generation: base.CredentialGeneration()}
+		m.limitResetSeats[base.ID] = seat
+	}
+	if startedAt.Before(seat.observedFrom) {
+		// A newer read is cached.
 		return
 	}
 	seat.observedFrom = startedAt

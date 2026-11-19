@@ -2,14 +2,17 @@ package management
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -281,6 +284,8 @@ func newResetSpendFixture(t *testing.T, grants ...fakeResetGrant) *resetSpendFix
 	}
 	f.h.claudeResetSpends.now = f.clock.now
 	f.index = f.seatIndex(t, "fixture")
+	// The test's process exits at its end: its journal and lock go with it.
+	t.Cleanup(func() { forgetClaudeResetJournal(f.logDir) })
 	return f
 }
 
@@ -680,8 +685,10 @@ func TestClaudeResetSpendWritesOneRecordPerSpend(t *testing.T) {
 }
 
 // The hold is on disk before the claim leaves, so a hub that restarts (or
-// dies) while an answer is outstanding still refuses a new claim on the seat
-// and still accepts the retry with the same request id.
+// dies) while an answer is outstanding still refuses a new claim on the seat.
+// It accepts the retry with the same request id only when the ledger records
+// the answer as unknown: a claim with no recorded answer may have been
+// answered, so it is never retried (round 2, R2-2).
 func TestClaudeResetSpendHoldSurvivesARestart(t *testing.T) {
 	f := newResetSpendFixture(t, resetFixtureGrants()...)
 	ledgerPath := filepath.Join(f.logDir, claudeResetSpendLedgerName)
@@ -729,8 +736,8 @@ func TestClaudeResetSpendHoldSurvivesARestart(t *testing.T) {
 	}
 	code, answer = g.spend(t, spendBody(map[string]any{"auth_index": g.index, "kind": "fable", "retry_request_id": "restored-request"}))
 	_, _, claims := g.provider.counts()
-	if code != http.StatusOK || len(claims) != 1 || claims[0].RequestID != "restored-request" || claims[0].GrantID != "fable-late" {
-		t.Fatalf("restored retry: status=%d answer=%v claims=%+v", code, answer, claims)
+	if code != http.StatusConflict || len(claims) != 0 || !strings.Contains(fmt.Sprint(answer["error"]), "no retry is accepted") {
+		t.Fatalf("a retry of a claim with no recorded answer: status=%d answer=%v claims=%+v", code, answer, claims)
 	}
 }
 
@@ -746,11 +753,15 @@ func TestClaudeResetSpendRefusesWhenTheLedgerCannotBeWritten(t *testing.T) {
 			}
 		}
 	})
+	// A ledger path taken by something this process did not write is never
+	// written over: the journal refuses.
 	code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
-	if code != http.StatusServiceUnavailable || !strings.Contains(fmt.Sprint(answer["error"]), "not writable") {
+	if code != http.StatusServiceUnavailable || answer["ledger_refusal"] != claudeResetRefusalChanged {
 		t.Fatalf("status=%d answer=%v", code, answer)
 	}
-	if _, reads, claims := f.provider.counts(); len(claims) != 0 || reads != 1 {
+	// The account reservation checks the ledger again, so the spend stops
+	// before its grants read.
+	if _, reads, claims := f.provider.counts(); len(claims) != 0 || reads != 0 {
 		t.Fatalf("reads=%d claims=%+v", reads, claims)
 	}
 }
@@ -764,15 +775,34 @@ func (f *resetSpendFixture) restart() {
 	f.h = h
 }
 
-// forgetClaudeResetJournal drops the process's state of the ledger in dir.
+// forgetClaudeResetJournal drops the process's state of the ledger in dir and
+// closes what the process held open, its lock included, as an exiting
+// process does.
 func forgetClaudeResetJournal(dir string) {
 	resolved, err := claudeResetJournalDir(dir)
 	if err != nil {
 		return
 	}
 	claudeResetJournals.mu.Lock()
-	defer claudeResetJournals.mu.Unlock()
+	journal := claudeResetJournals.byPath[resolved]
 	delete(claudeResetJournals.byPath, resolved)
+	claudeResetJournals.mu.Unlock()
+	closeClaudeResetJournal(journal)
+}
+
+// closeClaudeResetJournal closes a journal's lock, ledger and sentinel.
+func closeClaudeResetJournal(journal *claudeResetJournal) {
+	if journal == nil {
+		return
+	}
+	journal.mu.Lock()
+	defer journal.mu.Unlock()
+	for _, file := range []*os.File{journal.file, journal.sentinel, journal.lock} {
+		if file != nil {
+			_ = file.Close()
+		}
+	}
+	journal.file, journal.sentinel, journal.lock = nil, nil, nil
 }
 
 // Codex round 1, class "claim identity not persisted": a hold restored from
@@ -857,8 +887,8 @@ func TestClaudeResetSpendRetryHoldsTheAccountWhileInFlight(t *testing.T) {
 	}
 }
 
-// Codex round 1, class "ledger recovery fails open": a torn tail never hides
-// the next hold, and a ledger the hub cannot read or trust stops every spend.
+// Codex round 1, class "ledger recovery fails open": a torn tail and a ledger
+// the hub cannot read or trust stop every spend.
 func TestClaudeResetSpendLedgerRecoveryNeverFailsOpen(t *testing.T) {
 	earlier := claudeResetSpendRecord{
 		Phase: claudeResetPhaseSent, Operation: claudeResetOperation("earlier-operation"), Account: claudeResetAccount(resetFixtureOtherOrganization),
@@ -869,21 +899,27 @@ func TestClaudeResetSpendLedgerRecoveryNeverFailsOpen(t *testing.T) {
 	earlier.Phase, earlier.Result = claudeResetPhaseAnswered, "reset"
 	answeredLine, _ := json.Marshal(earlier)
 	complete := append(append(sentLine, '\n'), answeredLine...)
+	// Round 2, R2-4: a last line with no newline is a write cut short, refused
+	// whatever it parses as, the same way on every start, naming its line.
 	for name, tail := range map[string][]byte{"torn tail": []byte(`{"phase":`), "cut after a complete record": complete} {
 		t.Run(name, func(t *testing.T) {
 			f := newResetSpendFixture(t, resetFixtureGrants()...)
 			if err := os.WriteFile(filepath.Join(f.logDir, claudeResetSpendLedgerName), tail, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			f.provider.set(func(p *fakeResetProvider) { p.claimStatus = http.StatusBadGateway })
-			if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"})); code != http.StatusOK || answer["result"] != "unknown" {
-				t.Fatalf("status=%d answer=%v", code, answer)
-			}
+			wantLine := float64(bytes.Count(tail, []byte("\n")) + 1)
 			for restart := 0; restart < 2; restart++ {
 				f.restart()
-				if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "full"})); code != http.StatusConflict || strings.Contains(fmt.Sprint(answer["error"]), "cannot be read") {
-					t.Fatalf("restart %d: status=%d answer=%v", restart, code, answer)
+				code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "full"}))
+				if code != http.StatusServiceUnavailable || answer["ledger_refusal"] != claudeResetRefusalInvalidLine || answer["ledger_line"] != wantLine {
+					t.Fatalf("start %d: status=%d answer=%v", restart, code, answer)
 				}
+			}
+			if requests, _, _ := f.provider.counts(); requests != 0 {
+				t.Fatalf("a spend reached the provider over a torn ledger: %d", requests)
+			}
+			if raw, _ := os.ReadFile(filepath.Join(f.logDir, claudeResetSpendLedgerName)); !bytes.Equal(raw, tail) {
+				t.Fatalf("the hub wrote to a ledger it refused: %q", raw)
 			}
 		})
 	}
@@ -1158,6 +1194,11 @@ type resetSpendResult struct {
 func (f *resetSpendFixture) spendPausedAt(t *testing.T, read, body string, during func()) resetSpendResult {
 	t.Helper()
 	arrived, release := make(chan struct{}), make(chan struct{})
+	// Released before any assertion in during can end the test (gate r2
+	// MINOR 20).
+	var releaseOnce sync.Once
+	releaseHeld := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseHeld)
 	var paused atomic.Bool
 	hold := func() {
 		if paused.CompareAndSwap(false, true) {
@@ -1175,7 +1216,7 @@ func (f *resetSpendFixture) spendPausedAt(t *testing.T, read, body string, durin
 	defer f.provider.set(func(p *fakeResetProvider) { p.onProfile, p.onRead = nil, nil })
 	done := make(chan resetSpendResult, 1)
 	go func() {
-		code, answer := f.spend(t, body)
+		code, answer := r2SpendQuietly(f.h, fmt.Sprintf("fixture-operation-%d", resetSpendKeys.Add(1)), body)
 		done <- resetSpendResult{code, answer}
 	}()
 	select {
@@ -1184,7 +1225,7 @@ func (f *resetSpendFixture) spendPausedAt(t *testing.T, read, body string, durin
 		return early
 	}
 	during()
-	close(release)
+	releaseHeld()
 	return <-done
 }
 
@@ -1553,6 +1594,10 @@ func TestClaudeResetSpendRecordsAKnownOutcomeAtOnce(t *testing.T) {
 		f := newResetSpendFixture(t, resetFixtureGrants()...)
 		var reads atomic.Int32
 		arrived, release := make(chan struct{}), make(chan struct{})
+		// Released before any assertion can end the test (gate r2 MINOR 20).
+		var releaseOnce sync.Once
+		releaseRead := func() { releaseOnce.Do(func() { close(release) }) }
+		t.Cleanup(releaseRead)
 		f.provider.set(func(p *fakeResetProvider) {
 			p.onRead = func() {
 				if reads.Add(1) == 2 {
@@ -1563,7 +1608,7 @@ func TestClaudeResetSpendRecordsAKnownOutcomeAtOnce(t *testing.T) {
 		})
 		done := make(chan int, 1)
 		go func() {
-			code, _ := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
+			code, _ := r2SpendQuietly(f.h, fmt.Sprintf("fixture-operation-%d", resetSpendKeys.Add(1)), spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
 			done <- code
 		}()
 		select {
@@ -1573,12 +1618,12 @@ func TestClaudeResetSpendRecordsAKnownOutcomeAtOnce(t *testing.T) {
 		}
 		records := f.ledgerRecords(t)
 		if len(records) != 2 || records[1]["phase"] != "answered" || records[1]["result"] != "reset" {
-			t.Errorf("the confirmed outcome was not on disk before the balance read: %v", records)
+			t.Fatalf("the confirmed outcome was not on disk before the balance read: %v", records)
 		}
 		requestID, _ := records[0]["request_id"].(string)
 		f.restart()
 		code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable", "retry_request_id": requestID}))
-		close(release)
+		releaseRead()
 		if spent := <-done; spent != http.StatusOK {
 			t.Fatalf("the spend answered %d", spent)
 		}
@@ -1614,18 +1659,48 @@ func TestClaudeResetSpendRecordsAKnownOutcomeAtOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.provider.set(func(p *fakeResetProvider) { p.onClaim = nil })
-		for _, body := range []string{
+		bodies := []string{
 			spendBody(map[string]any{"auth_index": f.index, "kind": "full"}),
 			spendBody(map[string]any{"auth_index": f.index, "kind": "fable", "retry_request_id": requestID}),
-		} {
-			if code, answer := f.spend(t, body); code != http.StatusConflict {
+		}
+		// The running hub refuses every spend once a write failed.
+		for _, body := range bodies {
+			if code, answer := f.spend(t, body); code != http.StatusServiceUnavailable || answer["ledger_refusal"] == nil {
 				t.Fatalf("%s after an unwritten outcome: status=%d answer=%v", body, code, answer)
 			}
 		}
+		// Round 2, R2-2: after a restart the ledger, which holds the sent line
+		// and no answer, still holds the seat and refuses the retry.
+		f.restart()
+		for _, body := range bodies {
+			code, answer := f.spend(t, body)
+			if code != http.StatusConflict {
+				t.Fatalf("%s after a restart: status=%d answer=%v", body, code, answer)
+			}
+			if strings.Contains(body, "retry_request_id") && !strings.Contains(fmt.Sprint(answer["error"]), "no retry is accepted") {
+				t.Fatalf("the retry after a restart: answer=%v", answer)
+			}
+		}
 		if _, _, claims := f.provider.counts(); len(claims) != 1 {
-			t.Fatalf("claims=%+v", claims)
+			t.Fatalf("a claim the hub knew had succeeded was sent again: claims=%+v", claims)
 		}
 	})
+}
+
+// r2SpendQuietly is spendKeyed without any t.Fatal, so it can run on any
+// goroutine of a test.
+func r2SpendQuietly(h *Handler, key, body string) (int, map[string]any) {
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v8/management/claude/limit-resets/spend", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		ctx.Request.Header.Set("Idempotency-Key", key)
+	}
+	h.SpendClaudeLimitReset(ctx)
+	var answer map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &answer)
+	return rec.Code, answer
 }
 
 // Gate r1 MAJOR 10: holds belong to the ledger, not to a handler. A second
@@ -1743,27 +1818,38 @@ func TestClaudeResetSpendKeepsOnlyAReasonCode(t *testing.T) {
 func TestClaudeResetSpendLedgerIsDurableBeforeAnyClaim(t *testing.T) {
 	f := newResetSpendFixture(t, resetFixtureGrants()...)
 	var syncs atomic.Int32
-	claudeResetSyncDirectories = func(dir string) error {
-		if syncs.Add(1) <= 2 {
+	var synced []string
+	claudeResetSyncDirectories = func(dirs []string) error {
+		if syncs.Add(1) == 1 {
 			return errors.New("fixture directory sync failure")
 		}
-		return syncClaudeResetDirectories(dir)
+		synced = append(synced, dirs...)
+		return syncClaudeResetDirectories(dirs)
 	}
 	t.Cleanup(func() { claudeResetSyncDirectories = syncClaudeResetDirectories })
 	ledgerPath := filepath.Join(f.logDir, claudeResetSpendLedgerName)
+	// A failed directory sync refuses that spend and every one after it until
+	// a restart, and leaves no record behind.
 	for attempt := 1; attempt <= 2; attempt++ {
-		if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"})); code != http.StatusServiceUnavailable {
-			t.Fatalf("attempt %d with a failing directory sync: status=%d answer=%v", attempt, code, answer)
+		code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
+		if code != http.StatusServiceUnavailable || answer["ledger_refusal"] != claudeResetRefusalWriteFailed {
+			t.Fatalf("attempt %d after a failed directory sync: status=%d answer=%v", attempt, code, answer)
 		}
 		if info, err := os.Stat(ledgerPath); err != nil || info.Size() != 0 {
 			t.Fatalf("attempt %d left a record behind: %v %v", attempt, info, err)
 		}
 	}
-	if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"})); code != http.StatusOK || answer["result"] != "reset" {
-		t.Fatalf("status=%d answer=%v", code, answer)
+	if got := syncs.Load(); got != 1 {
+		t.Fatalf("directory syncs=%d, want none after the journal refused", got)
 	}
-	if got := syncs.Load(); got != 3 {
-		t.Fatalf("directory syncs=%d, want one per append until one succeeds", got)
+	f.restart()
+	if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"})); code != http.StatusOK || answer["result"] != "reset" {
+		t.Fatalf("after a restart: status=%d answer=%v", code, answer)
+	}
+	// The first durable append synced the ledger's directory twice (the
+	// ledger's entry, then the sentinel's), and no directory above it.
+	if len(synced) != 2 || synced[0] != synced[1] {
+		t.Fatalf("directories synced=%v", synced)
 	}
 	if _, _, claims := f.provider.counts(); len(claims) != 1 {
 		t.Fatalf("claims=%+v", claims)
@@ -1773,7 +1859,7 @@ func TestClaudeResetSpendLedgerIsDurableBeforeAnyClaim(t *testing.T) {
 	}
 	f.restart()
 	if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "full"})); code != http.StatusOK {
-		t.Fatalf("after a restart: status=%d answer=%v", code, answer)
+		t.Fatalf("after a second restart: status=%d answer=%v", code, answer)
 	}
 }
 
@@ -1840,4 +1926,661 @@ func TestClaudeResetSpendLogsTheBalance(t *testing.T) {
 		return
 	}
 	t.Fatal("no balance was logged")
+}
+
+// ---------------------------------------------------------------- round 2
+
+// round2Grants gives each kind one grant with two credits, so a second claim
+// on one grant shows as a second credit spent.
+func round2Grants() []fakeResetGrant {
+	end := resetFixtureEpoch.Add(30 * 24 * time.Hour).Format(time.RFC3339)
+	return []fakeResetGrant{
+		{ID: "fable-two", Label: "Fixture Fable", ResetsLeft: 2, EndsAt: end, Type: "full", GivesBackWeekly: true, Clears: []string{}, UsableNow: true},
+		{ID: "weekly-two", Label: "Fixture weekly", ResetsLeft: 2, EndsAt: end, Type: "weekly", Clears: []string{"seven_day"}, UsableNow: true},
+	}
+}
+
+// round2SecondProcessDir names the ledger directory of the second hub
+// process; round2SecondProcessHold keeps that process, and its lock, alive
+// until its standard input closes.
+const (
+	round2SecondProcessDir  = "CLAUDE_RESET_SECOND_PROCESS_DIR"
+	round2SecondProcessHold = "CLAUDE_RESET_SECOND_PROCESS_HOLD"
+)
+
+// TestClaudeResetSpendLedgerSecondProcessHelper is the second hub process of
+// the R2-1 table, run by re-executing this test binary: it opens the journal
+// of the directory it is given through one spend on its own fake provider,
+// and prints what happened.
+func TestClaudeResetSpendLedgerSecondProcessHelper(t *testing.T) {
+	dir := os.Getenv(round2SecondProcessDir)
+	if dir == "" {
+		t.Skip("runs only as the second process of the ledger table")
+	}
+	f := newResetSpendFixture(t, round2Grants()...)
+	f.h.logDir, f.logDir = dir, dir
+	code, answer := r2SpendQuietly(f.h, "round2-second-process", spendBody(map[string]any{"auth_index": f.index, "kind": "weekly"}))
+	_, _, claims := f.provider.counts()
+	fmt.Printf("second-process: status=%d claims=%d refusal=%v\n", code, len(claims), answer["ledger_refusal"])
+	if os.Getenv(round2SecondProcessHold) != "" {
+		fmt.Println("second-process: holding")
+		_, _ = io.Copy(io.Discard, os.Stdin)
+	}
+}
+
+// round2SecondProcess runs the second hub process on dir and returns its
+// report. With hold, the process keeps its lock until release is called.
+func round2SecondProcess(t *testing.T, dir string, hold bool) (string, func(), error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestClaudeResetSpendLedgerSecondProcessHelper$", "-test.count=1")
+	cmd.Env = append(os.Environ(), round2SecondProcessDir+"="+dir)
+	if hold {
+		cmd.Env = append(cmd.Env, round2SecondProcessHold+"=1")
+	}
+	stdin, errIn := cmd.StdinPipe()
+	stdout, errOut := cmd.StdoutPipe()
+	if errIn != nil || errOut != nil {
+		cancel()
+		return "", func() {}, errors.Join(errIn, errOut)
+	}
+	if errStart := cmd.Start(); errStart != nil {
+		cancel()
+		return "", func() {}, errStart
+	}
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			_ = stdin.Close()
+			go func() { _, _ = io.Copy(io.Discard, stdout) }()
+			_ = cmd.Wait()
+			cancel()
+		})
+	}
+	t.Cleanup(release)
+	report := ""
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "second-process: status=") {
+			report = line
+			if !hold {
+				break
+			}
+		}
+		if line == "second-process: holding" {
+			break
+		}
+	}
+	if !hold {
+		release()
+	}
+	if report == "" {
+		return "", release, errors.New("the second process printed no report")
+	}
+	return report, release, nil
+}
+
+// Round 2, R2-1 (gate r2 MAJORs 2, 3 and 6; read r2 MAJOR 1 and MINORs 3 and
+// 8): the hub owns its ledger file and checks it before every use. Whatever
+// happens to the file under a running hub, before a first claim, between a
+// claim's sent and answered lines, or after its answer, no further claim
+// leaves, every later spend and replay is refused with the ledger's path and
+// the cure, and nothing is ever recreated beside the sentinel. A second hub
+// process on the directory, by any spelling, refuses every spend.
+func TestClaudeResetSpendR2ALedgerChangedUnderARunningHubSendsNothingMore(t *testing.T) {
+	var failNextSync atomic.Bool
+	claudeResetSyncFile = func(file *os.File) error {
+		if strings.HasSuffix(file.Name(), claudeResetSpendLedgerName) && failNextSync.CompareAndSwap(true, false) {
+			return errors.New("fixture sync failure after a written line")
+		}
+		return file.Sync()
+	}
+	t.Cleanup(func() { claudeResetSyncFile = func(f *os.File) error { return f.Sync() } })
+	lastLineStart := func(raw []byte) int {
+		return bytes.LastIndexByte(bytes.TrimSuffix(raw, []byte("\n")), '\n') + 1
+	}
+	events := []struct {
+		name  string
+		apply func(path string) error
+	}{
+		{"removed", os.Remove},
+		{"replaced by an empty file", func(path string) error {
+			return errors.Join(os.Remove(path), os.WriteFile(path, nil, 0o600))
+		}},
+		{"replaced by an older copy", func(path string) error {
+			raw, errRead := os.ReadFile(path)
+			if errRead != nil {
+				return errRead
+			}
+			return errors.Join(os.Remove(path), os.WriteFile(path, raw[:bytes.IndexByte(raw, '\n')+1], 0o600))
+		}},
+		{"truncated to a record boundary", func(path string) error {
+			raw, errRead := os.ReadFile(path)
+			if errRead != nil {
+				return errRead
+			}
+			return os.Truncate(path, int64(lastLineStart(raw)))
+		}},
+		{"truncated mid-record", func(path string) error {
+			raw, errRead := os.ReadFile(path)
+			if errRead != nil {
+				return errRead
+			}
+			start := lastLineStart(raw)
+			return os.Truncate(path, int64(start+(len(raw)-start)/2))
+		}},
+		{"the next line's sync fails after its write", nil},
+	}
+	for _, event := range events {
+		for _, when := range []string{"before a first claim", "between sent and answered", "after answered"} {
+			t.Run(event.name+"/"+when, func(t *testing.T) {
+				f := newResetSpendFixture(t, round2Grants()...)
+				path := filepath.Join(f.logDir, claudeResetSpendLedgerName)
+				bodyA := spendBody(map[string]any{"auth_index": f.index, "kind": "fable", "grant_id": "fable-two"})
+				if code, first := f.spendKeyed(t, "round2-key-a", bodyA); code != http.StatusOK || first["result"] != "reset" {
+					t.Fatalf("setup: status=%d answer=%v", code, first)
+				}
+				strike := func() {
+					if event.apply == nil {
+						failNextSync.Store(true)
+						return
+					}
+					if err := event.apply(path); err != nil {
+						t.Error(err)
+					}
+				}
+				var reads atomic.Int32
+				switch when {
+				case "before a first claim":
+					strike()
+				case "between sent and answered":
+					f.provider.set(func(p *fakeResetProvider) { p.onClaim = func(fakeResetClaim) { strike() } })
+				default:
+					f.provider.set(func(p *fakeResetProvider) {
+						p.onRead = func() {
+							if reads.Add(1) == 2 {
+								strike()
+							}
+						}
+					})
+				}
+				bodyB := spendBody(map[string]any{"auth_index": f.seatIndex(t, "other"), "kind": "weekly", "grant_id": "weekly-two"})
+				codeB, answerB := f.spendKeyed(t, "round2-key-b", bodyB)
+				failNextSync.Store(false)
+				f.provider.set(func(p *fakeResetProvider) { p.onClaim, p.onRead = nil, nil })
+				_, _, claims := f.provider.counts()
+				switch {
+				case when == "before a first claim" && (codeB != http.StatusServiceUnavailable || len(claims) != 1):
+					t.Fatalf("the spend after the damage: status=%d answer=%v claims=%d", codeB, answerB, len(claims))
+				case when == "between sent and answered" && (answerB["ledger_error"] == nil || len(claims) != 2):
+					t.Fatalf("the spend in flight at the damage: status=%d answer=%v claims=%d", codeB, answerB, len(claims))
+				case when == "after answered" && (answerB["balance_error"] == nil || len(claims) != 2):
+					t.Fatalf("the spend answered at the damage: status=%d answer=%v claims=%d", codeB, answerB, len(claims))
+				}
+				for _, again := range []struct{ key, body string }{
+					{"round2-key-c", spendBody(map[string]any{"auth_index": f.seatIndex(t, "twin"), "kind": "fable"})},
+					{"round2-key-a", bodyA},
+					{"round2-key-b", bodyB},
+				} {
+					code, answer := f.spendKeyed(t, again.key, again.body)
+					if code != http.StatusServiceUnavailable || answer["ledger_refusal"] == nil || answer["ledger"] != filepath.Join(f.h.claudeResetSpends.mustDir(t, f.logDir), claudeResetSpendLedgerName) || answer["cure"] == nil {
+						t.Fatalf("key %s after the damage: status=%d answer=%v", again.key, code, answer)
+					}
+				}
+				if _, _, after := f.provider.counts(); len(after) != len(claims) {
+					t.Fatalf("a claim left after the damage: claims=%d, then %d", len(claims), len(after))
+				}
+				if _, err := f.h.claudeResetHistory().seat(f.index); err == nil {
+					t.Fatal("the listing trusted a ledger the hub refuses")
+				}
+				if event.name == "removed" {
+					if _, err := os.Lstat(path); !os.IsNotExist(err) {
+						t.Fatalf("a ledger was recreated beside its sentinel: %v", err)
+					}
+				}
+			})
+		}
+	}
+
+	// A second hub process on the same directory: whichever process holds the
+	// lock first owns the ledger, and the other refuses every spend.
+	t.Run("a second process/before a first claim", func(t *testing.T) {
+		f := newResetSpendFixture(t, round2Grants()...)
+		report, release, err := round2SecondProcess(t, f.logDir, true)
+		if err != nil || !strings.Contains(report, "status=200 claims=1") {
+			t.Fatalf("the second process did not take the ledger: %q %v", report, err)
+		}
+		code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
+		release()
+		if requests, _, _ := f.provider.counts(); code != http.StatusServiceUnavailable || answer["ledger_refusal"] != claudeResetRefusalHeld || requests != 0 {
+			t.Fatalf("this process spent beside the owner: status=%d answer=%v requests=%d", code, answer, requests)
+		}
+	})
+	for _, when := range []string{"between sent and answered", "after answered"} {
+		t.Run("a second process/"+when, func(t *testing.T) {
+			f := newResetSpendFixture(t, round2Grants()...)
+			reports := make(chan string, 1)
+			second := func() {
+				report, _, err := round2SecondProcess(t, f.logDir, false)
+				if err != nil {
+					report = err.Error()
+				}
+				reports <- report
+			}
+			if when == "between sent and answered" {
+				f.provider.set(func(p *fakeResetProvider) { p.onClaim = func(fakeResetClaim) { second() } })
+			}
+			code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
+			if code != http.StatusOK || answer["result"] != "reset" || answer["ledger_error"] != nil || answer["balance_error"] != nil {
+				t.Fatalf("the owner's spend: status=%d answer=%v", code, answer)
+			}
+			if when == "after answered" {
+				second()
+			}
+			if report := <-reports; report != "second-process: status=503 claims=0 refusal="+claudeResetRefusalHeld {
+				t.Fatalf("the second process: %q", report)
+			}
+		})
+	}
+
+	// Two spellings of one directory are one lock: a symlink resolves to the
+	// same journal, and a letter-case variant on a volume that folds case
+	// meets the lock the first journal holds.
+	t.Run("the same directory by a symlink or another letter case", func(t *testing.T) {
+		f := newResetSpendFixture(t, round2Grants()...)
+		// A lettered directory name, so a letter-case variant spells it differently.
+		f.logDir = filepath.Join(t.TempDir(), "ledger")
+		f.h.logDir = f.logDir
+		f.provider.set(func(p *fakeResetProvider) { p.claimStatus = http.StatusBadGateway })
+		if _, first := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"})); first["result"] != "unknown" {
+			t.Fatalf("setup: %v", first)
+		}
+		f.provider.set(func(p *fakeResetProvider) { p.claimStatus = 0 })
+		link := filepath.Join(t.TempDir(), "ledger-link")
+		if err := os.Symlink(f.logDir, link); err != nil {
+			t.Fatal(err)
+		}
+		spellings := []string{link}
+		variant := filepath.Join(filepath.Dir(f.logDir), strings.ToUpper(filepath.Base(f.logDir)))
+		if one, errOne := os.Stat(f.logDir); errOne == nil {
+			if two, errTwo := os.Stat(variant); errTwo == nil && os.SameFile(one, two) && variant != f.logDir {
+				spellings = append(spellings, variant)
+			} else {
+				t.Log("the volume does not fold letter case; only the symlink is checked")
+			}
+		}
+		for _, spelling := range spellings {
+			second := &Handler{cfg: f.h.cfg, authManager: f.h.authManager, logDir: spelling, claudeResetClient: f.h.claudeResetClient}
+			second.claudeResetSpends.now = f.clock.now
+			t.Cleanup(func() { forgetClaudeResetJournal(spelling) })
+			for _, seat := range []string{"fixture", "twin"} {
+				code, answer := r2SpendQuietly(second, "round2-spelling-"+seat+"-"+filepath.Base(spelling), spendBody(map[string]any{"auth_index": f.seatIndex(t, seat), "kind": "fable"}))
+				if code == http.StatusOK {
+					t.Fatalf("%s through %s spent past the hold: %v", seat, spelling, answer)
+				}
+			}
+			report, _, err := round2SecondProcess(t, spelling, false)
+			if err != nil || report != "second-process: status=503 claims=0 refusal="+claudeResetRefusalHeld {
+				t.Fatalf("a second process through %s: %q %v", spelling, report, err)
+			}
+		}
+		if _, _, claims := f.provider.counts(); len(claims) != 1 {
+			t.Fatalf("claims=%d", len(claims))
+		}
+	})
+}
+
+// mustDir is the journal identity of dir, as a refusal names its ledger.
+func (l *claudeResetSpendLedger) mustDir(t *testing.T, dir string) string {
+	t.Helper()
+	resolved, err := claudeResetJournalDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
+
+// Round 2, R2-1 after a restart (gate r2 MAJOR 2; read r2 MAJOR 1): a ledger
+// missing, emptied, or shorter than the length its sentinel records is
+// refused on load, so a redelivered key never claims twice.
+func TestClaudeResetSpendR2AShortenedLedgerIsRefusedAfterARestart(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		damage func(path string) error
+	}{
+		{"removed, the sentinel left", os.Remove},
+		{"cut to zero bytes", func(path string) error { return os.Truncate(path, 0) }},
+		{"cut back to its sent line", func(path string) error {
+			raw, errRead := os.ReadFile(path)
+			if errRead != nil {
+				return errRead
+			}
+			return os.WriteFile(path, raw[:bytes.IndexByte(raw, '\n')+1], 0o600)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newResetSpendFixture(t, round2Grants()...)
+			body := spendBody(map[string]any{"auth_index": f.index, "kind": "fable", "grant_id": "fable-two"})
+			if code, first := f.spendKeyed(t, "round2-replayed", body); code != http.StatusOK || first["result"] != "reset" {
+				t.Fatalf("setup: status=%d answer=%v", code, first)
+			}
+			forgetClaudeResetJournal(f.logDir)
+			if err := tc.damage(filepath.Join(f.logDir, claudeResetSpendLedgerName)); err != nil {
+				t.Fatal(err)
+			}
+			f.restart()
+			code, again := f.spendKeyed(t, "round2-replayed", body)
+			if _, _, claims := f.provider.counts(); len(claims) != 1 || code != http.StatusServiceUnavailable || again["ledger_refusal"] == nil {
+				t.Fatalf("one key: claims=%d status=%d answer=%v", len(claims), code, again)
+			}
+		})
+	}
+}
+
+// Round 2, R2-2 (gate r2 MAJOR 4; read r2 MINOR 4): a claim the provider
+// answered is never retried after a restart because its answer could not be
+// written: the ledger, which holds its sent line and no answer, refuses the
+// retry.
+func TestClaudeResetSpendR2KnownOutcomeIsNeverRetriedAfterARestart(t *testing.T) {
+	f := newResetSpendFixture(t, round2Grants()...)
+	path := filepath.Join(f.logDir, claudeResetSpendLedgerName)
+	f.provider.set(func(p *fakeResetProvider) {
+		p.onClaim = func(fakeResetClaim) {
+			if err := errors.Join(os.Rename(path, path+".aside"), os.Mkdir(path, 0o700)); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable", "grant_id": "fable-two"}))
+	if code != http.StatusOK || answer["result"] != "reset" || answer["ledger_error"] == nil || answer["retry_until"] != nil {
+		t.Fatalf("setup: status=%d answer=%v", code, answer)
+	}
+	requestID, _ := answer["request_id"].(string)
+	if err := errors.Join(os.Remove(path), os.Rename(path+".aside", path)); err != nil {
+		t.Fatal(err)
+	}
+	f.provider.set(func(p *fakeResetProvider) { p.onClaim = nil })
+	f.restart()
+	code, retried := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable", "retry_request_id": requestID}))
+	if _, _, claims := f.provider.counts(); len(claims) != 1 || code != http.StatusConflict {
+		t.Fatalf("a claim the hub knew had succeeded was sent again: claims=%d status=%d answer=%v", len(claims), code, retried)
+	}
+}
+
+// Round 2, R2-3 (gate r2 MAJOR 5; read r2 MINOR 5): a claim leaves only while
+// its hold and retry window, which run from its sent line's stamp, are whole:
+// the dispatch check applies the window to a first claim as to a retry, and a
+// sent line that took longer than the dispatch limit to become durable sends
+// nothing. A claim that leaves holds its seat and account for its window, in
+// the running hub and after a restart.
+func TestClaudeResetSpendR2HoldStartsWhenTheSentLineIsDurable(t *testing.T) {
+	for _, tc := range []struct {
+		stall  time.Duration
+		reason string
+	}{
+		{11 * time.Minute, claudeResetAbortRetryWindow},
+		{claudeResetDispatchLimit, claudeResetAbortLedgerStall},
+	} {
+		t.Run("a sent line durable after "+tc.stall.String(), func(t *testing.T) {
+			f := newResetSpendFixture(t, round2Grants()...)
+			f.provider.set(func(p *fakeResetProvider) { p.claimStatus = http.StatusBadGateway })
+			f.jumpWhenSentIsDurable(tc.stall)
+			code, first := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
+			if _, _, claims := f.provider.counts(); len(claims) != 0 || code != http.StatusConflict || first["reason"] != tc.reason {
+				t.Fatalf("a claim left %v after its stamp: claims=%d status=%d answer=%v", tc.stall, len(claims), code, first)
+			}
+		})
+	}
+	t.Run("a claim that leaves holds for its window", func(t *testing.T) {
+		f := newResetSpendFixture(t, round2Grants()...)
+		f.provider.set(func(p *fakeResetProvider) { p.claimStatus = http.StatusBadGateway })
+		f.jumpWhenSentIsDurable(claudeResetDispatchLimit - time.Second)
+		_, first := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
+		if first["result"] != "unknown" {
+			t.Fatalf("setup: %v", first)
+		}
+		f.provider.set(func(p *fakeResetProvider) { p.claimStatus = 0 })
+		attempt := func(label string) {
+			for _, seat := range []string{"fixture", "twin"} {
+				if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.seatIndex(t, seat), "kind": "fable"})); code != http.StatusConflict {
+					t.Fatalf("%s: %s status=%d answer=%v", label, seat, code, answer)
+				}
+			}
+		}
+		f.clock.advance(claudeResetRetryWindow - claudeResetDispatchLimit - time.Second)
+		attempt("in the running hub")
+		f.restart()
+		attempt("after a restart")
+		if _, _, claims := f.provider.counts(); len(claims) != 1 {
+			t.Fatalf("claims=%d", len(claims))
+		}
+	})
+}
+
+// Round 2, R2-4 (gate r2 MAJOR 7 and MINOR 9; read r2 MINORs 2 and 6, NOTE 9):
+// recovery checks everything admission checks, and a last line with no
+// newline is torn whatever it parses as, refused the same way on every start
+// and never written to.
+func TestClaudeResetSpendR2RecoveryChecksWhatAdmissionChecks(t *testing.T) {
+	account := claudeResetAccount(resetFixtureOrganization)
+	line := func(f *resetSpendFixture, fields map[string]any, drop ...string) string {
+		record := map[string]any{
+			"phase": "sent", "operation": "0123456789abcdef0123456789abcdef", "account": account,
+			"at": f.clock.now().Add(-time.Minute).Format(time.RFC3339Nano), "auth_index": f.index, "kind": "fable",
+			"grant_id": "fable-two", "named_grant": "", "request_id": "fixture-request-1", "retry": false, "result": "unknown",
+			"resets_left_before": map[string]int{"fable": 2},
+		}
+		for key, value := range fields {
+			record[key] = value
+		}
+		for _, key := range drop {
+			delete(record, key)
+		}
+		encoded, _ := json.Marshal(record)
+		return string(encoded) + "\n"
+	}
+	ago := func(f *resetSpendFixture, d time.Duration) string {
+		return f.clock.now().Add(-d).Format(time.RFC3339Nano)
+	}
+	settled := func(f *resetSpendFixture) string {
+		return line(f, map[string]any{"at": ago(f, 2*time.Minute)}) + line(f, map[string]any{"phase": "answered", "result": "reset", "at": ago(f, 2*time.Minute)})
+	}
+	for _, tc := range []struct {
+		name   string
+		ledger func(f *resetSpendFixture) string
+		line   int
+	}{
+		{"a settled request id sent again as a first claim", func(f *resetSpendFixture) string {
+			return settled(f) + line(f, map[string]any{"operation": "fedcba9876543210fedcba9876543210"})
+		}, 3},
+		{"a first claim while another seat of its account held one", func(f *resetSpendFixture) string {
+			return line(f, nil) + line(f, map[string]any{"operation": "fedcba9876543210fedcba9876543210", "request_id": "fixture-request-2", "auth_index": f.seatIndex(t, "twin")})
+		}, 2},
+		{"an answer naming another grant than its claim", func(f *resetSpendFixture) string {
+			return line(f, nil) + line(f, map[string]any{"phase": "answered", "result": "reset", "named_grant": "fable-two"})
+		}, 2},
+		{"two balances for one answer", func(f *resetSpendFixture) string {
+			balance := line(f, map[string]any{"phase": "balance", "resets_left_after": map[string]int{"fable": 1}, "at": ago(f, 2*time.Minute)})
+			return settled(f) + balance + balance
+		}, 4},
+		{"a retry of a claim whose answer is not recorded", func(f *resetSpendFixture) string {
+			return line(f, nil) + line(f, map[string]any{"operation": "fedcba9876543210fedcba9876543210", "retry": true})
+		}, 2},
+		{"a record stamped before the record above it", func(f *resetSpendFixture) string {
+			other, otherAccount := f.seatIndex(t, "other"), claudeResetAccount(resetFixtureOtherOrganization)
+			return line(f, map[string]any{"auth_index": other, "account": otherAccount, "operation": "fedcba9876543210fedcba9876543210", "request_id": "fixture-request-0"}) +
+				line(f, map[string]any{"at": ago(f, 20*time.Minute)})
+		}, 2},
+		{"a sound last line with no newline", func(f *resetSpendFixture) string { return strings.TrimSuffix(line(f, nil), "\n") }, 1},
+		{"a last line with no timestamp and no newline", func(f *resetSpendFixture) string { return strings.TrimSuffix(line(f, nil, "at"), "\n") }, 1},
+		{"a last line with no account and no newline", func(f *resetSpendFixture) string { return strings.TrimSuffix(line(f, nil, "account"), "\n") }, 1},
+		{"an empty object with no newline", func(f *resetSpendFixture) string { return "{}" }, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newResetSpendFixture(t, round2Grants()...)
+			path := filepath.Join(f.logDir, claudeResetSpendLedgerName)
+			ledger := tc.ledger(f)
+			if err := os.WriteFile(path, []byte(ledger), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for start := 1; start <= 2; start++ {
+				f.restart()
+				for _, body := range []string{
+					spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}),
+					spendBody(map[string]any{"auth_index": f.seatIndex(t, "twin"), "kind": "fable"}),
+					spendBody(map[string]any{"auth_index": f.index, "kind": "fable", "retry_request_id": "fixture-request-1"}),
+				} {
+					code, answer := f.spend(t, body)
+					if code != http.StatusServiceUnavailable || answer["ledger_refusal"] != claudeResetRefusalInvalidLine || answer["ledger_line"] != float64(tc.line) {
+						t.Fatalf("start %d, %s: status=%d answer=%v", start, body, code, answer)
+					}
+				}
+			}
+			if requests, _, _ := f.provider.counts(); requests != 0 {
+				t.Fatalf("a spend reached the provider: requests=%d", requests)
+			}
+			if raw, _ := os.ReadFile(path); string(raw) != ledger {
+				t.Fatalf("the hub wrote to a ledger it refused: %q", raw)
+			}
+		})
+	}
+}
+
+// Round 2, R2-5 (gate r2 MAJOR 8 and MINOR 10; read r2 MINOR 7, NOTEs 11 and
+// 12): a redelivery of a key whose outcome is on disk reports that outcome,
+// even while the spend still reads the balance, with the status and retry
+// deadline its first answer carried; a refused ledger names its path, its
+// first unacceptable line and the cure.
+func TestClaudeResetSpendR2ReplayAndRefusalSayWhatTheLedgerHolds(t *testing.T) {
+	t.Run("redelivered while the balance read hangs", func(t *testing.T) {
+		f := newResetSpendFixture(t, round2Grants()...)
+		var reads atomic.Int32
+		arrived, release := make(chan struct{}), make(chan struct{})
+		var releaseOnce sync.Once
+		releaseRead := func() { releaseOnce.Do(func() { close(release) }) }
+		t.Cleanup(releaseRead)
+		f.provider.set(func(p *fakeResetProvider) {
+			p.onRead = func() {
+				if reads.Add(1) == 2 {
+					close(arrived)
+					<-release
+				}
+			}
+		})
+		body := spendBody(map[string]any{"auth_index": f.index, "kind": "fable", "grant_id": "fable-two"})
+		done := make(chan int, 1)
+		go func() {
+			code, _ := r2SpendQuietly(f.h, "round2-hung", body)
+			done <- code
+		}()
+		select {
+		case <-arrived:
+		case code := <-done:
+			t.Fatalf("the spend answered %d before its balance read", code)
+		}
+		code, again := r2SpendQuietly(f.h, "round2-hung", body)
+		codeFresh, fresh := r2SpendQuietly(f.h, "round2-fresh", body)
+		releaseRead()
+		if first := <-done; first != http.StatusOK {
+			t.Fatalf("the first request answered %d", first)
+		}
+		if code != http.StatusOK || again["replayed"] != true || again["result"] != "reset" || strings.Contains(fmt.Sprint(again["error"]), "nothing spent") {
+			t.Fatalf("a redelivery after a durable success: status=%d answer=%v", code, again)
+		}
+		if codeFresh != http.StatusConflict {
+			t.Fatalf("a fresh key while the seat is in flight: status=%d answer=%v", codeFresh, fresh)
+		}
+		if _, _, claims := f.provider.counts(); len(claims) != 1 {
+			t.Fatalf("claims=%d", len(claims))
+		}
+	})
+	t.Run("a replay keeps the first answer's status and retry deadline", func(t *testing.T) {
+		f := newResetSpendFixture(t, round2Grants()...)
+		f.provider.set(func(p *fakeResetProvider) { p.claimStatus = http.StatusBadGateway })
+		firstBody := spendBody(map[string]any{"auth_index": f.index, "kind": "fable"})
+		_, first := f.spendKeyed(t, "round2-first", firstBody)
+		requestID, _ := first["request_id"].(string)
+		retryUntil := first["retry_until"]
+		if first["result"] != "unknown" || retryUntil == nil {
+			t.Fatalf("setup: %v", first)
+		}
+		f.clock.advance(time.Minute)
+		retryBody := spendBody(map[string]any{"auth_index": f.index, "kind": "fable", "retry_request_id": requestID})
+		if _, retried := f.spendKeyed(t, "round2-retry", retryBody); retried["result"] != "unknown" || retried["retry_until"] != retryUntil {
+			t.Fatalf("an unresolved retry: %v", retried)
+		}
+		// A dispatch refusal: the sent line becomes durable at the dispatch limit.
+		other := f.seatIndex(t, "other")
+		f.jumpWhenSentIsDurable(claudeResetDispatchLimit)
+		notSentCode, notSent := f.spendKeyed(t, "round2-not-sent", spendBody(map[string]any{"auth_index": other, "kind": "fable"}))
+		if notSentCode != http.StatusConflict || notSent["reason"] != claudeResetAbortLedgerStall {
+			t.Fatalf("setup of a refusal: status=%d answer=%v", notSentCode, notSent)
+		}
+		for _, restart := range []bool{false, true} {
+			if restart {
+				f.restart()
+			}
+			if code, replay := f.spendKeyed(t, "round2-retry", retryBody); code != http.StatusOK || replay["replayed"] != true || replay["retry_until"] != retryUntil {
+				t.Fatalf("restart=%v, the retry replayed: status=%d answer=%v", restart, code, replay)
+			}
+			if code, replay := f.spendKeyed(t, "round2-not-sent", spendBody(map[string]any{"auth_index": other, "kind": "fable"})); code != notSentCode || replay["result"] != claudeResetResultNotSent {
+				t.Fatalf("restart=%v, the refusal replayed: status=%d answer=%v", restart, code, replay)
+			}
+		}
+	})
+	t.Run("a refused ledger names its path, its line and the cure", func(t *testing.T) {
+		f := newResetSpendFixture(t, round2Grants()...)
+		path := filepath.Join(f.logDir, claudeResetSpendLedgerName)
+		if err := os.WriteFile(path, []byte("not a record\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		f.restart()
+		code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
+		if code != http.StatusServiceUnavailable || answer["ledger"] != filepath.Join(f.h.claudeResetSpends.mustDir(t, f.logDir), claudeResetSpendLedgerName) ||
+			answer["ledger_line"] != float64(1) || !strings.Contains(fmt.Sprint(answer["cure"]), "sentinel") || !strings.Contains(fmt.Sprint(answer["error"]), "this request sent nothing") {
+			t.Fatalf("status=%d answer=%v", code, answer)
+		}
+	})
+}
+
+// Gate r2 MINOR 16: a repeated or comma-joined Idempotency-Key is refused
+// before any provider call.
+func TestClaudeResetSpendR2RefusesAnAmbiguousIdempotencyKey(t *testing.T) {
+	f := newResetSpendFixture(t, round2Grants()...)
+	body := spendBody(map[string]any{"auth_index": f.index, "kind": "fable"})
+	for name, keys := range map[string][]string{"two header fields": {"round2-a", "round2-b"}, "comma-joined": {"round2-a, round2-b"}, "one comma": {"round2-a,b"}} {
+		rec := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rec)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/v8/management/claude/limit-resets/spend", strings.NewReader(body))
+		for _, key := range keys {
+			ctx.Request.Header.Add("Idempotency-Key", key)
+		}
+		f.h.SpendClaudeLimitReset(ctx)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status=%d body=%s", name, rec.Code, rec.Body)
+		}
+	}
+	if requests, _, _ := f.provider.counts(); requests != 0 {
+		t.Fatalf("requests=%d", requests)
+	}
+}
+
+// Gate r2 MINOR 19: a listing opens the spend journal only for the first
+// Claude entry it builds.
+func TestClaudeResetSpendR2ListingReadsTheLedgerOnlyWhenAsked(t *testing.T) {
+	f := newResetSpendFixture(t, round2Grants()...)
+	history := f.h.claudeResetHistory()
+	resolved := f.h.claudeResetSpends.mustDir(t, f.logDir)
+	claudeResetJournals.mu.Lock()
+	_, opened := claudeResetJournals.byPath[resolved]
+	claudeResetJournals.mu.Unlock()
+	if opened {
+		t.Fatal("a listing opened the journal before any entry asked")
+	}
+	if _, err := os.Stat(filepath.Join(f.logDir, claudeResetLedgerLockName)); !os.IsNotExist(err) {
+		t.Fatalf("a listing took the lock before any entry asked: %v", err)
+	}
+	if last, err := history.seat(f.index); err != nil || last != nil {
+		t.Fatalf("last=%v err=%v", last, err)
+	}
 }
