@@ -3,6 +3,8 @@ package management
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,6 +19,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/resetclaim"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -36,6 +40,9 @@ const (
 	// the outcome with what is left of each kind before and after.
 	claudeResetPhaseSent     = "sent"
 	claudeResetPhaseAnswered = "answered"
+	// claudeResetPhaseTornClosed follows a torn line (a write cut short, which
+	// no claim followed) that a later append closed; only such a line is skipped.
+	claudeResetPhaseTornClosed = "torn_line_closed"
 )
 
 var claudeResetGrantIDPattern = regexp.MustCompile(`^[a-z0-9_-]{1,40}$`)
@@ -48,9 +55,11 @@ type claudeResetSpendRequest struct {
 }
 
 // claudeResetSpendRecord is one ledger line. It holds no token, email or
-// organization.
+// organization: Account is an opaque digest that binds a hold to its account
+// across restarts.
 type claudeResetSpendRecord struct {
 	Phase            string         `json:"phase"`
+	Account          string         `json:"account,omitempty"`
 	At               time.Time      `json:"at"`
 	AuthIndex        string         `json:"auth_index"`
 	Kind             string         `json:"kind"`
@@ -65,24 +74,37 @@ type claudeResetSpendRecord struct {
 }
 
 type claudeResetUnsettledClaim struct {
-	kind, grantID, requestID string
-	// organization is known in memory only; a hold restored from the ledger
-	// after a restart has none and holds its own seat only.
-	organization string
-	sentAt       time.Time
+	kind, grantID, requestID, account string
+	sentAt                            time.Time
+}
+
+// claudeResetAccount is the opaque account binding the ledger keeps in place
+// of the organization id.
+func claudeResetAccount(organization string) string {
+	sum := sha256.Sum256([]byte("cp-g33 claude reset account\x00" + strings.ToLower(strings.TrimSpace(organization))))
+	return hex.EncodeToString(sum[:12])
+}
+
+// claudeResetLedgerDir is the ledger's directory, read without racing a
+// configuration reload.
+func (h *Handler) claudeResetLedgerDir() string {
+	if h.logDir != "" {
+		return h.logDir
+	}
+	return logging.ResolveLogDirectory(h.configSnapshot())
 }
 
 // claudeResetSpendLedger serializes spends per seat and per account, and
 // remembers claims whose outcome is unknown. Holds are per hub process. Its
 // zero value is ready to use.
 type claudeResetSpendLedger struct {
-	mu          sync.Mutex
-	now         func() time.Time
-	loaded      bool
-	busy        map[string]bool
-	orgInFlight map[string]string
-	unsettled   map[string]*claudeResetUnsettledClaim
-	last        map[string]claudeResetSpendRecord
+	mu              sync.Mutex
+	now             func() time.Time
+	loaded          bool
+	busy            map[string]bool
+	accountInFlight map[string]string
+	unsettled       map[string]*claudeResetUnsettledClaim
+	last            map[string]claudeResetSpendRecord
 }
 
 func (l *claudeResetSpendLedger) clock() time.Time {
@@ -100,12 +122,16 @@ func claudeResetSettles(record claudeResetSpendRecord) bool {
 	return record.Result != claudeauth.LimitResetResultUnknown
 }
 
+func claudeResetRecordValid(record claudeResetSpendRecord) bool {
+	return (record.Phase == claudeResetPhaseSent || record.Phase == claudeResetPhaseAnswered) && record.AuthIndex != "" && record.RequestID != ""
+}
+
 // applyLocked folds one ledger line into the last spend and the holds.
-func (l *claudeResetSpendLedger) applyLocked(record claudeResetSpendRecord, organization string) {
+func (l *claudeResetSpendLedger) applyLocked(record claudeResetSpendRecord) {
 	l.last[record.AuthIndex] = record
 	if record.Phase == claudeResetPhaseSent {
 		if !record.Retry {
-			l.unsettled[record.AuthIndex] = &claudeResetUnsettledClaim{kind: record.Kind, grantID: record.GrantID, requestID: record.RequestID, organization: organization, sentAt: record.At}
+			l.unsettled[record.AuthIndex] = &claudeResetUnsettledClaim{kind: record.Kind, grantID: record.GrantID, requestID: record.RequestID, account: record.Account, sentAt: record.At}
 		}
 		return
 	}
@@ -115,25 +141,31 @@ func (l *claudeResetSpendLedger) applyLocked(record claudeResetSpendRecord, orga
 }
 
 // loadLocked restores the last spend of each seat, and every claim still
-// without a settling answer, from the ledger file.
-func (l *claudeResetSpendLedger) loadLocked(dir string) {
+// without a settling answer, from the ledger file. It fails closed: a ledger
+// that cannot be opened or read, or a line that is not a valid record, is an
+// error and nothing is cached, so every spend is refused until the ledger is
+// readable. Only a torn line is skipped: the last line cut short, or one a
+// later append closed with a torn_line_closed marker. No claim follows a torn
+// line, because a claim leaves only after its sent line is synced.
+func (l *claudeResetSpendLedger) loadLocked(dir string) error {
 	if l.loaded {
-		return
+		return nil
 	}
-	l.loaded = true
 	l.busy = make(map[string]bool)
-	l.orgInFlight = make(map[string]string)
+	l.accountInFlight = make(map[string]string)
 	l.unsettled = make(map[string]*claudeResetUnsettledClaim)
 	l.last = make(map[string]claudeResetSpendRecord)
 	if dir == "" {
-		return
+		l.loaded = true
+		return nil
 	}
 	file, errOpen := os.Open(filepath.Join(dir, claudeResetSpendLedgerName))
 	if errOpen != nil {
-		if !os.IsNotExist(errOpen) {
-			log.WithError(errOpen).Warn("Claude reset spend ledger unreadable")
+		if os.IsNotExist(errOpen) {
+			l.loaded = true
+			return nil
 		}
-		return
+		return errOpen
 	}
 	defer func() {
 		if errClose := file.Close(); errClose != nil {
@@ -141,17 +173,38 @@ func (l *claudeResetSpendLedger) loadLocked(dir string) {
 		}
 	}()
 	reader := bufio.NewReader(file)
+	invalidPending := false
 	for {
 		line, errRead := reader.ReadBytes('\n')
-		var record claudeResetSpendRecord
-		if len(line) > 0 && json.Unmarshal(line, &record) == nil && record.AuthIndex != "" {
-			l.applyLocked(record, "")
+		if errRead != nil && !errors.Is(errRead, io.EOF) {
+			return errRead
 		}
-		if errRead != nil {
-			if !errors.Is(errRead, io.EOF) {
-				log.WithError(errRead).Warn("Claude reset spend ledger read stopped early")
+		complete := errRead == nil
+		var record claudeResetSpendRecord
+		parsed := json.Unmarshal(line, &record) == nil
+		switch {
+		case parsed && record.Phase == claudeResetPhaseTornClosed:
+			// The line before it was cut short: skipped if invalid, kept if
+			// the cut fell just after a complete record.
+			if invalidPending {
+				log.Warn("Claude reset spend ledger holds a closed torn line; it is skipped")
 			}
-			return
+			invalidPending = false
+		case invalidPending:
+			return errors.New("the reset spend ledger holds a line that is not a valid record")
+		case parsed && claudeResetRecordValid(record):
+			l.applyLocked(record)
+		case complete:
+			invalidPending = true
+		case len(line) > 0:
+			log.Warn("Claude reset spend ledger ends in a torn line; it is skipped")
+		}
+		if !complete {
+			if invalidPending {
+				return errors.New("the reset spend ledger holds a line that is not a valid record")
+			}
+			l.loaded = true
+			return nil
 		}
 	}
 }
@@ -159,7 +212,9 @@ func (l *claudeResetSpendLedger) loadLocked(dir string) {
 func (l *claudeResetSpendLedger) lastSpend(dir, authIndex string) *claudeResetSpendRecord {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.loadLocked(dir)
+	if errLoad := l.loadLocked(dir); errLoad != nil {
+		return nil
+	}
 	record, ok := l.last[authIndex]
 	if !ok {
 		return nil
@@ -180,42 +235,47 @@ func (l *claudeResetSpendLedger) openLocked(authIndex string, now time.Time) *cl
 // begin reserves the seat. A claim with an unknown outcome holds the seat for
 // its retry window: only a retry naming its request id may proceed, and that
 // retry is returned.
-func (l *claudeResetSpendLedger) begin(dir, authIndex, retryRequestID string, now time.Time) (*claudeResetUnsettledClaim, string) {
+func (l *claudeResetSpendLedger) begin(dir, authIndex, retryRequestID string, now time.Time) (*claudeResetUnsettledClaim, int, string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.loadLocked(dir)
+	if errLoad := l.loadLocked(dir); errLoad != nil {
+		log.WithError(errLoad).Error("Claude reset spend ledger unreadable; spends refused")
+		return nil, http.StatusServiceUnavailable, "the spend ledger cannot be read, so earlier claims cannot be ruled out"
+	}
 	if l.busy[authIndex] {
-		return nil, "a spend is already in flight for this seat"
+		return nil, http.StatusConflict, "a spend is already in flight for this seat"
 	}
 	open := l.openLocked(authIndex, now)
 	switch {
 	case retryRequestID == "" && open != nil:
-		return nil, "an earlier claim on this seat has an unknown outcome: retry it with its retry_request_id within ten minutes of sending, or check the account's usage page"
+		return nil, http.StatusConflict, "an earlier claim on this seat has an unknown outcome: retry it with its retry_request_id within ten minutes of sending, or check the account's usage page"
 	case retryRequestID != "" && (open == nil || open.requestID != retryRequestID):
-		return nil, "no claim with an unknown outcome has this request id inside its ten-minute retry window"
+		return nil, http.StatusConflict, "no claim with an unknown outcome has this request id inside its ten-minute retry window"
 	}
 	l.busy[authIndex] = true
 	if open == nil {
-		return nil, ""
+		return nil, 0, ""
 	}
 	retry := *open
-	return &retry, ""
+	return &retry, 0, ""
 }
 
-// reserveOrganization holds the account across seats: two credential files of
-// one account must not claim while either has a claim in flight or unknown.
-func (l *claudeResetSpendLedger) reserveOrganization(authIndex, organization string, now time.Time) string {
+// reserveAccount holds the account across seats, for a first claim and for a
+// retry alike: two credential files of one account must not claim while
+// either has a claim in flight or unknown. The reservation lasts until the
+// request finishes, past the retry window if the claim is still in flight.
+func (l *claudeResetSpendLedger) reserveAccount(authIndex, account string, now time.Time) string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if holder, ok := l.orgInFlight[organization]; ok && holder != authIndex {
+	if holder, ok := l.accountInFlight[account]; ok && holder != authIndex {
 		return "a spend is in flight on another seat of this account"
 	}
 	for seat := range l.unsettled {
-		if open := l.openLocked(seat, now); seat != authIndex && open != nil && open.organization == organization {
+		if open := l.openLocked(seat, now); seat != authIndex && open != nil && open.account == account {
 			return "another seat of this account has a claim with an unknown outcome"
 		}
 	}
-	l.orgInFlight[organization] = authIndex
+	l.accountInFlight[account] = authIndex
 	return ""
 }
 
@@ -223,22 +283,22 @@ func (l *claudeResetSpendLedger) finish(authIndex string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.busy, authIndex)
-	for organization, holder := range l.orgInFlight {
+	for account, holder := range l.accountInFlight {
 		if holder == authIndex {
-			delete(l.orgInFlight, organization)
+			delete(l.accountInFlight, account)
 		}
 	}
 }
 
 // markSent syncs the sent line to disk, then holds the seat. When the line
 // cannot be written the claim must not be sent.
-func (l *claudeResetSpendLedger) markSent(dir string, record claudeResetSpendRecord, organization string) error {
+func (l *claudeResetSpendLedger) markSent(dir string, record claudeResetSpendRecord) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if errAppend := appendClaudeResetLine(dir, record); errAppend != nil {
 		return errAppend
 	}
-	l.applyLocked(record, organization)
+	l.applyLocked(record)
 	return nil
 }
 
@@ -256,7 +316,7 @@ func (l *claudeResetSpendLedger) forget(authIndex, requestID string) {
 func (l *claudeResetSpendLedger) answer(dir string, record claudeResetSpendRecord) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.applyLocked(record, "")
+	l.applyLocked(record)
 	log.WithFields(log.Fields{
 		"auth_index": record.AuthIndex, "kind": record.Kind, "grant_id": record.GrantID, "request_id": record.RequestID,
 		"retry": record.Retry, "result": record.Result, "http_status": record.HTTPStatus,
@@ -278,11 +338,23 @@ func appendClaudeResetLine(dir string, record claudeResetSpendRecord) error {
 	if errMkdir := os.MkdirAll(dir, 0o700); errMkdir != nil {
 		return errMkdir
 	}
-	file, errOpen := os.OpenFile(filepath.Join(dir, claudeResetSpendLedgerName), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	file, errOpen := os.OpenFile(filepath.Join(dir, claudeResetSpendLedgerName), os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o600)
 	if errOpen != nil {
 		return errOpen
 	}
-	_, errWrite := file.Write(append(line, '\n'))
+	// A torn last line (a write cut short) is closed first, so this record
+	// starts on its own line and is never read as part of the torn one.
+	info, errWrite := file.Stat()
+	if errWrite == nil && info.Size() > 0 {
+		last := make([]byte, 1)
+		if _, errWrite = file.ReadAt(last, info.Size()-1); errWrite == nil && last[0] != '\n' {
+			marker, _ := json.Marshal(claudeResetSpendRecord{Phase: claudeResetPhaseTornClosed, At: record.At})
+			line = append(append(append([]byte{'\n'}, marker...), '\n'), line...)
+		}
+	}
+	if errWrite == nil {
+		_, errWrite = file.Write(append(line, '\n'))
+	}
 	if errWrite == nil {
 		errWrite = file.Sync()
 	}
@@ -300,11 +372,11 @@ func claudeResetsLeftByKind(kinds map[string]coreauth.ClaudeResetKindSummary) ma
 	return left
 }
 
-func (h *Handler) claudeResetAuth(auth *coreauth.Auth) *claudeauth.ClaudeAuth {
+func (h *Handler) claudeResetAuth(cfg *config.Config, auth *coreauth.Auth) *claudeauth.ClaudeAuth {
 	if h.claudeResetClient != nil {
-		return h.claudeResetClient(h.cfg, auth.ProxyURL)
+		return h.claudeResetClient(cfg, auth.ProxyURL)
 	}
-	return claudeauth.NewClaudeAuthWithProxyURL(h.cfg, auth.ProxyURL)
+	return claudeauth.NewClaudeAuthWithProxyURL(cfg, auth.ProxyURL)
 }
 
 func readClaudeResetStatus(ctx context.Context, client *claudeauth.ClaudeAuth, token, userAgent string) (*coreauth.ClaudeLimitResets, int, error) {
@@ -372,10 +444,13 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 		return
 	}
 
-	ledger, dir := &h.claudeResetSpends, h.logDirectory()
-	retry, held := ledger.begin(dir, authIndex, retryRequestID, ledger.clock())
+	// One configuration snapshot, read under the handler's lock, serves the
+	// whole spend.
+	cfg := h.configSnapshot()
+	ledger, dir := &h.claudeResetSpends, h.claudeResetLedgerDir()
+	retry, heldStatus, held := ledger.begin(dir, authIndex, retryRequestID, ledger.clock())
 	if held != "" {
-		c.JSON(http.StatusConflict, gin.H{"error": held})
+		c.JSON(heldStatus, gin.H{"error": held + "; nothing spent"})
 		return
 	}
 	defer ledger.finish(authIndex)
@@ -391,16 +466,17 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "seat has no access token; nothing spent"})
 		return
 	}
-	ctx, client := c.Request.Context(), h.claudeResetAuth(auth)
-	userAgent := claudeauth.LimitResetUserAgent(helps.DefaultClaudeVersion(h.cfg))
+	ctx, client := c.Request.Context(), h.claudeResetAuth(cfg, auth)
+	userAgent := claudeauth.LimitResetUserAgent(helps.DefaultClaudeVersion(cfg))
 
-	// The last grants read is this fresh one; the quota cache never decides a spend.
-	now := ledger.clock()
+	// The last grants read is this fresh one; the quota cache never decides a
+	// spend. Grants are judged at the time the read returns.
 	before, readStatus, errRead := readClaudeResetStatus(ctx, client, token, userAgent)
 	if errRead != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "fresh grants read failed; nothing spent", "upstream_status": readStatus})
 		return
 	}
+	now := ledger.clock()
 	kinds := coreauth.SummarizeClaudeResetKinds(before.Grants, now)
 	ofKind := make([]coreauth.ClaudeResetGrant, 0)
 	for _, grant := range before.Grants {
@@ -464,10 +540,11 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 		return
 	}
 	organization := profile.Organization.UUID
+	account := claudeResetAccount(organization)
 	requestID, sentAt := uuid.NewString(), ledger.clock()
 	if retry != nil {
-		if retry.organization != "" && retry.organization != organization {
-			c.JSON(http.StatusConflict, gin.H{"error": "the seat's organization changed since the unknown claim; nothing spent"})
+		if retry.account != "" && retry.account != account {
+			c.JSON(http.StatusConflict, gin.H{"error": "the seat's account changed since the unknown claim; nothing spent"})
 			return
 		}
 		if sentAt.Sub(retry.sentAt) >= claudeResetRetryWindow {
@@ -475,15 +552,28 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 			return
 		}
 		requestID = retry.requestID
-	} else if heldAccount := ledger.reserveOrganization(authIndex, organization, sentAt); heldAccount != "" {
+	} else {
+		// Judged again at the time of the claim: the profile read takes time.
+		if before.CooldownUntil != nil && before.CooldownUntil.After(sentAt) {
+			refuse(http.StatusConflict, "the seat's reset cooldown is active")
+			return
+		}
+		for _, grant := range before.Grants {
+			if grant.ID == grantID && !coreauth.ClaudeResetGrantSpendable(grant, sentAt) {
+				refuse(http.StatusConflict, "the grant can no longer be spent")
+				return
+			}
+		}
+	}
+	if heldAccount := ledger.reserveAccount(authIndex, account, sentAt); heldAccount != "" {
 		c.JSON(http.StatusConflict, gin.H{"error": heldAccount + "; nothing spent"})
 		return
 	}
 	record := claudeResetSpendRecord{
-		Phase: claudeResetPhaseSent, At: sentAt, AuthIndex: authIndex, Kind: kind, GrantID: grantID, RequestID: requestID,
+		Phase: claudeResetPhaseSent, Account: account, At: sentAt, AuthIndex: authIndex, Kind: kind, GrantID: grantID, RequestID: requestID,
 		Retry: retry != nil, Result: claudeauth.LimitResetResultUnknown, ResetsLeftBefore: claudeResetsLeftByKind(kinds),
 	}
-	if errLedger := ledger.markSent(dir, record, organization); errLedger != nil {
+	if errLedger := ledger.markSent(dir, record); errLedger != nil {
 		log.WithError(errLedger).Error("Claude reset spend ledger not writable; claim not sent")
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "the spend ledger is not writable; nothing spent"})
 		return

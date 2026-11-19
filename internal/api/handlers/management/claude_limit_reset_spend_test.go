@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -68,6 +70,8 @@ type fakeResetProvider struct {
 	reads         int
 	claims        []fakeResetClaim
 	onClaim       func(fakeResetClaim)
+	onRead        func()
+	onProfile     func()
 }
 
 func newFakeResetProvider(t *testing.T, grants ...fakeResetGrant) *fakeResetProvider {
@@ -79,11 +83,38 @@ func newFakeResetProvider(t *testing.T, grants ...fakeResetGrant) *fakeResetProv
 }
 
 func (f *fakeResetProvider) serve(w http.ResponseWriter, r *http.Request) {
+	// Hooks run outside the lock, so a hook that blocks one claim does not
+	// block the other seats' reads.
+	var claim fakeResetClaim
+	isClaim := r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reset_rate_limits")
+	if isClaim {
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&claim); err != nil || claim.Program != "cedar_ember" || r.Header.Get("Content-Type") != "application/json" {
+			f.t.Errorf("malformed claim: %v %+v", err, claim)
+		}
+	}
+	f.mu.Lock()
+	onRead, onProfile, onClaim := f.onRead, f.onProfile, f.onClaim
+	f.mu.Unlock()
+	switch {
+	case isClaim && onClaim != nil:
+		onClaim(claim)
+	case r.URL.Path == "/api/oauth/usage" && onRead != nil:
+		onRead()
+	case r.URL.Path == "/api/oauth/profile" && onProfile != nil:
+		onProfile()
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests++
 	if r.Host != "api.anthropic.com" {
 		f.t.Errorf("request for host %q", r.Host)
+	}
+	// Every spend request closes its connection: no socket outlives a spend.
+	if !r.Close {
+		f.t.Errorf("request %s %s keeps its connection alive", r.Method, r.URL.Path)
 	}
 	organization := resetFixtureAccounts[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
 	if organization == "" || r.Header.Get("Anthropic-Beta") != "oauth-2025-04-20" || !strings.HasPrefix(r.Header.Get("User-Agent"), "claude-cli/") {
@@ -114,17 +145,8 @@ func (f *fakeResetProvider) serve(w http.ResponseWriter, r *http.Request) {
 			status["cooldown_until"] = f.cooldownUntil
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"five_hour": map[string]any{"utilization": 100}, "cedar_ember": status})
-	case r.Method == http.MethodPost && r.URL.Path == "/api/organizations/"+organization+"/reset_rate_limits" && r.URL.RawQuery == "":
-		var claim fakeResetClaim
-		decoder := json.NewDecoder(r.Body)
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&claim); err != nil || claim.Program != "cedar_ember" || r.Header.Get("Content-Type") != "application/json" {
-			f.t.Errorf("malformed claim: %v %+v", err, claim)
-		}
+	case isClaim && r.URL.Path == "/api/organizations/"+organization+"/reset_rate_limits" && r.URL.RawQuery == "":
 		f.claims = append(f.claims, claim)
-		if f.onClaim != nil {
-			f.onClaim(claim)
-		}
 		if f.claimStatus != 0 {
 			w.WriteHeader(f.claimStatus)
 			return
@@ -181,18 +203,36 @@ func resetFixtureGrants() []fakeResetGrant {
 	}
 }
 
+// fixtureClock is the handler's controllable clock; tests advance it, never sleep.
+type fixtureClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func (c *fixtureClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
+func (c *fixtureClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = c.at.Add(d)
+}
+
 type resetSpendFixture struct {
 	h        *Handler
 	provider *fakeResetProvider
 	index    string
 	logDir   string
-	now      time.Time
+	clock    *fixtureClock
 }
 
 func newResetSpendFixture(t *testing.T, grants ...fakeResetGrant) *resetSpendFixture {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	f := &resetSpendFixture{provider: newFakeResetProvider(t, grants...), logDir: t.TempDir(), now: time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)}
+	f := &resetSpendFixture{provider: newFakeResetProvider(t, grants...), logDir: t.TempDir(), clock: &fixtureClock{at: time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)}}
 	cfg := &config.Config{}
 	m := coreauth.NewManager(nil, nil, nil)
 	m.SetConfig(cfg)
@@ -211,7 +251,7 @@ func newResetSpendFixture(t *testing.T, grants ...fakeResetGrant) *resetSpendFix
 	f.h.claudeResetClient = func(cfg *config.Config, proxyURL string) *claudeauth.ClaudeAuth {
 		return claudeauth.NewClaudeAuthWithProxyURL(cfg, proxyURL, claudeauth.WithHTTPClient(fake))
 	}
-	f.h.claudeResetSpends.now = func() time.Time { return f.now }
+	f.h.claudeResetSpends.now = f.clock.now
 	f.index = f.seatIndex(t, "fixture")
 	return f
 }
@@ -456,7 +496,7 @@ func TestClaudeResetSpendUnknownOutcomeRetriesOnlyWithTheSameRequestID(t *testin
 		t.Fatalf("claims=%d", claimCount())
 	}
 	// A refusal on a retry cannot prove the first claim did not spend.
-	f.now = f.now.Add(4 * time.Minute)
+	f.clock.advance(4 * time.Minute)
 	f.provider.set(func(p *fakeResetProvider) { p.claimStatus, p.claimResult = 0, "cooldown" })
 	code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable", "retry_request_id": requestID}))
 	if code != http.StatusOK || answer["result"] != "cooldown" || answer["request_id"] != requestID || answer["retry"] != true {
@@ -492,7 +532,7 @@ func TestClaudeResetSpendUnknownOutcomeRetriesOnlyWithTheSameRequestID(t *testin
 	if lost["result"] != "unknown" || lostID == "" {
 		t.Fatalf("answer=%v", lost)
 	}
-	f.now = f.now.Add(10 * time.Minute)
+	f.clock.advance(10 * time.Minute)
 	f.provider.set(func(p *fakeResetProvider) { p.claimStatus = 0 })
 	if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "full", "retry_request_id": lostID})); code != http.StatusConflict {
 		t.Fatalf("expired retry: status=%d answer=%v", code, answer)
@@ -617,7 +657,7 @@ func TestClaudeResetSpendHoldSurvivesARestart(t *testing.T) {
 	}
 	restart := func() *Handler {
 		h := &Handler{cfg: f.h.cfg, authManager: f.h.authManager, logDir: f.logDir, claudeResetClient: f.h.claudeResetClient}
-		h.claudeResetSpends.now = func() time.Time { return f.now }
+		h.claudeResetSpends.now = f.clock.now
 		return h
 	}
 	f.h = restart()
@@ -637,7 +677,7 @@ func TestClaudeResetSpendHoldSurvivesARestart(t *testing.T) {
 
 	// A hub that died after the sent line, before any answer.
 	g := newResetSpendFixture(t, resetFixtureGrants()...)
-	sent, _ := json.Marshal(claudeResetSpendRecord{Phase: claudeResetPhaseSent, At: g.now.Add(-time.Minute), AuthIndex: g.index, Kind: "fable", GrantID: "fable-late", RequestID: "restored-request", Result: "unknown"})
+	sent, _ := json.Marshal(claudeResetSpendRecord{Phase: claudeResetPhaseSent, At: g.clock.now().Add(-time.Minute), AuthIndex: g.index, Kind: "fable", GrantID: "fable-late", RequestID: "restored-request", Result: "unknown"})
 	if err := os.WriteFile(filepath.Join(g.logDir, claudeResetSpendLedgerName), append(sent, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -664,4 +704,196 @@ func TestClaudeResetSpendRefusesWhenTheLedgerCannotBeWritten(t *testing.T) {
 	if _, _, claims := f.provider.counts(); len(claims) != 0 {
 		t.Fatalf("a claim left without its ledger line: %+v", claims)
 	}
+}
+
+func (f *resetSpendFixture) restart() {
+	h := &Handler{cfg: f.h.cfg, authManager: f.h.authManager, logDir: f.logDir, claudeResetClient: f.h.claudeResetClient}
+	h.claudeResetSpends.now = f.clock.now
+	f.h = h
+}
+
+// Codex round 1, class "claim identity not persisted": a hold restored from
+// the ledger still binds its account, for a new claim on another credential
+// file of that account and for the retry itself.
+func TestClaudeResetSpendRestartKeepsTheAccountBinding(t *testing.T) {
+	f := newResetSpendFixture(t, resetFixtureGrants()...)
+	f.provider.set(func(p *fakeResetProvider) { p.claimStatus = http.StatusBadGateway })
+	_, first := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
+	requestID, _ := first["request_id"].(string)
+	if first["result"] != "unknown" || requestID == "" {
+		t.Fatalf("answer=%v", first)
+	}
+	raw, _ := os.ReadFile(filepath.Join(f.logDir, claudeResetSpendLedgerName))
+	if strings.Contains(string(raw), resetFixtureOrganization) {
+		t.Fatalf("the ledger holds the organization: %s", raw)
+	}
+	f.restart()
+	f.provider.set(func(p *fakeResetProvider) { p.claimStatus = 0 })
+	if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.seatIndex(t, "twin"), "kind": "weekly"})); code != http.StatusConflict {
+		t.Fatalf("twin after restart: status=%d answer=%v", code, answer)
+	}
+	// The seat's credential now belongs to another account: the retry must
+	// not claim the original grant id against the replacement organization.
+	for _, auth := range f.h.authManager.List() {
+		if auth.ID == "fixture" {
+			auth.Metadata = map[string]any{"access_token": resetFixtureOtherToken}
+			if _, err := f.h.authManager.Update(context.Background(), auth); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable", "retry_request_id": requestID})); code != http.StatusConflict {
+		t.Fatalf("retry on a replaced credential: status=%d answer=%v", code, answer)
+	}
+	if _, _, claims := f.provider.counts(); len(claims) != 1 {
+		t.Fatalf("claims=%+v", claims)
+	}
+}
+
+// Codex round 1, class "account serialization incomplete": a retry holds the
+// account while its claim is in flight, even past the retry window.
+func TestClaudeResetSpendRetryHoldsTheAccountWhileInFlight(t *testing.T) {
+	f := newResetSpendFixture(t, resetFixtureGrants()...)
+	f.provider.set(func(p *fakeResetProvider) { p.claimStatus = http.StatusBadGateway })
+	_, first := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
+	requestID, _ := first["request_id"].(string)
+	f.clock.advance(9 * time.Minute)
+	arrived, release := make(chan struct{}), make(chan struct{})
+	var held atomic.Bool
+	f.provider.set(func(p *fakeResetProvider) {
+		p.claimStatus = 0
+		// Only the retry's claim is held; any later claim passes straight on.
+		p.onClaim = func(fakeResetClaim) {
+			if held.CompareAndSwap(false, true) {
+				close(arrived)
+				<-release
+			}
+		}
+	})
+	done := make(chan int, 1)
+	go func() {
+		code, _ := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable", "retry_request_id": requestID}))
+		done <- code
+	}()
+	<-arrived
+	f.clock.advance(2 * time.Minute)
+	code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.seatIndex(t, "twin"), "kind": "weekly"}))
+	close(release)
+	if retried := <-done; retried != http.StatusOK {
+		t.Fatalf("retry status=%d", retried)
+	}
+	if code != http.StatusConflict {
+		t.Fatalf("twin during an in-flight retry: status=%d answer=%v", code, answer)
+	}
+	if _, _, claims := f.provider.counts(); len(claims) != 2 {
+		t.Fatalf("claims=%+v", claims)
+	}
+}
+
+// Codex round 1, class "ledger recovery fails open": a torn tail never hides
+// the next hold, and a ledger the hub cannot read or trust stops every spend.
+func TestClaudeResetSpendLedgerRecoveryNeverFailsOpen(t *testing.T) {
+	complete, _ := json.Marshal(claudeResetSpendRecord{Phase: claudeResetPhaseAnswered, AuthIndex: "elsewhere", RequestID: "earlier", Result: "reset"})
+	for name, tail := range map[string][]byte{"torn tail": []byte(`{"phase":`), "cut after a complete record": complete} {
+		t.Run(name, func(t *testing.T) {
+			f := newResetSpendFixture(t, resetFixtureGrants()...)
+			if err := os.WriteFile(filepath.Join(f.logDir, claudeResetSpendLedgerName), tail, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			f.provider.set(func(p *fakeResetProvider) { p.claimStatus = http.StatusBadGateway })
+			if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"})); code != http.StatusOK || answer["result"] != "unknown" {
+				t.Fatalf("status=%d answer=%v", code, answer)
+			}
+			for restart := 0; restart < 2; restart++ {
+				f.restart()
+				if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "full"})); code != http.StatusConflict || strings.Contains(fmt.Sprint(answer["error"]), "cannot be read") {
+					t.Fatalf("restart %d: status=%d answer=%v", restart, code, answer)
+				}
+			}
+		})
+	}
+	for name, prepare := range map[string]func(path string) error{
+		"corrupt line": func(path string) error {
+			return os.WriteFile(path, []byte("not a record\n"), 0o600)
+		},
+		"record without a phase": func(path string) error {
+			return os.WriteFile(path, []byte(`{"auth_index":"x","request_id":"y"}`+"\n"), 0o600)
+		},
+		"unreadable": func(path string) error { return os.Mkdir(path, 0o700) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newResetSpendFixture(t, resetFixtureGrants()...)
+			if err := prepare(filepath.Join(f.logDir, claudeResetSpendLedgerName)); err != nil {
+				t.Fatal(err)
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"})); code != http.StatusServiceUnavailable {
+					t.Fatalf("attempt %d: status=%d answer=%v", attempt, code, answer)
+				}
+			}
+			if requests, _, _ := f.provider.counts(); requests != 0 {
+				t.Fatalf("a spend reached the provider over a ledger it cannot trust: %d", requests)
+			}
+		})
+	}
+}
+
+// Codex round 1, class "stale clock": a grant is judged at the time of the
+// claim, not at the time the spend began.
+func TestClaudeResetSpendJudgesGrantsAtTheTimeOfTheClaim(t *testing.T) {
+	at := func(f *resetSpendFixture, d time.Duration) string { return f.clock.now().Add(d).Format(time.RFC3339) }
+	t.Run("selection after the read", func(t *testing.T) {
+		f := newResetSpendFixture(t)
+		f.provider.set(func(p *fakeResetProvider) {
+			p.grants = []fakeResetGrant{
+				{ID: "fable-a", ResetsLeft: 1, EndsAt: at(f, time.Second), Type: "full", GivesBackWeekly: true, Clears: []string{}, UsableNow: true},
+				{ID: "fable-b", ResetsLeft: 1, EndsAt: at(f, time.Hour), Type: "full", GivesBackWeekly: true, Clears: []string{}, UsableNow: true},
+			}
+			p.onRead = func() { f.clock.advance(2 * time.Second) }
+		})
+		code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
+		if code != http.StatusOK || answer["grant_id"] != "fable-b" {
+			t.Fatalf("status=%d answer=%v", code, answer)
+		}
+	})
+	t.Run("expiry before the claim", func(t *testing.T) {
+		g := newResetSpendFixture(t)
+		g.provider.set(func(p *fakeResetProvider) {
+			p.grants = []fakeResetGrant{{ID: "fable-c", ResetsLeft: 1, EndsAt: at(g, 5*time.Second), Type: "full", GivesBackWeekly: true, Clears: []string{}, UsableNow: true}}
+			p.onProfile = func() { g.clock.advance(10 * time.Second) }
+		})
+		if code, answer := g.spend(t, spendBody(map[string]any{"auth_index": g.index, "kind": "fable"})); code != http.StatusConflict {
+			t.Fatalf("expired before the claim: status=%d answer=%v", code, answer)
+		}
+		if _, _, claims := g.provider.counts(); len(claims) != 0 {
+			t.Fatalf("an expired grant was claimed: %+v", claims)
+		}
+	})
+}
+
+// Codex round 1, class "unsynchronized configuration": a spend reads the
+// configuration once, under the handler's lock, while reloads replace it.
+// Run with -race to see the race it guards against.
+func TestClaudeResetSpendReadsConfigurationUnderTheLock(t *testing.T) {
+	f := newResetSpendFixture(t, resetFixtureGrants()...)
+	stop := make(chan struct{})
+	reloaded := make(chan struct{})
+	go func() {
+		defer close(reloaded)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				f.h.SetConfig(&config.Config{})
+			}
+		}
+	}()
+	for _, kind := range []string{"fable", "full", "weekly"} {
+		if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": kind})); code != http.StatusOK {
+			t.Fatalf("%s: status=%d answer=%v", kind, code, answer)
+		}
+	}
+	close(stop)
+	<-reloaded
 }

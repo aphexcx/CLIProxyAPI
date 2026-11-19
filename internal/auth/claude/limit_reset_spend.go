@@ -54,6 +54,9 @@ func applyLimitResetSpendHeaders(header http.Header, accessToken, userAgent stri
 	header.Set("Content-Type", "application/json")
 	header.Set("Anthropic-Beta", "oauth-2025-04-20")
 	header.Set("User-Agent", userAgent)
+	// Each spend builds its own client: close every connection so no socket
+	// outlives the spend.
+	header.Set("Connection", "close")
 }
 
 func (o *ClaudeAuth) fetchLimitResetSpendJSON(ctx context.Context, endpoint, accessToken, userAgent, label string) ([]byte, error) {
@@ -70,6 +73,7 @@ func (o *ClaudeAuth) fetchLimitResetSpendJSON(ctx context.Context, endpoint, acc
 		return nil, fmt.Errorf("create Claude %s request: %w", label, errRequest)
 	}
 	applyLimitResetSpendHeaders(req.Header, accessToken, userAgent)
+	req.Close = true
 	resp, errDo := httptransport.Do(o.httpClient, req)
 	if errDo != nil {
 		return nil, fmt.Errorf("fetch Claude %s: %w", label, errDo)
@@ -133,6 +137,7 @@ func (o *ClaudeAuth) ClaimLimitReset(ctx context.Context, accessToken, userAgent
 	if errRequest != nil {
 		return LimitResetClaimResult{}, errRequest
 	}
+	req.Close = true
 	resp, errSend := httptransport.Do(resetclaim.NoRedirectClaimClient(o.httpClient), req)
 	if errSend != nil {
 		if errors.Is(errSend, httptransport.ErrResetRateLimitsDenied) {

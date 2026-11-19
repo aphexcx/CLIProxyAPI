@@ -46,7 +46,7 @@ func (h *Handler) GetClaudeLimitResets(c *gin.Context) {
 			if seat.CedarEmber != nil {
 				seat.Kinds = coreauth.SummarizeClaudeResetKinds(seat.CedarEmber.Grants, now)
 			}
-			seat.LastSpend = h.claudeResetSpends.lastSpend(h.logDirectory(), auth.EnsureIndex())
+			seat.LastSpend = h.claudeResetSpends.lastSpend(h.claudeResetLedgerDir(), auth.EnsureIndex())
 			quota, _ := h.authManager.ClaudeQuotaCached(auth.ID)
 			for windowName, window := range quota.Windows {
 				if quota.Stale {
