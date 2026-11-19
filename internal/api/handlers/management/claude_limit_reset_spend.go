@@ -618,16 +618,17 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 		answer["retry_until"] = firstSent.Add(claudeResetRetryWindow)
 	}
 	if outcome.Result == claudeauth.LimitResetResultReset || outcome.Result == claudeauth.LimitResetResultAlreadyUsed {
-		// The provider refilled the seat: lift the hub's own cooldowns on it,
-		// as the Codex reset does (an unauthorized failure is kept), and queue
-		// a fresh usage poll so a limit this kind did not clear is held again
-		// from the provider's own numbers.
-		answer["routing"] = "cooldowns cleared; usage poll queued"
-		if _, _, errReset := h.authManager.ResetQuota(context.WithoutCancel(ctx), auth.ID); errReset != nil {
-			log.WithError(errReset).Warn("Claude reset spent, but the hub's cooldown was not cleared")
-			answer["routing"] = "the hub's cooldown could not be cleared; reset it from the routing controls"
+		// The spend never edits the hub's routing state: which of the seat's
+		// cooldowns the provider's refill lifted is not known here, and a
+		// blanket clear would also lift limits this kind did not refill,
+		// independent failures, or a replacement credential's cooldown. A
+		// usage poll is asked for; the operator lifts the hub's cooldown with
+		// the routing reset when the seat should take traffic again.
+		answer["routing"] = gin.H{
+			"cooldown_changed":     false,
+			"usage_poll_queued":    h.authManager.RequestClaudeQuotaPoll(auth.ID),
+			"cooldown_reset_route": "/v8/management/routing/cooldown/reset",
 		}
-		h.authManager.RequestClaudeQuotaPoll(auth.ID)
 	}
 	after, _, errAfter := readClaudeResetStatus(ctx, client, token, userAgent)
 	if errAfter == nil {

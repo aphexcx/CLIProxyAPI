@@ -921,10 +921,13 @@ func TestClaudeResetSpendReadsConfigurationUnderTheLock(t *testing.T) {
 	<-reloaded
 }
 
-// Codex round 3, class "provider reset not reconciled with routing": a reset
-// the provider confirms lifts the hub's own cooldowns on the seat, as the
-// Codex reset does; an unknown outcome or a refusal leaves them in place.
-func TestClaudeResetSpendLiftsTheHubCooldownOnlyAfterAReset(t *testing.T) {
+// Codex rounds 3 and 4: the spend never edits the hub's routing state. A
+// confirmed reset leaves the seat's cooldowns as they are (clearing them
+// blindly lifted limits the spent kind did not refill, independent model
+// failures and a replacement credential's cooldown), says so, and reports
+// truthfully whether a usage poll was queued. The existing routing reset is
+// the operator's step that lifts the cooldown.
+func TestClaudeResetSpendLeavesTheHubRoutingStateToTheOperator(t *testing.T) {
 	block := func(t *testing.T, f *resetSpendFixture) {
 		t.Helper()
 		next := time.Now().Add(7 * 24 * time.Hour)
@@ -941,34 +944,47 @@ func TestClaudeResetSpendLiftsTheHubCooldownOnlyAfterAReset(t *testing.T) {
 		if _, err := f.h.authManager.Update(context.Background(), auth); err != nil {
 			t.Fatal(err)
 		}
-		if blocked, _ := f.h.authManager.GetByID("fixture"); !blocked.Unavailable || !blocked.Quota.Exceeded {
-			t.Fatalf("precondition: the seat is not blocked: %+v", blocked.Quota)
-		}
 	}
 	blocked := func(f *resetSpendFixture) bool {
 		auth, _ := f.h.authManager.GetByID("fixture")
 		state := auth.ModelStates["claude-fixture-model"]
-		return auth.Unavailable || auth.Quota.Exceeded || !auth.NextRetryAfter.IsZero() || (state != nil && (state.Unavailable || state.Quota.Exceeded))
+		return auth.Unavailable && auth.Quota.Exceeded && !auth.NextRetryAfter.IsZero() && state != nil && state.Unavailable && state.Quota.Exceeded
 	}
-	for name, tc := range map[string]struct {
-		update func(*fakeResetProvider)
-		lifted bool
-	}{
-		"reset":        {func(*fakeResetProvider) {}, true},
-		"already used": {func(p *fakeResetProvider) { p.claimResult = "already_used" }, true},
-		"unknown":      {func(p *fakeResetProvider) { p.claimStatus = http.StatusBadGateway }, false},
-		"refused":      {func(p *fakeResetProvider) { p.claimResult = "cooldown" }, false},
+	for name, update := range map[string]func(*fakeResetProvider){
+		"reset":        func(*fakeResetProvider) {},
+		"already used": func(p *fakeResetProvider) { p.claimResult = "already_used" },
+		"unknown":      func(p *fakeResetProvider) { p.claimStatus = http.StatusBadGateway },
+		"refused":      func(p *fakeResetProvider) { p.claimResult = "cooldown" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newResetSpendFixture(t, resetFixtureGrants()...)
 			block(t, f)
-			f.provider.set(tc.update)
-			if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "weekly"})); code != http.StatusOK {
+			if !blocked(f) {
+				t.Fatal("precondition: the seat is not blocked")
+			}
+			f.provider.set(update)
+			code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "weekly"}))
+			if code != http.StatusOK {
 				t.Fatalf("status=%d answer=%v", code, answer)
 			}
-			if blocked(f) == tc.lifted {
-				auth, _ := f.h.authManager.GetByID("fixture")
-				t.Fatalf("lifted=%v want %v: unavailable=%v quota=%+v", !blocked(f), tc.lifted, auth.Unavailable, auth.Quota)
+			if !blocked(f) {
+				t.Fatal("the spend edited the hub's routing state")
+			}
+			if answer["result"] != "reset" && answer["result"] != "already_used" {
+				return
+			}
+			routing, _ := answer["routing"].(map[string]any)
+			// Quota polling is off in this fixture, so no poll can be queued.
+			if routing["cooldown_changed"] != false || routing["usage_poll_queued"] != false || routing["cooldown_reset_route"] != "/v8/management/routing/cooldown/reset" {
+				t.Fatalf("routing=%v", answer["routing"])
+			}
+			rec := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(rec)
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v8/management/routing/cooldown/reset", strings.NewReader(`{"auth_index":"`+f.index+`"}`))
+			ctx.Request.Header.Set("Content-Type", "application/json")
+			f.h.ResetQuota(ctx)
+			if auth, _ := f.h.authManager.GetByID("fixture"); rec.Code != http.StatusOK || auth.Unavailable || auth.Quota.Exceeded {
+				t.Fatalf("the routing reset did not lift the cooldown: %d %s", rec.Code, rec.Body)
 			}
 		})
 	}
