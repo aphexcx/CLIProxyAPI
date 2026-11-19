@@ -52,7 +52,13 @@ export function resolveCodexChatgptAccountId(file: AuthFileItem): string | null 
     if (id) return id;
   }
 
-  const tokenCandidates = [file.id_token, metadata?.id_token, attributes?.id_token];
+  // codex_claims is the v8 read's name for the decoded claims; v0 still calls them id_token.
+  const tokenCandidates = [
+    file.codex_claims,
+    file.id_token,
+    metadata?.id_token,
+    attributes?.id_token,
+  ];
   for (const candidate of tokenCandidates) {
     const id = extractCodexChatgptAccountId(candidate);
     if (id) return id;
@@ -70,6 +76,7 @@ export function resolveCodexPlanType(file: AuthFileItem): string | null {
     file && typeof file.attributes === 'object' && file.attributes !== null
       ? (file.attributes as Record<string, unknown>)
       : null;
+  const codexClaims = toRecord(file?.codex_claims);
   const idToken =
     file && typeof file.id_token === 'object' && file.id_token !== null
       ? (file.id_token as Record<string, unknown>)
@@ -83,6 +90,8 @@ export function resolveCodexPlanType(file: AuthFileItem): string | null {
     file.planType,
     file['plan_type'],
     file['planType'],
+    codexClaims?.plan_type,
+    codexClaims?.planType,
     file.id_token,
     idToken?.plan_type,
     idToken?.planType,
@@ -117,6 +126,7 @@ const normalizeDateLikeValue = (value: unknown): string | number | null => {
 export function resolveCodexSubscriptionActiveUntil(file: AuthFileItem): string | number | null {
   const metadata = toRecord(file.metadata);
   const attributes = toRecord(file.attributes);
+  const codexClaims = resolveCodexAuthInfo(file.codex_claims);
   const idToken = resolveCodexAuthInfo(file.id_token);
   const metadataIdToken = resolveCodexAuthInfo(metadata?.id_token);
   const attributesIdToken = resolveCodexAuthInfo(attributes?.id_token);
@@ -131,6 +141,8 @@ export function resolveCodexSubscriptionActiveUntil(file: AuthFileItem): string 
     file.subscriptionActiveUntil,
     subscription?.active_until,
     subscription?.activeUntil,
+    codexClaims?.chatgpt_subscription_active_until,
+    codexClaims?.chatgptSubscriptionActiveUntil,
     idToken?.chatgpt_subscription_active_until,
     idToken?.chatgptSubscriptionActiveUntil,
     metadata?.chatgpt_subscription_active_until,

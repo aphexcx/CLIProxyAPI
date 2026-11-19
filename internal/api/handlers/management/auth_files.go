@@ -783,7 +783,14 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 		}
 	}
 	if claims := extractCodexIDTokenClaims(auth); claims != nil {
-		entry["id_token"] = claims
+		if quota.v8 {
+			// Decoded claims, never the token: the page's read names them so that no
+			// field it receives carries a token's name.
+			entry["codex_claims"] = claims
+		} else {
+			// The deprecated v0 route keeps its frozen response shape.
+			entry["id_token"] = claims
+		}
 	}
 	// Expose priority from Attributes (set by synthesizer from JSON "priority" field).
 	// Fall back to Metadata for auths registered via UploadAuthFile (no synthesizer).

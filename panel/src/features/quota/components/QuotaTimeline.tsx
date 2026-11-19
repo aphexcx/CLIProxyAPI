@@ -16,7 +16,8 @@ import { useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { formatRelativeInstant, TYPE_COLORS } from '@/utils/quota';
-import { getQuotaCacheKey, getQuotaDisplayName } from '@/utils/quota/identity';
+import { describeQuotaSeats, getQuotaCacheKey } from '@/utils/quota/identity';
+import type { QuotaSeatLabel } from '@/utils/quota/identity';
 import { useNow } from '@/hooks/useNow';
 import type { ResolvedTheme, ThemeColors } from '@/types';
 import {
@@ -30,6 +31,7 @@ import {
 import type { TimelineLane, TimelineMode } from '../quotaTimelineModel';
 import type { QuotaFileEntry } from '../logic';
 import type { QuotaCardState } from '../providers';
+import { getCodexPlanLabel } from '../providers/codex/planLabel';
 import styles from './QuotaTimeline.module.scss';
 
 const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
@@ -52,7 +54,6 @@ export interface QuotaTimelineProps {
    * off the entry, and lanes see exactly what the cards see.
    */
   quotaFor: (entry: QuotaFileEntry) => QuotaCardState | undefined;
-  displayNameFor: (name: string) => string;
   resolvedTheme: ResolvedTheme;
   /** Injectable for tests/screenshots; defaults to the real clock. */
   now?: number;
@@ -65,7 +66,6 @@ export interface QuotaTimelineProps {
 export function QuotaTimeline({
   entries,
   quotaFor,
-  displayNameFor,
   resolvedTheme,
   now: nowProp,
   initialMode = 'weekly',
@@ -89,41 +89,46 @@ export function QuotaTimeline({
   // successful previous/next navigation look as though the date never changed.
   const navigationLabel = offset === 0 ? todayLabel : formatDay(span.startMs);
 
+  // Rows are named and ordered by account, not by credential file: email, then
+  // organization (Claude) or plan (Codex), with the file name kept below them.
   const laneInputs = useMemo(
     () =>
-      entries.map((entry) => ({
-        name: getQuotaCacheKey(entry.file),
-        displayName:
-          entry.type === 'devin'
-            ? getQuotaDisplayName(entry.file)
-            : displayNameFor(entry.file.name),
-        provider: entry.type,
-        quota: quotaFor(entry),
+      describeQuotaSeats(entries, (planType) => getCodexPlanLabel(t, planType)).map((seat) => ({
+        seat,
+        input: {
+          name: getQuotaCacheKey(seat.item.file),
+          displayName: seat.primary,
+          provider: seat.item.type,
+          quota: quotaFor(seat.item),
+        },
       })),
-    [entries, quotaFor, displayNameFor]
+    [entries, quotaFor, t]
   );
 
   // Keep the timeline hidden until at least one loaded credential exposes a
   // real quota window. Once there is timeline data, however, changing zoom must
   // never remove the whole panel just because that mode has no matching lanes.
   const hasAnyLane = useMemo(
-    () => laneInputs.some((input) => laneHasWindow(buildTimelineLane(input))),
+    () => laneInputs.some(({ input }) => laneHasWindow(buildTimelineLane(input))),
     [laneInputs]
   );
 
   const lanes = useMemo(
     () =>
       laneInputs
-        .map((input) =>
-          buildTimelineLane({
+        .map(({ seat, input }) => ({
+          seat,
+          lane: buildTimelineLane({
             ...input,
             // Weekly mode prefers the longest readable window. Session mode
             // asks specifically for a real 5-hour window; longer periods must
             // not be reinterpreted as 5-hour resets.
             maxPeriodHours: mode === 'session' ? 5 : span.days * 24,
-          })
-        )
-        .filter((lane) => laneHasWindow(lane) && (mode !== 'session' || lane.periodHours === 5)),
+          }),
+        }))
+        .filter(
+          ({ lane }) => laneHasWindow(lane) && (mode !== 'session' || lane.periodHours === 5)
+        ),
     [laneInputs, mode, span.days]
   );
 
@@ -255,10 +260,11 @@ export function QuotaTimeline({
               </div>
             </div>
 
-            {lanes.map((lane) => (
+            {lanes.map(({ seat, lane }) => (
               <Lane
                 key={lane.name}
                 lane={lane}
+                seat={seat}
                 span={span}
                 now={now}
                 mode={mode}
@@ -310,6 +316,8 @@ export function QuotaTimeline({
 
 interface LaneProps {
   lane: TimelineLane;
+  /** The account this row belongs to, in the lines it is named by. */
+  seat: QuotaSeatLabel<QuotaFileEntry>;
   span: { startMs: number; endMs: number; days: number };
   now: number;
   mode: TimelineMode;
@@ -318,7 +326,7 @@ interface LaneProps {
   resolvedTheme: ResolvedTheme;
 }
 
-function Lane({ lane, span, now, mode, cells, nowPercent, resolvedTheme }: LaneProps) {
+function Lane({ lane, seat, span, now, mode, cells, nowPercent, resolvedTheme }: LaneProps) {
   const { t, i18n } = useTranslation();
 
   const windows = useMemo(
@@ -346,14 +354,14 @@ function Lane({ lane, span, now, mode, cells, nowPercent, resolvedTheme }: LaneP
 
   return (
     <div className={styles.lane} style={{ '--provider-accent': color.text } as CSSProperties}>
-      <div className={styles.laneHead}>
+      <div className={styles.laneHead} title={seat.title}>
         <div className={styles.laneTop}>
           <span className={styles.laneDot} />
-          <span className={styles.laneName} title={lane.displayName}>
-            {lane.displayName}
-          </span>
+          <span className={styles.laneName}>{seat.primary}</span>
           {periodLabel && <span className={styles.lanePeriod}>{periodLabel}</span>}
         </div>
+        {seat.secondary && <span className={styles.laneMeta}>{seat.secondary}</span>}
+        {seat.fileName && <span className={styles.laneFile}>{seat.fileName}</span>}
         <div className={styles.laneLimits}>
           {lane.limits.map((limit) => (
             <span key={limit.label} className={styles.laneLimit}>
@@ -400,7 +408,7 @@ function Lane({ lane, span, now, mode, cells, nowPercent, resolvedTheme }: LaneP
                 key={window.startMs}
                 className={`${styles.window} ${styles[`window${capitalize(window.state)}`]}`}
                 style={{ left: `${window.leftPercent}%`, width: `${window.widthPercent}%` }}
-                title={`${lane.displayName}\n${formatDay(window.startMs)} ${formatTime(
+                title={`${seat.title}\n${formatDay(window.startMs)} ${formatTime(
                   window.startMs
                 )} → ${formatDay(window.endMs)} ${formatTime(window.endMs)}${
                   window.remaining !== null ? `\n${window.remaining}% remaining` : ''

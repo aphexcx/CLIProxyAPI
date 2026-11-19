@@ -194,6 +194,25 @@ $lane-width: 210px;
   white-space: nowrap;
 }
 
+// The organization or plan, then the credential file, indented under the name past the dot.
+.laneMeta,
+.laneFile {
+  padding-left: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.laneMeta {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.laneFile {
+  font-size: 10px;
+  color: var(--text-quaternary);
+}
+
 .lanePeriod {
   flex: none;
   padding: 0 6px;

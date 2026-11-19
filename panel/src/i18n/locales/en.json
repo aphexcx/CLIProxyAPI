@@ -1606,7 +1606,7 @@
   },
   "quota_management": {
     "search_label": "Search accounts",
-    "search_placeholder": "Search by filename or email",
+    "search_placeholder": "Search by email, organization or filename",
     "search_empty_title": "No matching accounts",
     "search_empty_desc": "Try another filename or email, or clear the search.",
     "search_clear": "Clear search",
