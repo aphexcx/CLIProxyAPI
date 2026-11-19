@@ -787,6 +787,13 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 			// Decoded claims, never the token: the page's read names them so that no
 			// field it receives carries a token's name.
 			entry["codex_claims"] = claims
+			// A panel released before codex_claims reads these at the top level, so
+			// its Codex quota calls keep their account header and subscription date.
+			for _, key := range []string{"chatgpt_account_id", "plan_type", "chatgpt_subscription_active_until"} {
+				if _, exists := entry[key]; !exists && claims[key] != nil {
+					entry[key] = claims[key]
+				}
+			}
 		} else {
 			// The deprecated v0 route keeps its frozen response shape.
 			entry["id_token"] = claims

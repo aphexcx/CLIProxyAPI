@@ -51,8 +51,9 @@ func secretFixtureCodexIDToken(t *testing.T) string {
 	payload, errMarshal := json.Marshal(map[string]any{
 		"email": "coder@example.test",
 		"https://api.openai.com/auth": map[string]any{
-			"chatgpt_account_id": "acct-example-0001",
-			"chatgpt_plan_type":  "plus",
+			"chatgpt_account_id":                "acct-example-0001",
+			"chatgpt_plan_type":                 "plus",
+			"chatgpt_subscription_active_until": "2099-01-01T00:00:00Z",
 		},
 	})
 	if errMarshal != nil {
@@ -61,7 +62,9 @@ func secretFixtureCodexIDToken(t *testing.T) string {
 	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + "."
 }
 
-func newSecretFieldsFixtureHandler(t *testing.T, idToken string) *Handler {
+// newSecretFieldsFixtureHandler lists one Claude and one Codex OAuth seat. Without
+// codexPlanInMetadata the Codex seat's plan lives only in its ID token's claims.
+func newSecretFieldsFixtureHandler(t *testing.T, idToken string, codexPlanInMetadata bool) *Handler {
 	t.Helper()
 	authDir := t.TempDir()
 	cfg := &config.Config{AuthDir: authDir}
@@ -103,6 +106,9 @@ func newSecretFieldsFixtureHandler(t *testing.T, idToken string) *Handler {
 				"expired":       expiry,
 			},
 		},
+	}
+	if !codexPlanInMetadata {
+		delete(seats[1].Metadata, "plan_type")
 	}
 	for _, seat := range seats {
 		for key, value := range secretFixtureExtras {
@@ -182,7 +188,7 @@ func TestListAuthFilesNeverSendsSecretFields(t *testing.T) {
 		{name: "v0", path: "/v0/management/auth-files", v8: false},
 	} {
 		t.Run(route.name, func(t *testing.T) {
-			h := newSecretFieldsFixtureHandler(t, idToken)
+			h := newSecretFieldsFixtureHandler(t, idToken, true)
 			body, files := listAuthFilesForSecretCheck(t, h, route.path, route.v8)
 
 			secrets := []string{
@@ -224,4 +230,32 @@ func TestListAuthFilesNeverSendsSecretFields(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A panel released before codex_claims existed reads the account id, plan and
+// subscription end at the top level of a v8 entry (it read them from id_token too).
+// Until every hub serves a newer panel, the v8 read keeps them there, or that
+// panel's Codex quota calls lose their account header.
+func TestListAuthFilesV8KeepsCodexClaimsReadableByReleasedPanels(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	// Only the claims carry the plan, as for a credential stored without plan_type.
+	h := newSecretFieldsFixtureHandler(t, secretFixtureCodexIDToken(t), false)
+	_, files := listAuthFilesForSecretCheck(t, h, "/v8/management/credentials", true)
+
+	for _, file := range files {
+		if file["type"] != "codex" {
+			continue
+		}
+		for key, want := range map[string]any{
+			"chatgpt_account_id":                "acct-example-0001",
+			"plan_type":                         "plus",
+			"chatgpt_subscription_active_until": "2099-01-01T00:00:00Z",
+		} {
+			if got := file[key]; got != want {
+				t.Errorf("%s = %#v, want %#v", key, got, want)
+			}
+		}
+		return
+	}
+	t.Fatal("no Codex entry in the list")
 }
