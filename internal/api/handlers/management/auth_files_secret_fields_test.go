@@ -36,6 +36,15 @@ const (
 	secretFixtureCodexRefresh  = "codex-fixture-refresh-0001"
 )
 
+// secretFixtureExtras are secret-shaped metadata a stored credential can carry
+// besides its tokens; each seat stores them and none may reach the list.
+var secretFixtureExtras = map[string]any{
+	"api_key":  "fixture-api-key-0001",
+	"secret":   "fixture-client-secret-0001",
+	"cookie":   "fixture-session-cookie-0001",
+	"password": "fixture-password-0001",
+}
+
 func secretFixtureCodexIDToken(t *testing.T) string {
 	t.Helper()
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
@@ -96,6 +105,9 @@ func newSecretFieldsFixtureHandler(t *testing.T, idToken string) *Handler {
 		},
 	}
 	for _, seat := range seats {
+		for key, value := range secretFixtureExtras {
+			seat.Metadata[key] = value
+		}
 		path := filepath.Join(authDir, seat.FileName)
 		raw, errMarshal := json.Marshal(seat.Metadata)
 		if errMarshal != nil {
@@ -173,13 +185,17 @@ func TestListAuthFilesNeverSendsSecretFields(t *testing.T) {
 			h := newSecretFieldsFixtureHandler(t, idToken)
 			body, files := listAuthFilesForSecretCheck(t, h, route.path, route.v8)
 
-			for _, secret := range []string{
+			secrets := []string{
 				secretFixtureClaudeAccess,
 				secretFixtureClaudeRefresh,
 				secretFixtureCodexAccess,
 				secretFixtureCodexRefresh,
 				idToken,
-			} {
+			}
+			for _, extra := range secretFixtureExtras {
+				secrets = append(secrets, extra.(string))
+			}
+			for _, secret := range secrets {
 				if strings.Contains(body, secret) {
 					t.Errorf("response carries a fixture secret value %q", secret)
 				}

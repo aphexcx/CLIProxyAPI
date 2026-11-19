@@ -19,7 +19,7 @@ import { formatRelativeInstant, TYPE_COLORS } from '@/utils/quota';
 import { describeQuotaSeats, getQuotaCacheKey } from '@/utils/quota/identity';
 import type { QuotaSeatLabel } from '@/utils/quota/identity';
 import { useNow } from '@/hooks/useNow';
-import type { ResolvedTheme, ThemeColors } from '@/types';
+import type { CodexQuotaState, ResolvedTheme, ThemeColors } from '@/types';
 import {
   buildTimelineLane,
   laneHasWindow,
@@ -91,9 +91,15 @@ export function QuotaTimeline({
 
   // Rows are named and ordered by account, not by credential file: email, then
   // organization (Claude) or plan (Codex), with the file name kept below them.
+  // A Codex plan prefers the live quota's, as the seat card's chip does.
   const laneInputs = useMemo(
     () =>
-      describeQuotaSeats(entries, (planType) => getCodexPlanLabel(t, planType)).map((seat) => ({
+      describeQuotaSeats(entries, (entry, filePlanType) =>
+        getCodexPlanLabel(
+          t,
+          (quotaFor(entry) as CodexQuotaState | undefined)?.planType ?? filePlanType
+        )
+      ).map((seat) => ({
         seat,
         input: {
           name: getQuotaCacheKey(seat.item.file),

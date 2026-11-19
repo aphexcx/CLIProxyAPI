@@ -4,6 +4,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import i18n from '../src/i18n/index';
 import { QuotaTimeline } from '../src/features/quota/components/QuotaTimeline';
 import { filterEntriesBySearch, type QuotaFileEntry } from '../src/features/quota/logic';
+import { getCodexPlanLabel } from '../src/features/quota/providers/codex/planLabel';
+import { describeQuotaSeats, getQuotaSeatIdentity } from '../src/utils/quota/identity';
 import {
   resolveCodexChatgptAccountId,
   resolveCodexPlanType,
@@ -130,6 +132,80 @@ describe('quota windows table seat identity', () => {
       { file: { name: 'claude-legacy.json', type: 'claude' }, type: 'claude' },
     ]);
     expect(rowNames(noEmail)).toEqual([['claude-legacy.json', '7d']]);
+  });
+});
+
+describe('describeQuotaSeats', () => {
+  const plan = (_item: unknown, planType: string | null) => planType;
+  const lines = (items: QuotaFileEntry[]) =>
+    describeQuotaSeats(items, plan).map(({ primary, secondary, fileName }) => [
+      primary,
+      secondary,
+      fileName,
+    ]);
+
+  test('sorts seats without an email after every seat with one', () => {
+    const legacy: QuotaFileEntry = {
+      file: { name: 'aaa-legacy.json', type: 'claude' },
+      type: 'claude',
+    };
+    expect(lines([legacy, claudeBeta, codex]).map((row) => row[0])).toEqual([
+      'coder@example.test',
+      'shared@example.test',
+      'aaa-legacy.json',
+    ]);
+  });
+
+  test('tells two Codex seats with one email and one plan apart by short id', () => {
+    const twin: QuotaFileEntry = {
+      file: { ...codex.file, name: 'codex-0a0b0c0d-coder@example.test-plus.json' },
+      type: 'codex',
+    };
+    expect(lines([codex, twin]).map((row) => row[1])).toEqual([
+      'plus · 0a0b0c0d',
+      'plus · 9c0d1e2f',
+    ]);
+  });
+
+  test('keeps the auth index that tells Devin identities in one file apart', () => {
+    const devin = (authIndex: number, email?: string): QuotaFileEntry => ({
+      file: { name: 'shared.json', provider: 'devin', authIndex, email },
+      type: 'devin',
+    });
+    // Without an email a Devin seat keeps the label it always had, and no third line.
+    expect(lines([devin(42), devin(41)])).toEqual([
+      ['shared.json · 41', null, null],
+      ['shared.json · 42', null, null],
+    ]);
+    // With one shared email, the auth index still tells them apart.
+    expect(
+      lines([devin(41, 'team@example.test'), devin(42, 'team@example.test')]).map((row) => row[1])
+    ).toEqual(['shared #41', 'shared #42']);
+  });
+
+  test('reads an organization from Claude seats only', () => {
+    expect(getQuotaSeatIdentity(claudeAlpha.file).organization).toBe('Org Alpha');
+    expect(
+      getQuotaSeatIdentity({ ...codex.file, organization_name: 'Org Codex' }).organization
+    ).toBe('');
+  });
+});
+
+describe('quota windows table Codex plan', () => {
+  beforeAll(async () => {
+    await i18n.changeLanguage('en');
+  });
+
+  test('prefers the live quota plan, as the seat card does', () => {
+    const markup = renderToStaticMarkup(
+      createElement(QuotaTimeline, {
+        entries: [codex],
+        quotaFor: () => ({ ...weeklyQuota, planType: 'team' }),
+        resolvedTheme: 'light',
+        now: new Date(2026, 6, 29, 12).getTime(),
+      })
+    );
+    expect(rowNames(markup)[0][2]).toBe(getCodexPlanLabel(i18n.t, 'team'));
   });
 });
 

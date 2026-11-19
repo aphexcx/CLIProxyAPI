@@ -1,7 +1,7 @@
 import type { AuthFileItem } from '@/types';
 import { normalizeRecentRequestAuthIndex } from '@/utils/recentRequests';
 import { resolveCodexPlanType } from './resolvers';
-import { isDevinFile, isPluginQuotaFile } from './validators';
+import { isDevinFile, isPluginQuotaFile, resolveAuthProvider } from './validators';
 
 const QUOTA_IDENTITY_SEPARATOR = '\0';
 
@@ -36,6 +36,8 @@ const readSeatText = (value: unknown): string => (typeof value === 'string' ? va
  * account/account_type (API-key credentials can carry the key there).
  */
 export interface QuotaSeatIdentity {
+  /** Normalized provider ("claude", "codex", ...), as the quota tabs classify it. */
+  provider: string;
   /** Account email; empty when the credential carries none. */
   email: string;
   /** Claude organization name; empty for other providers or when unknown. */
@@ -49,8 +51,9 @@ export interface QuotaSeatIdentity {
 }
 
 export function getQuotaSeatIdentity(file: AuthFileItem): QuotaSeatIdentity {
-  const provider = (readSeatText(file.type) || readSeatText(file.provider)).toLowerCase();
+  const provider = resolveAuthProvider(file);
   return {
+    provider,
     email: readSeatText(file.email),
     organization: provider === 'claude' ? readSeatText(file.organization_name) : '',
     planType: provider === 'codex' ? resolveCodexPlanType(file) : null,
@@ -75,10 +78,18 @@ function compareQuotaSeatIdentity(a: QuotaSeatIdentity, b: QuotaSeatIdentity): n
   return 0;
 }
 
-/** The hash a hashed credential file carries after its provider ("claude-1a2b3c4d-..."). */
-function getQuotaSeatShortId(fileName: string): string {
+/**
+ * What tells a seat from its twin: the hash a hashed credential file carries after
+ * its provider ("claude-1a2b3c4d-..."), else the file's name, plus the auth index
+ * for Devin and plugin seats, whose one file can hold several identities.
+ */
+function getQuotaSeatShortId(file: AuthFileItem): string {
+  const fileName = readSeatText(file.name);
   const match = /^[a-z]*-([0-9a-f]{6,})-/i.exec(fileName);
-  return match ? match[1] : fileName.replace(/\.json$/i, '');
+  const shortId = match ? match[1] : fileName.replace(/\.json$/i, '');
+  if (!isDevinFile(file) && !isPluginQuotaFile(file)) return shortId;
+  const authIndex = normalizeRecentRequestAuthIndex(file.authIndex);
+  return authIndex ? `${shortId} #${authIndex}` : shortId;
 }
 
 /** The lines a seat is named by, first to last; a null line is not shown. */
@@ -96,12 +107,15 @@ export interface QuotaSeatLabel<T> {
 
 /**
  * Name and order seats for one view. Two seats with one email in two organizations
- * already differ by their second line; two that would read the same add the file's
+ * already differ by their second line; two that would read the same add their
  * short id, so no two rows ever read as one seat.
+ *
+ * planLabelFor names a Codex seat's plan; it gets the file's plan and may prefer a
+ * fresher one (the card's live quota), so the table and the card say the same.
  */
 export function describeQuotaSeats<T extends { file: AuthFileItem }>(
   items: readonly T[],
-  formatPlan: (planType: string) => string | null
+  planLabelFor: (item: T, filePlanType: string | null) => string | null
 ): QuotaSeatLabel<T>[] {
   const seats = items
     .map((item) => ({ item, identity: getQuotaSeatIdentity(item.file) }))
@@ -109,9 +123,10 @@ export function describeQuotaSeats<T extends { file: AuthFileItem }>(
 
   const rows = seats.map(({ item, identity }) => {
     const primary = identity.email || identity.fallbackName;
-    const detail =
-      identity.organization || (identity.planType ? formatPlan(identity.planType) : null) || '';
-    return { item, identity, primary, detail, readsAs: `${primary.toLowerCase()}\n${detail}` };
+    const plan = identity.provider === 'codex' ? planLabelFor(item, identity.planType) : null;
+    const detail = identity.organization || plan || '';
+    const readsAs = `${primary}\n${detail}`.toLowerCase();
+    return { item, identity, primary, detail, readsAs };
   });
   const readers = new Map<string, number>();
   for (const row of rows) readers.set(row.readsAs, (readers.get(row.readsAs) ?? 0) + 1);
@@ -119,9 +134,8 @@ export function describeQuotaSeats<T extends { file: AuthFileItem }>(
   return rows.map(({ item, identity, primary, detail, readsAs }) => {
     const ambiguous = (readers.get(readsAs) ?? 0) > 1;
     const secondary =
-      (ambiguous
-        ? [detail, getQuotaSeatShortId(identity.fileName)].filter(Boolean).join(' · ')
-        : detail) || null;
+      (ambiguous ? [detail, getQuotaSeatShortId(item.file)].filter(Boolean).join(' · ') : detail) ||
+      null;
     const fileName = identity.email && identity.fileName ? identity.fileName : null;
     return {
       item,
