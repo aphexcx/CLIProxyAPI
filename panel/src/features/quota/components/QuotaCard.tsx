@@ -20,7 +20,7 @@ import {
   resolvePlanTier,
   resolveQuotaErrorMessage,
 } from '@/utils/quota';
-import { getQuotaDisplayName } from '@/utils/quota/identity';
+import { getQuotaDisplayName, getQuotaSeatIdentity } from '@/utils/quota/identity';
 import { MINUTE_MS } from '@/utils/time/durations';
 import {
   getAuthFileIcon,
@@ -205,10 +205,8 @@ export function QuotaCard(props: QuotaCardProps) {
 
   if (seatType) {
     const identity = deriveAuthFileIdentity(file);
-    const organization =
-      entry.type === 'claude' && typeof file.organization_name === 'string'
-        ? file.organization_name.trim()
-        : '';
+    // The quota windows table names a seat by the same helper.
+    const organization = entry.type === 'claude' ? getQuotaSeatIdentity(file).organization : '';
     let planChip: ReactNode = null;
     if (entry.type === 'claude') {
       // Only the hub's recorded tier: the panel's own profile read infers "Free" for

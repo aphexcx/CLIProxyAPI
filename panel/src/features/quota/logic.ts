@@ -1,9 +1,10 @@
 /**
- * 额度页纯逻辑：文件归类、tab 过滤、计数、分页。
- * React-free —— 由 tests/quotaPageLogic.test.ts 直接消费。
+ * Quota page pure logic: file classification, tab filtering, counts, pagination.
+ * React-free: consumed directly by tests/quotaPageLogic.test.ts.
  */
 
 import type { AuthFileItem } from '@/types';
+import { getQuotaSeatIdentity } from '@/utils/quota/identity';
 import { ANTIGRAVITY_CONFIG } from './providers/antigravity/data';
 import { CLAUDE_CONFIG } from './providers/claude/data';
 import { CODEX_CONFIG } from './providers/codex/data';
@@ -50,8 +51,9 @@ export const resolveQuotaProviderType = (file: AuthFileItem): QuotaProviderType 
     : (QUOTA_TAB_ORDER.find((type) => QUOTA_FILTER_MAP[type](file)) ?? null);
 
 /**
- * 把文件列表归类为额度条目：不支持额度或已停用的文件被过滤，
- * 结果按 QUOTA_TAB_ORDER 分组排列（'全部' tab 的卡片顺序即由此决定）。
+ * Classify files into quota entries: files without quota support or disabled ones
+ * are dropped, and the result is grouped in QUOTA_TAB_ORDER (this sets the card
+ * order of the "All" tab).
  */
 export function classifyQuotaFiles(files: AuthFileItem[]): QuotaFileEntry[] {
   const groups = new Map<QuotaProviderType, QuotaFileEntry[]>(
@@ -70,15 +72,19 @@ export function filterEntriesByTab(entries: QuotaFileEntry[], tab: QuotaTabId): 
   return entries.filter((entry) => entry.type === tab);
 }
 
-/** Search public account identifiers only; account may contain an API key. */
+/**
+ * Search the names a seat is shown by (email, organization, file name) and no
+ * other field: account may contain an API key.
+ */
 export function filterEntriesBySearch(entries: QuotaFileEntry[], search: string): QuotaFileEntry[] {
   const query = search.trim().toLowerCase();
   if (!query) return entries;
-  return entries.filter(({ file }) =>
-    [file.name, file.email].some(
-      (value) => typeof value === 'string' && value.toLowerCase().includes(query)
-    )
-  );
+  return entries.filter(({ file }) => {
+    const seat = getQuotaSeatIdentity(file);
+    return [seat.email, seat.organization, seat.fileName].some((value) =>
+      value.toLowerCase().includes(query)
+    );
+  });
 }
 
 /**
@@ -139,7 +145,7 @@ export interface QuotaPagination<T> {
   totalPages: number;
 }
 
-/** 页码越界时收敛到有效区间（列表缩短后停留在最后一页而不是空页）。 */
+/** Clamp an out-of-range page (a shortened list stays on its last page, not an empty one). */
 export function paginate<T>(items: T[], page: number, pageSize: number): QuotaPagination<T> {
   const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
   const currentPage = Math.min(Math.max(1, page), totalPages);

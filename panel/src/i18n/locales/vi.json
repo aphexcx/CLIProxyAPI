@@ -1602,9 +1602,9 @@
     "weekday_fri": "T6",
     "weekday_sat": "T7",
     "search_label": "Tìm kiếm tài khoản",
-    "search_placeholder": "Tìm theo tên file hoặc email",
+    "search_placeholder": "Tìm theo email, tổ chức hoặc tên file",
     "search_empty_title": "Không có tài khoản phù hợp",
-    "search_empty_desc": "Hãy thử tên file hoặc email khác, hoặc xóa tìm kiếm.",
+    "search_empty_desc": "Hãy thử email, tổ chức hoặc tên file khác, hoặc xóa tìm kiếm.",
     "search_clear": "Xóa tìm kiếm"
   },
   "plugin_management": {
