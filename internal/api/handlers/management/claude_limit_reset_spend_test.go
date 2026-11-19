@@ -2509,6 +2509,9 @@ func TestClaudeResetSpendR2ReplayAndRefusalSayWhatTheLedgerHolds(t *testing.T) {
 		if _, retried := f.spendKeyed(t, "round2-retry", retryBody); retried["result"] != "unknown" || retried["retry_until"] != retryUntil {
 			t.Fatalf("an unresolved retry: %v", retried)
 		}
+		if code, replay := f.spendKeyed(t, "round2-retry", retryBody); code != http.StatusOK || replay["replayed"] != true || replay["retry_until"] != retryUntil {
+			t.Fatalf("the unresolved retry replayed without its first send's deadline: status=%d answer=%v", code, replay)
+		}
 		// A dispatch refusal: the sent line becomes durable at the dispatch limit.
 		other := f.seatIndex(t, "other")
 		f.jumpWhenSentIsDurable(claudeResetDispatchLimit)
@@ -2583,4 +2586,72 @@ func TestClaudeResetSpendR2ListingReadsTheLedgerOnlyWhenAsked(t *testing.T) {
 	if last, err := history.seat(f.index); err != nil || last != nil {
 		t.Fatalf("last=%v err=%v", last, err)
 	}
+}
+
+// Round 2, own review: the clock, the dispatch and the lock file.
+func TestClaudeResetSpendR2OwnReviewFindings(t *testing.T) {
+	// MAJOR 1: after the clock steps back, a sent line is never stamped
+	// ahead of it, and a retry judged on a clock behind its claim's stamp
+	// sends nothing, in the running hub and after a restart.
+	t.Run("a clock stepped back stretches no window", func(t *testing.T) {
+		f := newResetSpendFixture(t, round2Grants()...)
+		f.clock.advance(2 * time.Hour)
+		f.provider.set(func(p *fakeResetProvider) { p.claimStatus = http.StatusBadGateway })
+		_, first := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
+		requestID, _ := first["request_id"].(string)
+		if first["result"] != "unknown" {
+			t.Fatalf("setup: %v", first)
+		}
+		f.provider.set(func(p *fakeResetProvider) { p.claimStatus = 0 })
+		f.clock.advance(-2 * time.Hour)
+		for _, restart := range []bool{false, true} {
+			if restart {
+				f.restart()
+			}
+			if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.seatIndex(t, "other"), "kind": "weekly"})); code != http.StatusServiceUnavailable || !strings.Contains(fmt.Sprint(answer["error"]), "clock") {
+				t.Fatalf("restart=%v, a first claim on a clock behind the ledger: status=%d answer=%v", restart, code, answer)
+			}
+			if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable", "retry_request_id": requestID})); code != http.StatusConflict || !strings.Contains(fmt.Sprint(answer["error"]), "clock") {
+				t.Fatalf("restart=%v, a retry on a clock behind its claim: status=%d answer=%v", restart, code, answer)
+			}
+		}
+		if _, _, claims := f.provider.counts(); len(claims) != 1 {
+			t.Fatalf("claims=%d", len(claims))
+		}
+	})
+	// MINOR 2: a ledger that stops being trusted between the sent line and
+	// the dispatch sends nothing.
+	t.Run("a ledger refused before the dispatch sends nothing", func(t *testing.T) {
+		f := newResetSpendFixture(t, round2Grants()...)
+		path := filepath.Join(f.logDir, claudeResetSpendLedgerName)
+		var removed atomic.Bool
+		f.h.claudeResetSpends.now = func() time.Time {
+			if raw, err := os.ReadFile(path); err == nil && strings.Contains(string(raw), `"phase":"sent"`) && removed.CompareAndSwap(false, true) {
+				if errRemove := os.Remove(path); errRemove != nil {
+					t.Error(errRemove)
+				}
+			}
+			return f.clock.now()
+		}
+		code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
+		if _, _, claims := f.provider.counts(); len(claims) != 0 || code != http.StatusServiceUnavailable || answer["reason"] != claudeResetAbortLedgerRefused {
+			t.Fatalf("claims=%d status=%d answer=%v", len(claims), code, answer)
+		}
+	})
+	// MINOR 3: a lock file removed or replaced under a running hub refuses
+	// every spend, since another process could lock a new one.
+	t.Run("a lock file replaced under a running hub", func(t *testing.T) {
+		f := newResetSpendFixture(t, round2Grants()...)
+		if code, first := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"})); code != http.StatusOK {
+			t.Fatalf("setup: status=%d answer=%v", code, first)
+		}
+		lockPath := filepath.Join(f.logDir, claudeResetLedgerLockName)
+		if err := errors.Join(os.Remove(lockPath), os.WriteFile(lockPath, nil, 0o600)); err != nil {
+			t.Fatal(err)
+		}
+		code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.seatIndex(t, "other"), "kind": "weekly"}))
+		if _, _, claims := f.provider.counts(); len(claims) != 1 || code != http.StatusServiceUnavailable || answer["ledger_refusal"] != claudeResetRefusalChanged {
+			t.Fatalf("claims=%d status=%d answer=%v", len(claims), code, answer)
+		}
+	})
 }

@@ -51,6 +51,12 @@ const (
 	// not sent, so its hold and retry window never start long before it
 	// leaves, in the running hub or after a restart.
 	claudeResetDispatchLimit = 5 * time.Second
+	// claudeResetClockTolerance is how far the clock may read behind a stamp
+	// the ledger holds before the hub stops trusting it to judge a window: a
+	// sent line is never stamped ahead of the clock by more than this, and a
+	// retry or dispatch judged on a clock behind its claim's stamp sends
+	// nothing.
+	claudeResetClockTolerance = time.Second
 	// claudeResetIdempotencyHeader names the caller's key for one spend: the
 	// same key delivered again returns the recorded outcome and sends nothing.
 	claudeResetIdempotencyHeader = "Idempotency-Key"
@@ -73,6 +79,8 @@ const (
 	claudeResetAbortGrantExpired   = "grant_expired_at_dispatch"
 	claudeResetAbortRetryWindow    = "retry_window_passed_at_dispatch"
 	claudeResetAbortLedgerStall    = "ledger_write_stalled_at_dispatch"
+	claudeResetAbortClockBehind    = "clock_behind_the_claim_at_dispatch"
+	claudeResetAbortLedgerRefused  = "ledger_refused_at_dispatch"
 	claudeResetLedgerErrorText     = "the outcome is not in the spend ledger: the ledger refuses every spend until the hub restarts, the seat stays held, and no retry of this claim is accepted"
 	claudeResetBalanceErrorText    = "what is left after the claim is not in the spend ledger, which refuses every spend until the hub restarts"
 	claudeResetCredentialRefusal   = "only an enabled OAuth Claude seat can spend a banked reset"
@@ -573,7 +581,9 @@ func (j *claudeResetJournal) loadLocked() *claudeResetLedgerRefusal {
 	if errSentinel != nil {
 		return j.refuseLocked(claudeResetRefusalUnreadable, 0, "its sentinel cannot be read: "+errSentinel.Error(), claudeResetCureRestore)
 	}
-	file, errOpen := os.OpenFile(j.ledgerPath(), os.O_RDWR|os.O_APPEND, 0)
+	// Not O_APPEND: a record is written at the ledger's known length, and a
+	// failed one can be cut back off on every platform.
+	file, errOpen := os.OpenFile(j.ledgerPath(), os.O_RDWR, 0)
 	if errOpen != nil {
 		if !os.IsNotExist(errOpen) {
 			return j.refuseLocked(claudeResetRefusalUnreadable, 0, "it cannot be opened: "+errOpen.Error(), claudeResetCureRestart)
@@ -647,6 +657,15 @@ func (j *claudeResetJournal) verifyLocked() *claudeResetLedgerRefusal {
 	changed := func(problem string) *claudeResetLedgerRefusal {
 		return j.refuseLocked(claudeResetRefusalChanged, 0, problem, claudeResetCureRestart)
 	}
+	// The lock holds only while its file is the one at the lock path: another
+	// process could lock a new file put there.
+	lockOnDisk, errLockStat := os.Lstat(filepath.Join(j.dir, claudeResetLedgerLockName))
+	if j.lock == nil || errLockStat != nil {
+		return changed("the ledger directory's lock file was removed or is not held")
+	}
+	if lockHeld, errLockHeld := j.lock.Stat(); errLockHeld != nil || !os.SameFile(lockOnDisk, lockHeld) {
+		return changed("the ledger directory's lock file was replaced")
+	}
 	onDisk, errStat := os.Lstat(j.ledgerPath())
 	if j.file == nil {
 		if !os.IsNotExist(errStat) {
@@ -682,15 +701,26 @@ func (j *claudeResetJournal) verifyLocked() *claudeResetLedgerRefusal {
 	return nil
 }
 
+// errClaudeResetClockBehind refuses one spend, not the journal: the clock
+// reads earlier than the ledger's newest stamp, so a hold or retry window
+// stamped now would run longer than the time it means.
+var errClaudeResetClockBehind = errors.New("the hub's clock reads earlier than the newest record in the spend ledger; was it stepped back?")
+
 // stampLocked is the time of a record about to be written: the clock without
-// its monotonic reading, so a stamp means the same in memory and on disk, and
-// never before the newest stamp, so the ledger's times only go forward.
-func (j *claudeResetJournal) stampLocked(clock func() time.Time) time.Time {
+// its monotonic reading, so a stamp means the same in memory and on disk. The
+// ledger's times only go forward: a line after a clock step back is stamped
+// with the newest stamp, except a sent line, which starts a hold and a retry
+// window and so is never stamped ahead of the clock by more than the
+// tolerance; that spend is refused instead.
+func (j *claudeResetJournal) stampLocked(record claudeResetSpendRecord, clock func() time.Time) (time.Time, error) {
 	at := clock().Round(0)
-	if at.Before(j.lastAt) {
-		return j.lastAt
+	if !at.Before(j.lastAt) {
+		return at, nil
 	}
-	return at
+	if record.Phase == claudeResetPhaseSent && j.lastAt.Sub(at) > claudeResetClockTolerance {
+		return time.Time{}, errClaudeResetClockBehind
+	}
+	return j.lastAt, nil
 }
 
 // appendLocked stamps one record, checks it and makes it durable: the line
@@ -702,7 +732,11 @@ func (j *claudeResetJournal) appendLocked(record *claudeResetSpendRecord, clock 
 	if refusal := j.verifyLocked(); refusal != nil {
 		return refusal
 	}
-	record.At = j.stampLocked(clock)
+	at, errClock := j.stampLocked(*record, clock)
+	if errClock != nil {
+		return errClock
+	}
+	record.At = at
 	if errCheck := j.checkLocked(*record); errCheck != nil {
 		return errCheck
 	}
@@ -725,13 +759,13 @@ func (j *claudeResetJournal) appendLocked(record *claudeResetSpendRecord, clock 
 // only where none was loaded and none exists now.
 func (j *claudeResetJournal) writeLocked(line []byte, length int64) error {
 	if j.file == nil {
-		file, errCreate := os.OpenFile(j.ledgerPath(), os.O_CREATE|os.O_EXCL|os.O_RDWR|os.O_APPEND, 0o600)
+		file, errCreate := os.OpenFile(j.ledgerPath(), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 		if errCreate != nil {
 			return errCreate
 		}
 		j.file = file
 	}
-	if _, errWrite := j.file.Write(line); errWrite != nil {
+	if _, errWrite := j.file.WriteAt(line, j.size); errWrite != nil {
 		return errWrite
 	}
 	if errSync := claudeResetSyncFile(j.file); errSync != nil {
@@ -945,6 +979,8 @@ func (j *claudeResetJournal) begin(operation string, request claudeResetSpendReq
 		return claudeResetRefuse(http.StatusConflict, "no claim with an unknown outcome has this request id inside its ten-minute retry window; nothing spent")
 	case open != nil && j.claims[open.requestID].Phase != claudeResetPhaseAnswered:
 		return claudeResetRefuse(http.StatusConflict, "the claim was sent and its answer is not in the spend ledger, so the provider may have answered it: no retry is accepted; check the account's usage page; nothing spent")
+	case open != nil && open.sentAt.Sub(now) > claudeResetClockTolerance:
+		return claudeResetRefuse(http.StatusConflict, "the hub's clock reads earlier than the claim's record, so its retry window cannot be judged: no retry is accepted until the clock passes it; nothing spent")
 	}
 	j.busy[seat], j.keysInFlight[operation] = true, true
 	if open == nil {
@@ -956,10 +992,25 @@ func (j *claudeResetJournal) begin(operation string, request claudeResetSpendReq
 
 // claudeResetNotSentStatus is the status a claim not sent was answered with.
 func claudeResetNotSentStatus(reason string) int {
-	if reason == claudeResetAbortTransport {
+	switch reason {
+	case claudeResetAbortTransport:
 		return http.StatusBadGateway
+	case claudeResetAbortLedgerRefused:
+		return http.StatusServiceUnavailable
 	}
 	return http.StatusConflict
+}
+
+// dispatchable checks the ledger again right before a claim leaves: a
+// journal that has started refusing, or a ledger that is no longer the file
+// it wrote, sends nothing.
+func (j *claudeResetJournal) dispatchable() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if refusal := j.verifyLocked(); refusal != nil {
+		return refusal
+	}
+	return nil
 }
 
 // replayLocked answers a key delivered again with what the ledger holds: the
@@ -1225,6 +1276,8 @@ func (h *Handler) claudeResetDispatchAbort(auth *coreauth.Auth, grant coreauth.C
 		return claudeResetAbortRetryWindow
 	case at.Sub(sentAt) >= claudeResetDispatchLimit:
 		return claudeResetAbortLedgerStall
+	case sentAt.Sub(at) > claudeResetClockTolerance || firstSentAt.Sub(at) > claudeResetClockTolerance:
+		return claudeResetAbortClockBehind
 	}
 	return ""
 }
@@ -1387,6 +1440,10 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 	}
 	if abort := h.claudeResetDispatchAbort(auth, grant, sentAt, firstSentAt, ledger.clock()); abort != "" {
 		notSent(abort, "the claim was judged again after its record was written and not sent")
+		return
+	}
+	if errLedger := journal.dispatchable(); errLedger != nil {
+		notSent(claudeResetAbortLedgerRefused, "the spend ledger stopped being trusted before the claim left, so it was not sent")
 		return
 	}
 	claim := resetclaim.Claim{OrganizationUUID: organization, GrantID: grant.ID, RequestID: requestID}
