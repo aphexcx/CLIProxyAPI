@@ -34,6 +34,18 @@ func TestClaudeLimitResetSpendRouteRequiresManagementKey(t *testing.T) {
 		return rec
 	}
 	const route = "/v8/management/claude/limit-resets/spend"
+	spendRoutes := 0
+	for _, info := range s.engine.Routes() {
+		if strings.Contains(info.Handler, "SpendClaudeLimitReset") {
+			spendRoutes++
+			if info.Method != http.MethodPost || info.Path != route {
+				t.Fatalf("spend handler registered as %s %s", info.Method, info.Path)
+			}
+		}
+	}
+	if spendRoutes != 1 {
+		t.Fatalf("spend handler registered %d times", spendRoutes)
+	}
 	for _, key := range []string{"", "wrong-key"} {
 		if rec := send(route, key); rec.Code != http.StatusUnauthorized {
 			t.Fatalf("key %q: status=%d body=%s", key, rec.Code, rec.Body)

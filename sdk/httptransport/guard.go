@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/resetclaim"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -76,8 +77,8 @@ func deniedRequest(req *http.Request) bool {
 }
 
 func (t *guardedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// The one exception (guard_claim.go) is spent here, by the actual send.
-	if deniedRequest(req) && !bankedResetClaimPermitted(req, true) {
+	// The one exception (internal/resetclaim) is spent here, by the actual send.
+	if deniedRequest(req) && !resetclaim.ClaimPermitted(req, true) {
 		return nil, ErrResetRateLimitsDenied
 	}
 	return t.base.RoundTrip(req)
@@ -118,7 +119,7 @@ type Doer interface {
 // receive the same guarded transport, including every redirect. Adapter calls
 // are checked here too; their own outbound sends must use this boundary.
 func Do(client Doer, req *http.Request) (*http.Response, error) {
-	if deniedRequest(req) && !bankedResetClaimPermitted(req, false) {
+	if deniedRequest(req) && !resetclaim.ClaimPermitted(req, false) {
 		return nil, ErrResetRateLimitsDenied
 	}
 	if client == nil {

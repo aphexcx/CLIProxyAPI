@@ -24,10 +24,14 @@ import (
 // provider, holds a real token or spends a real reset: the HTTP client dials
 // only the local TLS server that stands in for api.anthropic.com.
 const (
-	resetFixtureOrganization = "00000000-0000-4000-8000-0000000000aa"
-	resetFixtureToken        = "fixture-access-token"
-	resetFixtureClaimPath    = "/api/organizations/" + resetFixtureOrganization + "/reset_rate_limits"
+	resetFixtureOrganization      = "00000000-0000-4000-8000-0000000000aa"
+	resetFixtureToken             = "fixture-access-token"
+	resetFixtureOtherOrganization = "00000000-0000-4000-8000-0000000000bb"
+	resetFixtureOtherToken        = "fixture-access-token-other"
 )
+
+// resetFixtureAccounts maps each fixture token to its account's organization.
+var resetFixtureAccounts = map[string]string{resetFixtureToken: resetFixtureOrganization, resetFixtureOtherToken: resetFixtureOtherOrganization}
 
 type fakeResetGrant struct {
 	ID              string   `json:"id"`
@@ -63,6 +67,7 @@ type fakeResetProvider struct {
 	requests      int
 	reads         int
 	claims        []fakeResetClaim
+	onClaim       func(fakeResetClaim)
 }
 
 func newFakeResetProvider(t *testing.T, grants ...fakeResetGrant) *fakeResetProvider {
@@ -80,7 +85,8 @@ func (f *fakeResetProvider) serve(w http.ResponseWriter, r *http.Request) {
 	if r.Host != "api.anthropic.com" {
 		f.t.Errorf("request for host %q", r.Host)
 	}
-	if r.Header.Get("Authorization") != "Bearer "+resetFixtureToken || r.Header.Get("Anthropic-Beta") != "oauth-2025-04-20" || !strings.HasPrefix(r.Header.Get("User-Agent"), "claude-cli/") {
+	organization := resetFixtureAccounts[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+	if organization == "" || r.Header.Get("Anthropic-Beta") != "oauth-2025-04-20" || !strings.HasPrefix(r.Header.Get("User-Agent"), "claude-cli/") {
 		f.t.Errorf("unexpected headers for %s: %v", r.URL.Path, r.Header)
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -92,7 +98,7 @@ func (f *fakeResetProvider) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"account":      map[string]any{"uuid": "00000000-0000-4000-8000-000000000001", "email": "fixture@example.invalid"},
-			"organization": map[string]any{"uuid": resetFixtureOrganization},
+			"organization": map[string]any{"uuid": organization},
 		})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/oauth/usage" && r.URL.RawQuery == "cedar_ember=1&skip_spend=1":
 		f.reads++
@@ -108,7 +114,7 @@ func (f *fakeResetProvider) serve(w http.ResponseWriter, r *http.Request) {
 			status["cooldown_until"] = f.cooldownUntil
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"five_hour": map[string]any{"utilization": 100}, "cedar_ember": status})
-	case r.Method == http.MethodPost && r.URL.Path == resetFixtureClaimPath && r.URL.RawQuery == "":
+	case r.Method == http.MethodPost && r.URL.Path == "/api/organizations/"+organization+"/reset_rate_limits" && r.URL.RawQuery == "":
 		var claim fakeResetClaim
 		decoder := json.NewDecoder(r.Body)
 		decoder.DisallowUnknownFields()
@@ -116,6 +122,9 @@ func (f *fakeResetProvider) serve(w http.ResponseWriter, r *http.Request) {
 			f.t.Errorf("malformed claim: %v %+v", err, claim)
 		}
 		f.claims = append(f.claims, claim)
+		if f.onClaim != nil {
+			f.onClaim(claim)
+		}
 		if f.claimStatus != 0 {
 			w.WriteHeader(f.claimStatus)
 			return
@@ -189,7 +198,8 @@ func newResetSpendFixture(t *testing.T, grants ...fakeResetGrant) *resetSpendFix
 	m.SetConfig(cfg)
 	for _, seat := range []*coreauth.Auth{
 		{ID: "fixture", FileName: "fixture.json", Provider: "claude", Status: coreauth.StatusActive, Attributes: map[string]string{"runtime_only": "true"}, Metadata: map[string]any{"access_token": resetFixtureToken}},
-		{ID: "other", FileName: "other.json", Provider: "claude", Status: coreauth.StatusActive, Attributes: map[string]string{"runtime_only": "true"}, Metadata: map[string]any{"access_token": resetFixtureToken}},
+		{ID: "twin", FileName: "twin.json", Provider: "claude", Status: coreauth.StatusActive, Attributes: map[string]string{"runtime_only": "true"}, Metadata: map[string]any{"access_token": resetFixtureToken}},
+		{ID: "other", FileName: "other.json", Provider: "claude", Status: coreauth.StatusActive, Attributes: map[string]string{"runtime_only": "true"}, Metadata: map[string]any{"access_token": resetFixtureOtherToken}},
 		{ID: "codex", FileName: "codex.json", Provider: "codex", Status: coreauth.StatusActive, Attributes: map[string]string{"runtime_only": "true"}, Metadata: map[string]any{"access_token": resetFixtureToken}},
 	} {
 		if _, err := m.Register(context.Background(), seat); err != nil {
@@ -224,7 +234,7 @@ func (f *resetSpendFixture) spend(t *testing.T, body string) (int, map[string]an
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v8/management/claude/limit-resets/spend", strings.NewReader(body))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	f.h.SpendClaudeLimitReset(ctx)
-	if strings.Contains(rec.Body.String(), resetFixtureToken) {
+	if strings.Contains(rec.Body.String(), resetFixtureToken) || strings.Contains(rec.Body.String(), resetFixtureOrganization) {
 		t.Fatal("token leaked into the answer")
 	}
 	var answer map[string]any
@@ -434,7 +444,11 @@ func TestClaudeResetSpendUnknownOutcomeRetriesOnlyWithTheSameRequestID(t *testin
 	if claimCount() != 1 {
 		t.Fatalf("claims=%d", claimCount())
 	}
-	// The other seat is not held by this seat's unsettled claim.
+	// A second credential file of the same account is held too; a seat of
+	// another account is not.
+	if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.seatIndex(t, "twin"), "kind": "weekly"})); code != http.StatusConflict {
+		t.Fatalf("twin seat: status=%d answer=%v", code, answer)
+	}
 	if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.seatIndex(t, "other"), "kind": "weekly"})); code != http.StatusOK || answer["grant_id"] != "weekly-1" {
 		t.Fatalf("other seat: status=%d answer=%v", code, answer)
 	}
@@ -517,11 +531,13 @@ func TestClaudeResetSpendWritesOneRecordPerSpend(t *testing.T) {
 		}
 		records = append(records, record)
 	}
-	if len(records) != 1 {
+	// Two lines per spend: "sent", synced before the claim left, and
+	// "answered", the record of the outcome.
+	if len(records) != 2 || records[0]["phase"] != "sent" || records[0]["result"] != "unknown" || records[0]["request_id"] != answer["request_id"] || records[1]["phase"] != "answered" {
 		t.Fatalf("records=%v", records)
 	}
-	record := records[0]
-	for _, field := range []string{"at", "auth_index", "kind", "grant_id", "request_id", "result", "resets_left_before", "resets_left_after"} {
+	record := records[1]
+	for _, field := range []string{"phase", "at", "auth_index", "kind", "grant_id", "request_id", "result", "resets_left_before", "resets_left_after"} {
 		if _, ok := record[field]; !ok {
 			t.Fatalf("record lacks %s: %v", field, record)
 		}
@@ -576,5 +592,76 @@ func TestClaudeResetSpendWritesOneRecordPerSpend(t *testing.T) {
 		if seen != 3 {
 			t.Fatalf("list=%s", rec.Body)
 		}
+	}
+}
+
+// The hold is on disk before the claim leaves, so a hub that restarts (or
+// dies) while an answer is outstanding still refuses a new claim on the seat
+// and still accepts the retry with the same request id.
+func TestClaudeResetSpendHoldSurvivesARestart(t *testing.T) {
+	f := newResetSpendFixture(t, resetFixtureGrants()...)
+	ledgerPath := filepath.Join(f.logDir, claudeResetSpendLedgerName)
+	f.provider.set(func(p *fakeResetProvider) {
+		p.claimStatus = http.StatusBadGateway
+		p.onClaim = func(claim fakeResetClaim) {
+			raw, err := os.ReadFile(ledgerPath)
+			if err != nil || !strings.Contains(string(raw), `"phase":"sent"`) || !strings.Contains(string(raw), claim.RequestID) {
+				t.Errorf("the claim left before its sent line was on disk: %v %s", err, raw)
+			}
+		}
+	})
+	_, first := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"}))
+	requestID, _ := first["request_id"].(string)
+	if first["result"] != "unknown" || requestID == "" {
+		t.Fatalf("answer=%v", first)
+	}
+	restart := func() *Handler {
+		h := &Handler{cfg: f.h.cfg, authManager: f.h.authManager, logDir: f.logDir, claudeResetClient: f.h.claudeResetClient}
+		h.claudeResetSpends.now = func() time.Time { return f.now }
+		return h
+	}
+	f.h = restart()
+	if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "full"})); code != http.StatusConflict {
+		t.Fatalf("after restart: status=%d answer=%v", code, answer)
+	}
+	f.provider.set(func(p *fakeResetProvider) { p.claimStatus, p.onClaim = 0, nil })
+	code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable", "retry_request_id": requestID}))
+	if code != http.StatusOK || answer["result"] != "reset" || answer["request_id"] != requestID {
+		t.Fatalf("retry after restart: status=%d answer=%v", code, answer)
+	}
+	// Settled on disk too: a second restart lets the seat spend again.
+	f.h = restart()
+	if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "full"})); code != http.StatusOK || answer["result"] != "reset" {
+		t.Fatalf("after settling: status=%d answer=%v", code, answer)
+	}
+
+	// A hub that died after the sent line, before any answer.
+	g := newResetSpendFixture(t, resetFixtureGrants()...)
+	sent, _ := json.Marshal(claudeResetSpendRecord{Phase: claudeResetPhaseSent, At: g.now.Add(-time.Minute), AuthIndex: g.index, Kind: "fable", GrantID: "fable-late", RequestID: "restored-request", Result: "unknown"})
+	if err := os.WriteFile(filepath.Join(g.logDir, claudeResetSpendLedgerName), append(sent, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, answer := g.spend(t, spendBody(map[string]any{"auth_index": g.index, "kind": "fable"})); code != http.StatusConflict {
+		t.Fatalf("restored hold: status=%d answer=%v", code, answer)
+	}
+	code, answer = g.spend(t, spendBody(map[string]any{"auth_index": g.index, "kind": "fable", "retry_request_id": "restored-request"}))
+	_, _, claims := g.provider.counts()
+	if code != http.StatusOK || len(claims) != 1 || claims[0].RequestID != "restored-request" || claims[0].GrantID != "fable-late" {
+		t.Fatalf("restored retry: status=%d answer=%v claims=%+v", code, answer, claims)
+	}
+}
+
+func TestClaudeResetSpendRefusesWhenTheLedgerCannotBeWritten(t *testing.T) {
+	f := newResetSpendFixture(t, resetFixtureGrants()...)
+	blocked := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocked, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.h.logDir = blocked
+	if code, answer := f.spend(t, spendBody(map[string]any{"auth_index": f.index, "kind": "fable"})); code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d answer=%v", code, answer)
+	}
+	if _, _, claims := f.provider.counts(); len(claims) != 0 {
+		t.Fatalf("a claim left without its ledger line: %+v", claims)
 	}
 }

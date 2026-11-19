@@ -7,31 +7,34 @@ import (
 	"io/fs"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 // TestBankedResetClaimHasOneCallerChain enumerates every production reference
-// to the guard exception and to each link above it. The only path that can
-// open the exception is the management spend route, registered once in the
-// v8 management group (behind the management key):
+// to the reset guard's one exception (internal/resetclaim) and to each link
+// above it. The only path that can open the exception is the management spend
+// route, registered once in the v8 management group (behind the management key):
 //
-//	registerManagementV8Routes -> SpendClaudeLimitReset -> ClaimLimitReset
-//	  -> SendBankedResetClaim -> Do/RoundTrip -> bankedResetClaimPermitted
+//	registerManagementV8Routes -> SpendClaudeLimitReset -> sendClaudeResetClaim
+//	  -> ClaimLimitReset -> NewMarkedClaimRequest -> Do/RoundTrip -> ClaimPermitted
 //
-// A timer, a quota hold, a retry loop, a plugin, an executor or any other
-// caller that references a link fails this test, including through a method
-// value or a package-level variable.
+// Each link may be referenced exactly once, at its one allowed site, and never
+// from inside a function literal, a go or defer statement, or a loop, so a
+// timer, a goroutine, a retry loop or a second registration fails this test.
+// A tracked name in a string literal (reflection) fails it too.
 func TestBankedResetClaimHasOneCallerChain(t *testing.T) {
-	allowed := map[string]map[string]bool{
-		"bankedResetClaimKey":       {"sdk/httptransport/guard_claim.go:SendBankedResetClaim": true, "sdk/httptransport/guard_claim.go:bankedResetClaimPermitted": true},
-		"bankedResetClaimPermitted": {"sdk/httptransport/guard.go:Do": true, "sdk/httptransport/guard.go:RoundTrip": true},
-		"SendBankedResetClaim":      {"internal/auth/claude/limit_reset_spend.go:ClaimLimitReset": true},
-		"ClaimLimitReset":           {"internal/api/handlers/management/claude_limit_reset_spend.go:sendClaudeResetClaim": true},
-		"sendClaudeResetClaim":      {"internal/api/handlers/management/claude_limit_reset_spend.go:SpendClaudeLimitReset": true},
-		"SpendClaudeLimitReset":     {"internal/api/server_management_v8.go:registerManagementV8Routes": true},
+	allowed := map[string]map[string]int{
+		"claimMarkerKey":        {"internal/resetclaim/claim.go:NewMarkedClaimRequest": 1, "internal/resetclaim/claim.go:ClaimPermitted": 1},
+		"ClaimPermitted":        {"sdk/httptransport/guard.go:Do": 1, "sdk/httptransport/guard.go:RoundTrip": 1},
+		"NewMarkedClaimRequest": {"internal/auth/claude/limit_reset_spend.go:ClaimLimitReset": 1},
+		"NoRedirectClaimClient": {"internal/auth/claude/limit_reset_spend.go:ClaimLimitReset": 1},
+		"ClaimLimitReset":       {"internal/api/handlers/management/claude_limit_reset_spend.go:sendClaudeResetClaim": 1},
+		"sendClaudeResetClaim":  {"internal/api/handlers/management/claude_limit_reset_spend.go:SpendClaudeLimitReset": 1},
+		"SpendClaudeLimitReset": {"internal/api/server_management_v8.go:registerManagementV8Routes": 1},
 	}
-	found := map[string][]string{}
+	found := map[string]map[string]int{}
 	root := filepath.Join("..", "..")
 	fset := token.NewFileSet()
 	for _, tree := range []string{"cmd", "internal", "sdk"} {
@@ -66,14 +69,39 @@ func TestBankedResetClaimHasOneCallerChain(t *testing.T) {
 				if fn, ok := decl.(*ast.FuncDecl); ok {
 					enclosing = fn.Name.Name
 				}
+				var stack []ast.Node
 				ast.Inspect(decl, func(n ast.Node) bool {
+					if n == nil {
+						stack = stack[:len(stack)-1]
+						return true
+					}
+					stack = append(stack, n)
+					if literal, ok := n.(*ast.BasicLit); ok && literal.Kind == token.STRING {
+						value, _ := strconv.Unquote(literal.Value)
+						for name := range allowed {
+							if strings.Contains(value, name) {
+								t.Errorf("%s: %s named in a string literal", fset.Position(n.Pos()), name)
+							}
+						}
+					}
 					ident, ok := n.(*ast.Ident)
 					if !ok || declarations[ident] {
 						return true
 					}
-					if _, tracked := allowed[ident.Name]; tracked {
-						found[ident.Name] = append(found[ident.Name], rel+":"+enclosing)
+					if _, tracked := allowed[ident.Name]; !tracked {
+						return true
 					}
+					site := rel + ":" + enclosing
+					for _, ancestor := range stack[:len(stack)-1] {
+						switch ancestor.(type) {
+						case *ast.FuncLit, *ast.GoStmt, *ast.DeferStmt, *ast.ForStmt, *ast.RangeStmt:
+							t.Errorf("%s: %s referenced inside a closure, go, defer or loop", fset.Position(ident.Pos()), ident.Name)
+						}
+					}
+					if found[ident.Name] == nil {
+						found[ident.Name] = map[string]int{}
+					}
+					found[ident.Name][site]++
 					return true
 				})
 			}
@@ -89,12 +117,14 @@ func TestBankedResetClaimHasOneCallerChain(t *testing.T) {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if len(found[name]) == 0 {
-			t.Errorf("%s: no production reference found; the audited chain is stale", name)
+		for site, want := range allowed[name] {
+			if got := found[name][site]; got != want {
+				t.Errorf("%s: %d references at %s, want %d", name, got, site, want)
+			}
 		}
-		for _, site := range found[name] {
-			if !allowed[name][site] {
-				t.Errorf("%s referenced outside the spend route chain at %s", name, site)
+		for site, got := range found[name] {
+			if _, ok := allowed[name][site]; !ok {
+				t.Errorf("%s referenced outside the spend route chain at %s (%d times)", name, site, got)
 			}
 		}
 	}

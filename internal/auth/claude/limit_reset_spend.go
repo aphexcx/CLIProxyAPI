@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/resetclaim"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 )
@@ -117,7 +118,7 @@ func (o *ClaudeAuth) FetchLimitResetSpendStatus(ctx context.Context, accessToken
 // ClaimLimitReset spends one reset of the named grant. It returns an error
 // only when the claim was certainly not sent; any send without a terminal
 // answer is LimitResetResultUnknown. It never retries.
-func (o *ClaudeAuth) ClaimLimitReset(ctx context.Context, accessToken, userAgent string, claim httptransport.BankedResetClaim) (LimitResetClaimResult, error) {
+func (o *ClaudeAuth) ClaimLimitReset(ctx context.Context, accessToken, userAgent string, claim resetclaim.Claim) (LimitResetClaimResult, error) {
 	if o == nil || o.httpClient == nil {
 		return LimitResetClaimResult{}, errors.New("claim Claude reset: HTTP client is nil")
 	}
@@ -128,9 +129,13 @@ func (o *ClaudeAuth) ClaimLimitReset(ctx context.Context, accessToken, userAgent
 	header := http.Header{}
 	applyLimitResetSpendHeaders(header, accessToken, userAgent)
 	ctx = context.WithValue(ctx, claudeUsageConnectTimeoutContextKey{}, claudeUsageConnectTimeout)
-	resp, errSend := httptransport.SendBankedResetClaim(ctx, o.httpClient, claim, header)
+	req, errRequest := resetclaim.NewMarkedClaimRequest(ctx, claim, header)
+	if errRequest != nil {
+		return LimitResetClaimResult{}, errRequest
+	}
+	resp, errSend := httptransport.Do(resetclaim.NoRedirectClaimClient(o.httpClient), req)
 	if errSend != nil {
-		if errors.Is(errSend, httptransport.ErrBankedResetClaimMalformed) || errors.Is(errSend, httptransport.ErrResetRateLimitsDenied) {
+		if errors.Is(errSend, httptransport.ErrResetRateLimitsDenied) {
 			return LimitResetClaimResult{}, errSend
 		}
 		// The transport error names the claim URL, which carries the
