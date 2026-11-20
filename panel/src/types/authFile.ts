@@ -78,6 +78,11 @@ export interface AuthFileItem {
   plan_tier?: string;
   /** Codex plan supplied by v8 credential metadata. */
   plan_type?: string;
+  /**
+   * Decoded Codex sign-in claims (account id, plan, subscription dates) on the v8
+   * read; never a token. The deprecated v0 read names the same object id_token.
+   */
+  codex_claims?: Record<string, unknown>;
   /** GCP / Vertex project ID, used when account email is absent. */
   projectId?: string;
   size?: number;

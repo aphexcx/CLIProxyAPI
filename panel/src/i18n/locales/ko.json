@@ -1606,9 +1606,9 @@
   },
   "quota_management": {
     "search_label": "계정 검색",
-    "search_placeholder": "파일명 또는 이메일로 검색",
+    "search_placeholder": "이메일, 조직 또는 파일명으로 검색",
     "search_empty_title": "일치하는 계정 없음",
-    "search_empty_desc": "다른 파일명이나 이메일을 입력하거나 검색을 초기화하세요.",
+    "search_empty_desc": "다른 이메일, 조직 또는 파일명을 입력하거나 검색을 초기화하세요.",
     "search_clear": "검색 초기화",
     "title": "할당량 관리",
     "description": "Antigravity, Codex, Claude, Kimi 및 xAI 자격 증명의 OAuth 할당량 상태를 모니터링합니다.",
