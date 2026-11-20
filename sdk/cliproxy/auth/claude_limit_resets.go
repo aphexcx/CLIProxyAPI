@@ -34,6 +34,27 @@ type ClaudeResetGrant struct {
 	Paused           bool       `json:"paused,omitempty"`
 	UseRequiresLimit *bool      `json:"use_requires_limit,omitempty"`
 	GivesBackWeekly  *bool      `json:"gives_back_weekly,omitempty"`
+	// UnavailableReason is the provider's word for why a grant is not usable now.
+	UnavailableReason *string `json:"unavailable_reason,omitempty"`
+	// Kind is computed by ClaudeResetGrantKind on every parse; a value the
+	// provider sends under this name is never decoded, whatever its shape.
+	Kind string `json:"kind"`
+}
+
+// UnmarshalJSON decodes a grant without its upstream "kind", then derives
+// Kind, so an upstream field of that name cannot reject the status.
+func (g *ClaudeResetGrant) UnmarshalJSON(data []byte) error {
+	type upstream ClaudeResetGrant
+	var decoded struct {
+		upstream
+		Kind json.RawMessage `json:"kind"`
+	}
+	if errDecode := json.Unmarshal(data, &decoded); errDecode != nil {
+		return errDecode
+	}
+	*g = ClaudeResetGrant(decoded.upstream)
+	g.Kind = ClaudeResetGrantKind(*g)
+	return nil
 }
 
 // ParseClaudeLimitResets accepts the captured cedar_ember shape and ignores
@@ -72,6 +93,7 @@ func ParseClaudeLimitResets(usage json.RawMessage) (*ClaudeLimitResets, error) {
 		if g.Clears == nil {
 			g.Clears = []string{}
 		}
+		g.Kind = ClaudeResetGrantKind(*g)
 	}
 	if status.Grants == nil {
 		status.Grants = []ClaudeResetGrant{}
@@ -153,6 +175,13 @@ type claudeLimitResetPollSeat struct {
 	routinePending        bool
 	nextAttempt           time.Time
 	rateLimits            int
+	// observedFrom is when the read behind the cached observation began. One
+	// ordering rule serves polls and spends alike: a read that began earlier
+	// changes neither the observation nor its error.
+	observedFrom time.Time
+	// claimedAt is when another seat sent a claim on each grant while this
+	// seat's read was in flight; that read, if it lists one, publishes stale.
+	claimedAt map[string]time.Time
 }
 
 const claudeLimitResetInterval = 15 * time.Minute
@@ -245,11 +274,14 @@ func (m *Manager) recordClaudeLimitResets(ctx context.Context, cfg *internalconf
 		seat = &claudeLimitResetPollSeat{generation: base.CredentialGeneration()}
 		m.limitResetSeats[base.ID] = seat
 	}
+	// A poll that began before the read the cache holds (a spend's after-read
+	// published meanwhile) changes only the read backoff.
+	older := seat.attemptedAt.Before(seat.observedFrom)
 	if errRead != nil {
-		seat.err = "reset status poll failed"
+		message := "reset status poll failed"
 		var statusError interface{ StatusCode() int }
 		if errors.As(errRead, &statusError) {
-			seat.err = fmt.Sprintf("reset status poll failed (HTTP %d)", statusError.StatusCode())
+			message = fmt.Sprintf("reset status poll failed (HTTP %d)", statusError.StatusCode())
 			if statusError.StatusCode() == 429 {
 				seat.rateLimits++
 				// Do not retry the reset read in the next routine slot. Back off
@@ -258,8 +290,17 @@ func (m *Manager) recordClaudeLimitResets(ctx context.Context, cfg *internalconf
 				seat.nextAttempt = now.Add(backoff)
 			}
 		}
+		if !older {
+			seat.err, seat.observedFrom = message, seat.attemptedAt
+		}
 		return
 	}
+	// A read that succeeded ends the rate-limit backoff, whatever its order.
+	seat.rateLimits = 0
+	if older {
+		return
+	}
+	seat.observedFrom = seat.attemptedAt
 	status, err := ParseClaudeLimitResets(body)
 	if err != nil {
 		seat.err = err.Error()
@@ -267,5 +308,90 @@ func (m *Manager) recordClaudeLimitResets(ctx context.Context, cfg *internalconf
 	}
 	seat.status, _ = json.Marshal(status)
 	seat.polledAt, seat.err = now, ""
-	seat.rateLimits = 0
+	// A claim another seat sent while this read was in flight may have spent
+	// a grant this read lists.
+	for _, grant := range status.Grants {
+		if claimedAt, claimed := seat.claimedAt[grant.ID]; claimed && claimedAt.After(seat.attemptedAt) {
+			seat.err = "a claim on a grant this seat also lists was sent from another seat while this read was in flight; the cached reset status awaits a fresh read"
+		}
+	}
+	seat.claimedAt = nil
+}
+
+// PublishClaudeResetSpendRead keeps the reset cache truthful after a claim of
+// grantID on base's credential, by the ordering rule of the poll: startedAt
+// is when the spend's after-read began, and a cached observation whose read
+// began later is kept. The after-read replaces the seat's observation, and a
+// failed after-read marks it stale, so a spent grant is never shown as fresh.
+// When the claim spent or may have spent (spent), every other seat whose
+// cached status lists the grant is marked stale too. A replaced credential's
+// own cache is left alone.
+func (m *Manager) PublishClaudeResetSpendRead(base *Auth, grantID string, spent bool, startedAt time.Time, body json.RawMessage, errRead error) {
+	if m == nil || base == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, other := range m.limitResetSeats {
+		if !spent || id == base.ID || other == nil {
+			continue
+		}
+		if !startedAt.Before(other.observedFrom) && claudeResetStatusListsGrant(other.status, grantID) {
+			other.err, other.observedFrom = "a claim on a grant this seat also lists was sent from another seat; the cached reset status awaits a fresh read", startedAt
+		}
+		if other.running && other.attemptedAt.Before(startedAt) {
+			// The seat's read in flight began before the claim: whatever it
+			// lists of the grant is checked when it publishes.
+			if other.claimedAt == nil {
+				other.claimedAt = make(map[string]time.Time)
+			}
+			other.claimedAt[grantID] = startedAt
+		}
+	}
+	if !sameClaudeQuotaCredential(m.auths[base.ID], base) {
+		return
+	}
+	seat := m.limitResetSeats[base.ID]
+	if seat == nil || seat.generation != base.CredentialGeneration() {
+		// The verified current credential has no entry yet: this read starts it.
+		if m.limitResetSeats == nil {
+			m.limitResetSeats = make(map[string]*claudeLimitResetPollSeat)
+		}
+		seat = &claudeLimitResetPollSeat{generation: base.CredentialGeneration()}
+		m.limitResetSeats[base.ID] = seat
+	}
+	if startedAt.Before(seat.observedFrom) {
+		// A newer read is cached.
+		return
+	}
+	seat.observedFrom = startedAt
+	if errRead == nil {
+		if status, errParse := ParseClaudeLimitResets(body); errParse == nil {
+			seat.status, _ = json.Marshal(status)
+			seat.polledAt, seat.err = time.Now(), ""
+			return
+		}
+	}
+	seat.err = "a claim was sent from this seat; the cached reset status awaits a fresh read"
+}
+
+// claudeResetStatusListsGrant reports whether a cached status lists grantID.
+func claudeResetStatusListsGrant(status json.RawMessage, grantID string) bool {
+	if len(status) == 0 || grantID == "" {
+		return false
+	}
+	var listed struct {
+		Grants []struct {
+			ID string `json:"id"`
+		} `json:"grants"`
+	}
+	if json.Unmarshal(status, &listed) != nil {
+		return false
+	}
+	for _, grant := range listed.Grants {
+		if grant.ID == grantID {
+			return true
+		}
+	}
+	return false
 }

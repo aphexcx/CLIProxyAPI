@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/resetclaim"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -77,7 +78,18 @@ func deniedRequest(req *http.Request) bool {
 
 func (t *guardedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if deniedRequest(req) {
-		return nil, ErrResetRateLimitsDenied
+		// The one exception (internal/resetclaim) is spent here, by the actual
+		// send, which carries the claim exactly as it was minted.
+		claim, permitted := resetclaim.PermittedClaim(req)
+		if !permitted {
+			return nil, ErrResetRateLimitsDenied
+		}
+		if req.Body != nil {
+			if errClose := req.Body.Close(); errClose != nil {
+				return nil, errClose
+			}
+		}
+		return t.base.RoundTrip(claim)
 	}
 	return t.base.RoundTrip(req)
 }
@@ -118,7 +130,11 @@ type Doer interface {
 // are checked here too; their own outbound sends must use this boundary.
 func Do(client Doer, req *http.Request) (*http.Response, error) {
 	if deniedRequest(req) {
-		return nil, ErrResetRateLimitsDenied
+		// The exception travels only through a real client, whose guarded
+		// transport spends its marker; an adapter could send it uncounted.
+		if _, concrete := client.(*http.Client); (client != nil && !concrete) || !resetclaim.ClaimPermitted(req) {
+			return nil, ErrResetRateLimitsDenied
+		}
 	}
 	if client == nil {
 		client = GuardClient(nil)
