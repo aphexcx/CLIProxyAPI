@@ -15,6 +15,7 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/credentialweight"
@@ -435,7 +436,7 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context, pagination authFilesPagi
 			}
 			for _, identityField := range identityFields {
 				if value := ojson.GetBytes(data, identityField); value.Type == ojson.String {
-					if trimmed := strings.TrimSpace(value.String()); trimmed != "" {
+					if trimmed := authFileIdentityValue(identityField, value.String()); trimmed != "" {
 						fileData[identityField] = trimmed
 					}
 				}
@@ -707,7 +708,7 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 		// Only expose provider identity fields, never the credential metadata itself.
 		for _, identityField := range authFileIdentityFields(auth.Provider) {
 			if value, ok := auth.Metadata[identityField].(string); ok {
-				if value = strings.TrimSpace(value); value != "" {
+				if value = authFileIdentityValue(identityField, value); value != "" {
 					entry[identityField] = value
 				}
 			}
@@ -1107,6 +1108,14 @@ func extractCodexIDTokenClaims(auth *coreauth.Auth) gin.H {
 		return nil
 	}
 	return result
+}
+
+func authFileIdentityValue(field, value string) string {
+	value = strings.TrimSpace(value)
+	if field == "plan_tier" {
+		return claude.DisplayPlanTier(value)
+	}
+	return value
 }
 
 // authFileIdentityFields lists the display-only metadata a v8 entry may carry.

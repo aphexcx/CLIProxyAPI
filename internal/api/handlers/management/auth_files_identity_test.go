@@ -1,6 +1,7 @@
 package management
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http/httptest"
 	"os"
@@ -21,7 +22,7 @@ func TestBuildAuthFileEntryV8AccountIdentity(t *testing.T) {
 		want     string
 	}{
 		{"claude", "organization_name", "  Example Organization  ", "Example Organization"},
-		{"claude", "plan_tier", "  Max 20x  ", "Max 20x"},
+		{"claude", "plan_tier", "  Ultra  ", "Ultra"},
 		{"codex", "plan_type", "  pro  ", "pro"},
 	} {
 		t.Run(tc.provider+"/"+tc.field, func(t *testing.T) {
@@ -64,10 +65,71 @@ func TestBuildAuthFileEntryV8AccountIdentity(t *testing.T) {
 	}
 }
 
+var storedPlanCases = []struct{ provider, field, stored, want string }{
+	{"claude", "plan_tier", "Max 20x", "Ultra"},
+	{"claude", "plan_tier", "  Max 20x  ", "Ultra"},
+	{"claude", "plan_tier", "Max 5x", "Max"},
+	{"claude", "plan_tier", "Team premium", "Team premium"},
+	{"claude", "plan_tier", "Max", "Max"},
+	{"claude", "plan_tier", "Ultra", "Ultra"},
+	{"claude", "plan_tier", "default_future", "default_future"},
+	{"claude", "plan_tier", "max 20x", "max 20x"},
+	{"claude", "plan_tier", "Max 20x plus", "Max 20x plus"},
+	{"codex", "plan_type", "Max 20x", "Max 20x"},
+}
+
+func TestBuildAuthFileEntryStoredPlan(t *testing.T) {
+	for _, tc := range storedPlanCases {
+		auth := &coreauth.Auth{
+			ID: "seat.json", FileName: "seat.json", Provider: tc.provider,
+			Attributes: map[string]string{"runtime_only": "true"},
+			Metadata:   map[string]any{tc.field: tc.stored},
+		}
+		entry := (&Handler{}).buildAuthFileEntry(auth, authFileQuotaContext{v8: true})
+		if got := entry[tc.field]; got != tc.want {
+			t.Errorf("%s %q: got %v, want %q", tc.field, tc.stored, got, tc.want)
+		}
+		if auth.Metadata[tc.field] != tc.stored {
+			t.Errorf("%s %q: list modified metadata", tc.field, tc.stored)
+		}
+	}
+}
+
+func TestListAuthFilesFromDiskStoredPlan(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "seat.json")
+	h := &Handler{cfg: &config.Config{AuthDir: dir}}
+	for _, tc := range storedPlanCases {
+		data, err := json.Marshal(map[string]string{"type": tc.provider, tc.field: tc.stored})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if errWrite := os.WriteFile(path, data, 0o600); errWrite != nil {
+			t.Fatal(errWrite)
+		}
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest("GET", "/", nil)
+		ctx.Set(ConfigV8ContextKey, true)
+		h.ListAuthFiles(ctx)
+		var payload struct{ Files []map[string]any }
+		if errDecode := json.Unmarshal(recorder.Body.Bytes(), &payload); errDecode != nil {
+			t.Fatal(errDecode)
+		}
+		if recorder.Code != 200 || len(payload.Files) != 1 || payload.Files[0][tc.field] != tc.want {
+			t.Errorf("%s %q: status %d, entries %v, want %q", tc.field, tc.stored, recorder.Code, payload.Files, tc.want)
+		}
+		after, errRead := os.ReadFile(path)
+		if errRead != nil || !bytes.Equal(data, after) {
+			t.Fatalf("credential changed after list: %v", errRead)
+		}
+	}
+}
+
 func TestListAuthFilesFromDiskV8AccountIdentity(t *testing.T) {
 	for _, tc := range []struct{ provider, field, value string }{
 		{"claude", "organization_name", "Example Organization"},
-		{"claude", "plan_tier", "Max 20x"},
+		{"claude", "plan_tier", "Ultra"},
 		{"codex", "plan_type", "pro"},
 	} {
 		t.Run(tc.provider+"/"+tc.field, func(t *testing.T) {

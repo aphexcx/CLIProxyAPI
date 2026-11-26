@@ -84,7 +84,7 @@ func newSecretFieldsFixtureHandler(t *testing.T, idToken string, codexPlanInMeta
 				"organization_name": "Example Org",
 				"organization_uuid": "00000000-0000-4000-8000-000000000001",
 				"account_uuid":      "00000000-0000-4000-8000-000000000002",
-				"plan_tier":         "Max 20x",
+				"plan_tier":         "Ultra",
 				"access_token":      secretFixtureClaudeAccess,
 				"refresh_token":     secretFixtureClaudeRefresh,
 				"expired":           expiry,

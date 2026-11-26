@@ -117,7 +117,7 @@ func TestClaudeExecutorPrepareRequestAuthPopulatesCredentialIdentity(t *testing.
 	if got := prepared.Metadata["organization_uuid"]; got != "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" {
 		t.Fatalf("organization_uuid = %#v, want upstream profile organization", got)
 	}
-	if got := prepared.Metadata["plan_tier"]; got != "Max 20x" {
+	if got := prepared.Metadata["plan_tier"]; got != "Ultra" {
 		t.Fatalf("plan_tier = %#v, want the profile's tier label", got)
 	}
 	if executor.ShouldPrepareRequestAuth(prepared) {

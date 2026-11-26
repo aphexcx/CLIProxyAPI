@@ -201,15 +201,15 @@ describe('deriveAuthFileIdentity', () => {
       deriveAuthFileIdentity(
         authFile({ name: 'claude-seat.json', type: 'claude', email: 'u@x.com', ...overrides })
       ).secondary;
-    expect(seat({ organization_name: 'Example Organization', plan_tier: ' Max 20x ' })).toBe(
-      'Example Organization · Max 20x'
+    expect(seat({ organization_name: 'Example Organization', plan_tier: ' Ultra ' })).toBe(
+      'Example Organization · Ultra'
     );
     expect(seat({ plan_tier: 'Team premium' })).toBe('Team premium');
     for (const value of [undefined, '', '  ', 20, { label: 'Max' }]) {
       expect(seat({ organization_name: 'Org', plan_tier: value as string })).toBe('Org');
     }
     expect(
-      deriveAuthFileIdentity(authFile({ email: 'u@x.com', plan_type: 'pro', plan_tier: 'Max 20x' }))
+      deriveAuthFileIdentity(authFile({ email: 'u@x.com', plan_type: 'pro', plan_tier: 'Ultra' }))
         .secondary
     ).toBe('Pro');
   });

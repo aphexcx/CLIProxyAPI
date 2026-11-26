@@ -2,7 +2,7 @@ package claude
 
 import "strings"
 
-// PlanTier returns the subscription tier label ("Max 20x", "Team premium", "Pro", ...)
+// PlanTier returns the subscription tier label ("Ultra", "Team premium", "Pro", ...)
 // for this profile, or "" when the profile carries no tier facts. The mapping is
 // claude-swap's plan_tier.tier_label (observed on 18 seats, 2026-09-10): the
 // organization type decides Enterprise and Team first because a Team seat's
@@ -35,10 +35,10 @@ func (p *OAuthProfile) PlanTier() string {
 		return "Team"
 	case orgType == "claude_max" || hasMax || strings.HasPrefix(tier, "default_claude_max"):
 		if strings.HasSuffix(tier, "20x") {
-			return "Max 20x"
+			return "Ultra"
 		}
 		if strings.HasSuffix(tier, "5x") {
-			return "Max 5x"
+			return "Max"
 		}
 		if rateLimitTier != "" {
 			return rateLimitTier
@@ -50,6 +50,18 @@ func (p *OAuthProfile) PlanTier() string {
 		return rateLimitTier
 	default:
 		return organizationType
+	}
+}
+
+// DisplayPlanTier returns the current display name for a stored Claude plan label.
+func DisplayPlanTier(stored string) string {
+	switch strings.TrimSpace(stored) {
+	case "Max 20x":
+		return "Ultra"
+	case "Max 5x":
+		return "Max"
+	default:
+		return stored
 	}
 }
 
