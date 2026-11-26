@@ -683,6 +683,44 @@ describe('A9: the press checks the sign-in', () => {
     expect(spend.getClaudeResetSpend(seat.key).outcome?.type).toBe('answer');
   });
 
+  test('LEAVE: a read whose body is not the read (a proxy page) is a failed read: nothing sent, Spend live', async () => {
+    const seat = openChecked();
+    const check = fakeRead([ok('<html>proxy page</html>')]);
+    await spend.confirmClaudeResetSpendChecked(seat.key, {
+      post: seat.hub.post,
+      read: check.read,
+      file: { name: seat.fileName, credential_generation: '1:1' },
+    });
+    const entry = spend.getClaudeResetSpend(seat.key);
+    const html = renderView(seat.key, visibleSeat(seat.fileName, seat.body.auth_index, '1:1'), {
+      ...OPENED_IDENTITY,
+      fileName: seat.fileName,
+    });
+    console.log(`A9 | LEAVE: a read that is not the read | posts=${seat.hub.calls.length} | check=${entry.check}`);
+    expect(seat.hub.calls).toHaveLength(0);
+    expect(entry.check).toBe('read_failed');
+    expect(text(html)).toContain(DICTATED.readFailed);
+    expect(confirmButtons(html).spend).not.toContain('disabled=""');
+  });
+
+  test('LEAVE: a read with two rows of that file name sends when one of them is the sign-in the confirm opened on', async () => {
+    const seat = openChecked();
+    const check = fakeRead([
+      readOf(
+        visibleSeat(seat.fileName, 'idx-elsewhere', '3:1'),
+        visibleSeat(seat.fileName, seat.body.auth_index, '1:1')
+      ),
+    ]);
+    await spend.confirmClaudeResetSpendChecked(seat.key, {
+      post: seat.hub.post,
+      read: check.read,
+      file: { name: seat.fileName, credential_generation: '1:1' },
+    });
+    console.log(`A9 | LEAVE: two rows of one file name | posts=${seat.hub.calls.length}`);
+    expect(seat.hub.calls).toHaveLength(1);
+    expect(seat.hub.calls[0].body).toEqual(seat.body);
+  });
+
   test('nothing changed: exactly one read and then one POST leave, in that order, with the body and key of the open', async () => {
     const log: string[] = [];
     const seat = openChecked(log);
