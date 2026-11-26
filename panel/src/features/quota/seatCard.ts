@@ -7,8 +7,10 @@
  * one disclosure away.
  */
 
-import type { AuthFileItem, ClaudeQuotaState } from '@/types';
+import type { ClaudeQuotaState } from '@/types';
 import { DAY_MS } from '@/utils/time/durations';
+
+export { readSeatPlanTier } from '@/features/authFiles/identity';
 
 export type SeatCardType = 'claude' | 'codex';
 
@@ -22,12 +24,6 @@ const HEADLINE_WINDOW_IDS: Record<SeatCardType, readonly (readonly string[])[]> 
 
 export const isSeatCardType = (type: string): type is SeatCardType =>
   type === 'claude' || type === 'codex';
-
-/** The trimmed Claude tier label from the v8 entry; null hides the chip rather than guessing. */
-export const readSeatPlanTier = (file: AuthFileItem): string | null => {
-  const value: unknown = file.plan_tier;
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
-};
 
 /**
  * Split windows into the at-a-glance ones (in display order) and the rest (in

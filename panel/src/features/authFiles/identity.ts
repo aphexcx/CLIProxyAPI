@@ -26,6 +26,14 @@ export type AuthFileIdentity = {
 const readIdentityText = (value: unknown): string =>
   typeof value === 'string' ? value.trim() : '';
 
+/** Older hubs return the previous display names in Claude credential records. */
+export const readSeatPlanTier = (file: AuthFileItem): string | null => {
+  const tier = readIdentityText(file.plan_tier);
+  if (tier === 'Max 20x') return 'Ultra';
+  if (tier === 'Max 5x') return 'Max';
+  return tier || null;
+};
+
 /** Strip a case-insensitive .json suffix only when some filename remains. */
 export const stripJsonExtension = (name: string): string => {
   const trimmed = name.trim();
@@ -49,7 +57,7 @@ export const deriveAuthFileIdentity = (file: AuthFileItem): AuthFileIdentity => 
   const provider = (readIdentityText(file.type) || readIdentityText(file.provider)).toLowerCase();
   let secondary: string | null = null;
   if (provider === 'claude') {
-    const parts = [readIdentityText(file.organization_name), readIdentityText(file.plan_tier)];
+    const parts = [readIdentityText(file.organization_name), readSeatPlanTier(file)];
     secondary = parts.filter(Boolean).join(' · ') || null;
   } else if (provider === 'codex') {
     const plan = readIdentityText(file.plan_type);
