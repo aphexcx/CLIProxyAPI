@@ -241,12 +241,28 @@ const indexByFile = new Map<string, string>();
 const listeners = new Set<() => void>();
 
 /**
+ * One hub however its address is spelled: scheme and host in lower case, no
+ * default port, no trailing slash. Equal identities are always one endpoint.
+ */
+export function claudeResetHubIdentity(apiBase: string) {
+  try {
+    const url = new URL(apiBase);
+    return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return apiBase.trim();
+  }
+}
+
+/**
  * One entry per hub and row auth_index. Nothing transient is part of it: a
- * sign-out and sign-in, folding Details or a failed read never orphan a spend
- * whose outcome is not known yet.
+ * sign-out and sign-in, another spelling of the hub's address, folding Details
+ * or a failed read never orphan a spend whose outcome is not known yet.
  */
 export const claudeResetSpendSeatKey = (hub: string, authIndex: string) =>
-  `${hub}\u0000${authIndex}`;
+  `${claudeResetHubIdentity(hub)}\u0000${authIndex}`;
+
+const fileKey = (hub: string, fileName: string) =>
+  `${claudeResetHubIdentity(hub)}\u0000${fileName}`;
 
 /**
  * A card's entry: by the row's auth_index, or, while the read has no row,
@@ -255,7 +271,7 @@ export const claudeResetSpendSeatKey = (hub: string, authIndex: string) =>
 export function claudeResetSpendSeatKeyFor(hub: string, fileName: string, rowIndex?: string) {
   return claudeResetSpendSeatKey(
     hub,
-    rowIndex || indexByFile.get(`${hub}\u0000${fileName}`) || ''
+    rowIndex || indexByFile.get(fileKey(hub, fileName)) || ''
   );
 }
 
@@ -301,7 +317,7 @@ export function openClaudeResetSpend(
   const current = getClaudeResetSpend(key);
   if (current.confirmOpen || claudeResetSpendBusy(current)) return false;
   posts.set(key, deps.post);
-  if (deps.file) indexByFile.set(`${deps.file.hub}\u0000${deps.file.name}`, body.auth_index);
+  if (deps.file) indexByFile.set(fileKey(deps.file.hub, deps.file.name), body.auth_index);
   put(key, {
     delivery: { key: deps.makeKey(), body: { auth_index: body.auth_index, kind: body.kind } },
     confirmOpen: true,

@@ -302,7 +302,8 @@ export function QuotaCard(props: QuotaCardProps) {
 
         {claudeAfterPlan && <div className={styles.resetColumn}>{claudeAfterPlan}</div>}
 
-        {status !== 'idle' && (
+        {/* A Claude seat's spend controls live in Details and need no usage load first. */}
+        {(status !== 'idle' || entry.type === 'claude') && (
           <>
             <footer className={styles.seatFooter}>
               {/* Not a live region: fourteen cards re-announcing "Updated 2 minutes ago" is noise. */}

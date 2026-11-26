@@ -4,13 +4,15 @@
  * Rendered to markup with no browser; every fixture is invented.
  */
 
-import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import i18n from '@/i18n';
 import type { ClaudeLimitResetSeat } from '@/services/api/claudeLimitResets';
 import type { SeatFreshness } from '@/features/quota/seatCard';
+import { QUOTA_CLASS_KEYS } from '@/features/quota/types';
 import { ClaudeResetKindsView } from '@/features/quota/providers/claude/ClaudeResetKinds';
 import {
   ClaudeResetConfirmBody,
@@ -22,6 +24,14 @@ import {
   getClaudeResetSpend,
   openClaudeResetSpend,
 } from '@/features/quota/providers/claude/claudeResetSpendState';
+
+// Under bun a CSS Module import is the stylesheet's text; echo class names so QuotaCard renders.
+for (const sheet of ['QuotaBody.module.scss', 'QuotaCard.module.scss'])
+  mock.module(join(import.meta.dir, '../src/features/quota/components', sheet), () => ({
+    default: new Proxy(Object.fromEntries(QUOTA_CLASS_KEYS.map((key) => [key, key])), {
+      get: (_, key) => (typeof key === 'string' ? key : undefined),
+    }),
+  }));
 
 const FABLE_EXPIRY = '2026-12-01T00:00:00Z';
 const COOLDOWN_UNTIL = '2099-01-01T00:00:00Z';
@@ -426,5 +436,30 @@ describe('A16: the copy is in six files', () => {
         expect(placeholders(blocks[locale][key])).toBe(placeholders(blocks.en[key]));
       }
     }
+  });
+});
+
+describe('round 2 class: the spend controls wait on nothing but the reset read', () => {
+  // Codex round 2 (cp-4f3): Details sat behind the card's usage gate, so a seat
+  // whose usage was never loaded showed no spend control until a usage refresh.
+  test('a Claude card with no usage loaded still offers Details; other providers are unchanged', async () => {
+    const { QuotaCard } = await import('@/features/quota/components/QuotaCard');
+    const card = (type: 'claude' | 'codex') =>
+      renderToStaticMarkup(
+        createElement(QuotaCard, {
+          entry: { type, file: { name: `seat-${type}.json`, type, credential_generation: '1:1' } } as never,
+          quota: undefined,
+          resolvedTheme: 'dark',
+          canRefresh: true,
+          resetting: false,
+          entranceDelayMs: null,
+          onRefresh: () => {},
+          onReset: () => {},
+        })
+      );
+    const claude = card('claude');
+    expect(claude).toContain('aria-expanded="false"');
+    expect(text(claude)).toContain('Details');
+    expect(card('codex')).not.toContain('aria-expanded');
   });
 });

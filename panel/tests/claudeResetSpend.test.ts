@@ -885,4 +885,47 @@ describe('round 1 class: a spend outlives every transient change of the page', (
     expect(current.calls[0].body).toEqual(first.calls[0].body);
     expect(getClaudeResetSpend(key).outcome?.type).toBe('answer');
   });
+
+  // Codex round 2: the hub's address was part of the key as spelled.
+  test('another spelling of the same hub, through real sign-ins, keeps the same entry', async () => {
+    const spellings = [
+      'http://hub-spell.example.test:8317',
+      'HTTP://HUB-SPELL.Example.Test:8317/',
+      'http://hub-spell.example.test:8317/v8/management/',
+    ];
+    try {
+      apiClient.setConfig({ apiBase: spellings[0], managementKey: 'fixture-key' });
+      const first = fakeHub([noAnswer]);
+      const key = claudeResetSpendSeatKeyFor(apiClient.getApiBase(), 'seat-spell.json', 'idx-spell');
+      openClaudeResetSpend(key, { auth_index: 'idx-spell', kind: 'full' }, {
+        post: first.post,
+        makeKey: () => 'key-spell',
+        file: { hub: apiClient.getApiBase(), name: 'seat-spell.json' },
+      });
+      await confirmClaudeResetSpend(key);
+      for (const spelling of spellings.slice(1)) {
+        apiClient.setConfig({ apiBase: '', managementKey: '' });
+        apiClient.setConfig({ apiBase: spelling, managementKey: 'fixture-key' });
+        for (const rowIndex of ['idx-spell', undefined]) {
+          const again = claudeResetSpendSeatKeyFor(apiClient.getApiBase(), 'seat-spell.json', rowIndex);
+          expect(again).toBe(key);
+          expect(
+            openClaudeResetSpend(again, { auth_index: 'idx-spell', kind: 'full' }, { post: first.post, makeKey: () => 'key-other' })
+          ).toBe(false);
+        }
+      }
+      expect(claudeResetSpendSeatKey('http://hub-spell.example.test:80', 'i')).toBe(
+        claudeResetSpendSeatKey('http://HUB-SPELL.example.test', 'i')
+      );
+      // Different endpoints stay apart: another port, another path.
+      expect(claudeResetSpendSeatKey('http://hub-spell.example.test:8318', 'i')).not.toBe(
+        claudeResetSpendSeatKey('http://hub-spell.example.test:8317', 'i')
+      );
+      expect(claudeResetSpendSeatKey('http://hub-spell.example.test/Hub', 'i')).not.toBe(
+        claudeResetSpendSeatKey('http://hub-spell.example.test/hub', 'i')
+      );
+    } finally {
+      apiClient.setConfig({ apiBase: '', managementKey: '' });
+    }
+  });
 });
