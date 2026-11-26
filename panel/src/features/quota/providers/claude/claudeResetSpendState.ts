@@ -422,6 +422,7 @@ export async function confirmClaudeResetSpendChecked(
   deps: {
     post: ClaudeResetSpendPost;
     read: ClaudeResetSpendCheckRead;
+    onUsageRead?: () => void;
     /** The card's file entry at the press. */
     file: { name: string; credential_generation?: string };
   }
@@ -447,7 +448,7 @@ export async function confirmClaudeResetSpendChecked(
     if (check === 'changed') invalidateClaudeLimitResets();
     return;
   }
-  return deliver(key, { ...now, inFlight: false }, deps.post);
+  return deliver(key, { ...now, inFlight: false }, deps.post, deps.onUsageRead);
 }
 
 /** Delivers the same key and body again; only while the outcome is not known. */
@@ -463,7 +464,7 @@ export function dismissClaudeResetSpend(key: string) {
   if (current.outcome && !current.confirmOpen && !claudeResetSpendBusy(current)) put(key, IDLE);
 }
 
-async function deliver(key: string, current: ClaudeResetSpendSeat, fresh?: ClaudeResetSpendPost) {
+async function deliver(key: string, current: ClaudeResetSpendSeat, fresh?: ClaudeResetSpendPost, onUsageRead?: () => void) {
   const delivery = current.delivery;
   if (fresh) posts.set(key, fresh);
   const post = posts.get(key);
@@ -491,6 +492,9 @@ async function deliver(key: string, current: ClaudeResetSpendSeat, fresh?: Claud
   if (!unresolved(outcome)) posts.delete(key);
   // Any HTTP answer, even one whose outcome is not known yet, drops the cached read.
   if (outcome.type !== 'no_answer') invalidateClaudeLimitResets();
+  if (outcome.type === 'answer' && outcome.answer.result === 'reset' && !outcome.answer.replayed && outcome.answer.routing?.usage_read) {
+    onUsageRead?.();
+  }
 }
 
 /** Where focus goes when a seat's confirm closes: always an element of that seat's own section. */

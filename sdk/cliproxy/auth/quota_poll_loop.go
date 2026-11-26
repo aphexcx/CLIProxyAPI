@@ -50,6 +50,7 @@ func (m *Manager) StopQuotaPolling() {
 	if m.quotaPollCancel != nil {
 		m.quotaPollCancel()
 		m.quotaPollCancel = nil
+		m.quotaPollCtx = nil
 	}
 }
 
@@ -57,6 +58,7 @@ func (m *Manager) restartQuotaPollingLocked() {
 	if m.quotaPollCancel != nil {
 		m.quotaPollCancel()
 		m.quotaPollCancel = nil
+		m.quotaPollCtx = nil
 	}
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 	if m.quotaPollParent == nil || m.quotaPollParent.Err() != nil || cfg == nil || !cfg.Claude.Quota.Enabled {
@@ -71,6 +73,7 @@ func (m *Manager) restartQuotaPollingLocked() {
 		log.Warn("claude quota: request-retry is 0; consider enabling retries for exhausted seats")
 	}
 	ctx, cancel := context.WithCancel(m.quotaPollParent)
+	m.quotaPollCtx = ctx
 	m.quotaPollCancel = cancel
 	done := make(chan struct{})
 	m.quotaPollDone = done
@@ -242,7 +245,7 @@ func sameClaudeQuotaCredential(current, base *Auth) bool {
 
 // Watch credential identity, not ordinary runtime generations. Cancellation is
 // tied to lifecycle changes, never a deadline on an established upstream read.
-func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalconfig.Config, base *Auth, poller QuotaPoller) {
+func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalconfig.Config, base *Auth, poller QuotaPoller) bool {
 	changes, stopWatching := m.WatchAuthChanges(base.ID)
 	defer stopWatching()
 	current := func() bool {
@@ -252,7 +255,7 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 	}
 	// Subscribe before checking identity so a concurrent replacement cannot be missed.
 	if ctx.Err() != nil || !current() {
-		return
+		return false
 	}
 	type result struct {
 		windows map[string]QuotaWindow
@@ -283,14 +286,14 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		case <-changes:
 			if !current() {
-				return
+				return false
 			}
 		case observed := <-results:
 			if ctx.Err() != nil || !current() {
-				return
+				return false
 			}
 			if observed.err != nil {
 				// Transport errors may contain proxy credentials. Never log the error.
@@ -298,12 +301,13 @@ func (m *Manager) pollClaudeQuotaCredential(ctx context.Context, cfg *internalco
 				if strings.EqualFold(base.Provider, "claude") {
 					m.refreshClaudeQuotaRanks()
 				}
-			} else if strings.EqualFold(base.Provider, "codex") {
-				m.applyCodexQuotaUsageSnapshot(ctx, cfg, base, observed.windows, observed.usage, time.Now(), observed.started)
-			} else {
-				m.applyClaudeQuotaUsageSnapshot(ctx, cfg, base, observed.windows, observed.usage, time.Now(), observed.started)
+				return false
 			}
-			return
+			if strings.EqualFold(base.Provider, "codex") {
+				m.applyCodexQuotaUsageSnapshot(ctx, cfg, base, observed.windows, observed.usage, time.Now(), observed.started)
+				return true
+			}
+			return m.applyClaudeQuotaUsageSnapshot(ctx, cfg, base, observed.windows, observed.usage, time.Now(), observed.started)
 		}
 	}
 }
@@ -427,24 +431,24 @@ func (m *Manager) applyClaudeQuotaUsage(ctx context.Context, cfg *internalconfig
 	m.applyClaudeQuotaUsageSnapshot(ctx, cfg, base, windows, nil, now)
 }
 
-func (m *Manager) applyClaudeQuotaUsageSnapshot(ctx context.Context, cfg *internalconfig.Config, base *Auth, windows map[string]QuotaWindow, usage json.RawMessage, now time.Time, started ...time.Time) {
+func (m *Manager) applyClaudeQuotaUsageSnapshot(ctx context.Context, cfg *internalconfig.Config, base *Auth, windows map[string]QuotaWindow, usage json.RawMessage, now time.Time, started ...time.Time) bool {
 	// Fence reloads and credential replacement. Network I/O happens before these locks.
 	release, errLock := m.lockAuthMutationContext(ctx, base.ID)
 	if errLock != nil {
-		return
+		return false
 	}
 	defer release()
 	m.configCooldownMu.Lock()
 	defer m.configCooldownMu.Unlock()
 	if ctx.Err() != nil || m.runtimeConfig.Load() != cfg || !cfg.Claude.Quota.Enabled {
-		return
+		return false
 	}
 	m.mu.Lock()
 	auth := m.auths[base.ID]
 	if !claudeQuotaEligible(auth) || auth.RegistrationEpoch != base.RegistrationEpoch || auth.CredentialVersion != base.CredentialVersion || authAccessToken(auth) != authAccessToken(base) {
 		m.mu.Unlock()
 		release()
-		return
+		return false
 	}
 	// Legacy window-only observations may be partial. Only a complete usage
 	// body is authoritative about omitted windows.
@@ -475,6 +479,7 @@ func (m *Manager) applyClaudeQuotaUsageSnapshot(ctx context.Context, cfg *intern
 	if changed {
 		m.persistCooldownStatesLocked(ctx)
 	}
+	return true
 }
 
 // Reconcile holds owned by this guard. Upstream quota failures are reconciled

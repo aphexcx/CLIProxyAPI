@@ -109,8 +109,6 @@ const kindsBefore = {
   fable: { resets_left: 1, usable_resets: 1, soonest_expiry: '2026-12-01T00:00:00Z' },
   full: { resets_left: 1, usable_resets: 0, soonest_expiry: null },
 };
-const ROUTING_NOTE =
-  "a confirmed reset does not return the seat to rotation: the hub's own cooldown can hold it until the routing reset is called";
 const RETRY_UNTIL = '2026-11-25T12:10:00Z';
 /** A 200 answer shaped as the route builds it at BASE (handler lines 1472 to 1521). */
 const answer = (result: string, extra: Record<string, unknown> = {}) => ({
@@ -125,13 +123,8 @@ const answer = (result: string, extra: Record<string, unknown> = {}) => ({
   kinds_after: kindsAfter,
   ...extra,
 });
-const routing = (queued: boolean) => ({
-  routing: {
-    cooldown_changed: false,
-    usage_poll_queued: queued,
-    cooldown_reset_route: '/v8/management/routing/cooldown/reset',
-    note: ROUTING_NOTE,
-  },
+const routing = (read: boolean) => ({
+  routing: { usage_read: read, available: read, next_poll_at: RETRY_UNTIL, holds: [] },
 });
 
 const SEAT_NAME = 'ops-one@example.test';
@@ -322,23 +315,34 @@ describe('A8: the call', () => {
 describe('A9: answers', () => {
   const notSpent = 'The hub records this as not spent.';
   type Row = { name: string; body: unknown; expects: string[]; absent?: string[]; routing?: boolean };
-  const routingLine = 'This does not put the seat back in rotation by itself.';
+  const routingLine = 'The seat is back in rotation.';
+  const pollTime = new Date(RETRY_UNTIL).toLocaleString('en');
   const rows: Row[] = [
     {
       name: 'reset',
       body: answer('reset', routing(true)),
-      expects: ['The provider confirmed it.', ROUTING_NOTE, 'A usage read of this seat was queued.', 'Left now:'],
+      expects: ['The provider confirmed it.', 'Left now:'],
       routing: true,
+    },
+    {
+      name: 'reset, Fable still at cap',
+      body: answer('reset', { routing: {
+        usage_read: true, available: true,
+        holds: [{ model_key: 'Fable', reason: 'quota_cap', retry_at: RETRY_UNTIL }],
+      } }),
+      expects: [`Fable is held by the quota cap until ${pollTime}.`],
+    },
+    {
+      name: 'reset, usage read failed',
+      body: answer('reset', routing(false)),
+      expects: ['The provider confirmed it.', `The usage read failed. The next poll is scheduled for ${pollTime}.`],
     },
     {
       name: 'already_used',
       body: answer('already_used', routing(false)),
       expects: [
         'The provider says this reset was already used; this click spent nothing new.',
-        ROUTING_NOTE,
-        'No usage read of this seat was queued.',
       ],
-      routing: true,
     },
     { name: 'not_limited', body: answer('not_limited'), expects: ['The provider says this seat is not at its limit.', notSpent] },
     { name: 'cooldown', body: answer('cooldown'), expects: ['The provider says this seat is in its reset cooldown.', notSpent] },
@@ -377,7 +381,6 @@ describe('A9: answers', () => {
       expects: [
         'This is the recorded outcome of the same click. Nothing new was sent.',
         'The provider confirmed it.',
-        "This does not put the seat back in rotation by itself: the hub's own cooldown can hold it until the routing reset is called.",
         'Left after, as recorded:',
         'Fable reset (fable): 0 left',
       ],
@@ -450,7 +453,8 @@ describe('A9: answers', () => {
       for (const line of row.expects) expect(shown).toContain(line);
       for (const line of row.absent ?? []) expect(shown).not.toContain(line);
       if (row.routing) expect(shown).toContain(routingLine);
-      else if (!row.name.startsWith('replayed true')) expect(shown).not.toContain(routingLine);
+      else expect(shown).not.toContain(routingLine);
+      expect(shown).not.toContain('routing reset');
       expect(shown).not.toContain('Not spent');
     });
   }

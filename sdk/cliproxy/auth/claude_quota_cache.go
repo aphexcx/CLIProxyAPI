@@ -103,7 +103,6 @@ func (m *Manager) cachedQuota(id, provider string) (ClaudeQuotaSnapshot, bool) {
 	if snapshot.Windows == nil {
 		snapshot.Windows = map[string]QuotaWindow{}
 	}
-	next := now
 	if seat := m.quotaPollSeats[id]; seat != nil {
 		snapshot.Polls, snapshot.RateLimits, snapshot.LastStatus = seat.polls, seat.rateLimits, seat.lastStatus
 		if !seat.lastAttempt.IsZero() {
@@ -125,22 +124,26 @@ func (m *Manager) cachedQuota(id, provider string) (ClaudeQuotaSnapshot, bool) {
 			}
 			snapshot.Stale = seat.lastFailed || now.Sub(at) > freshFor+time.Minute
 		}
-		next = seat.nextPoll
 		snapshot.Refreshing = seat.running || seat.queued
 	}
 	if quotaPollEligible(auth) {
-		if next.Before(now) {
-			next = now
-		}
-		if next.Before(m.quotaNextStart) {
-			next = m.quotaNextStart
-		}
-		snapshot.NextPollAt = &next
+		snapshot.NextPollAt = m.nextSeatPollLocked(id, now)
 	} else {
 		snapshot.Status = "polling_paused"
 		snapshot.Stale = true
 	}
 	return snapshot, true
+}
+
+func (m *Manager) nextSeatPollLocked(id string, now time.Time) *time.Time {
+	next := now
+	if seat := m.quotaPollSeats[id]; seat != nil && seat.nextPoll.After(next) {
+		next = seat.nextPoll
+	}
+	if m.quotaNextStart.After(next) {
+		next = m.quotaNextStart
+	}
+	return &next
 }
 
 // RequestClaudeQuotaPoll only queues work on the service loop. Repeated clicks,
@@ -198,16 +201,7 @@ func (m *Manager) reserveClaudeQuotaPoll(ctx context.Context, cfg *internalconfi
 	if seat.running || now.Before(seat.nextPoll) || now.Before(seat.lastAttempt.Add(claudeQuotaMinimumPollInterval)) || now.Before(m.quotaNextStart) {
 		return nil, false
 	}
-	if seat.epoch != auth.RegistrationEpoch {
-		seat.polledAt = time.Time{}
-		seat.usage = nil
-		seat.epoch = auth.RegistrationEpoch
-	}
-	seat.lastAttempt, seat.running, seat.queued = now, true, false
-	seat.polls++
-	seat.jitter = time.Duration(rand.Int64N(int64(5 * time.Second)))
-	seat.nextPoll = now.Add(interval + seat.jitter)
-	// Spread a fleet's reads instead of bursting all seats on the minute.
+	// Spread a fleet's scheduled reads instead of bursting all seats on the minute.
 	count := 0
 	for _, candidate := range m.auths {
 		if quotaPollEligible(candidate) {
@@ -216,12 +210,82 @@ func (m *Manager) reserveClaudeQuotaPoll(ctx context.Context, cfg *internalconfi
 	}
 	spacing := claudeQuotaMinimumPollInterval / time.Duration(max(count, 1))
 	m.quotaNextStart = now.Add(spacing + time.Duration(rand.Int64N(int64(spacing/10+1))))
+	return m.startQuotaReadLocked(seat, auth, interval, now), true
+}
+
+func (m *Manager) startQuotaReadLocked(seat *claudeQuotaPollSeat, auth *Auth, interval time.Duration, now time.Time) func() {
+	if seat.epoch != auth.RegistrationEpoch {
+		seat.polledAt = time.Time{}
+		seat.usage = nil
+		seat.epoch = auth.RegistrationEpoch
+	}
+	seat.lastAttempt, seat.running, seat.queued = now, true, false
+	seat.interval = interval
+	seat.polls++
+	seat.jitter = time.Duration(rand.Int64N(int64(5 * time.Second)))
+	seat.nextPoll = now.Add(interval + seat.jitter)
 	return func() {
 		m.mu.Lock()
 		seat.running = false
+		m.wakeClaudeQuotaPollLocked()
 		m.mu.Unlock()
-		m.wakeClaudeQuotaPoll()
-	}, true
+	}
+}
+
+// ReadClaudeResetUsage takes the spending seat's next usage observation immediately.
+// A pre-spend read must finish first. Only a failed usage read gets a second attempt.
+// It returns the reconciled credential on success and the next scheduled poll, if any.
+func (m *Manager) ReadClaudeResetUsage(base *Auth) (*Auth, *time.Time) {
+	if m == nil || base == nil || !strings.EqualFold(base.Provider, "claude") {
+		return nil, nil
+	}
+	m.quotaPollMu.Lock()
+	ctx := m.quotaPollCtx
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	m.quotaPollMu.Unlock()
+	if ctx == nil || cfg == nil || !cfg.Claude.Quota.Enabled {
+		return nil, nil
+	}
+	interval, _ := time.ParseDuration(cfg.Claude.Quota.WithDefaults().PollInterval)
+	applied := false
+	for attempts := 0; attempts < 2 && !applied; {
+		m.mu.Lock()
+		executor, _ := m.executorLocked(base.Provider)
+		poller, ok := executor.(QuotaPoller)
+		if !ok || ctx.Err() != nil || m.runtimeConfig.Load() != cfg || !sameClaudeQuotaCredential(m.auths[base.ID], base) {
+			m.mu.Unlock()
+			return nil, nil
+		}
+		seat := m.claudeQuotaPollSeatLocked(base.ID)
+		if seat.running {
+			wake := m.quotaPollWake
+			m.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, nil
+			case <-wake:
+				continue
+			}
+		}
+		finish := m.startQuotaReadLocked(seat, base, interval, time.Now())
+		m.mu.Unlock()
+		attempts++
+		readCtx, cancel := context.WithCancel(ctx)
+		applied = m.pollClaudeQuotaCredential(readCtx, cfg, base, poller)
+		cancel()
+		finish()
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	current := m.auths[base.ID]
+	if ctx.Err() != nil || !sameClaudeQuotaCredential(current, base) {
+		return nil, nil
+	}
+	next := m.nextSeatPollLocked(base.ID, time.Now())
+	if !applied {
+		return nil, next
+	}
+	return current.Clone(), next
 }
 
 func (m *Manager) recordClaudeQuotaPoll(base *Auth, started time.Time, errPoll error) {

@@ -57,7 +57,13 @@ export interface ClaudeResetSpendAnswer {
   kinds_after?: Record<string, ClaudeResetKindSummary> | null;
   /** On a replay: counts only. */
   resets_left_after?: Record<string, number> | null;
-  routing?: { cooldown_changed?: boolean; usage_poll_queued?: boolean; note?: string };
+  routing?: {
+    usage_read?: boolean;
+    next_poll_at?: string | null;
+    available?: boolean;
+    holds?: { model_key?: string; reason: string; retry_at: string }[];
+    retry_at?: string;
+  };
   after_read_error?: string;
   ledger_error?: string;
   balance_error?: string;
