@@ -1,5 +1,30 @@
 import { apiClient } from './client';
 
+/** What is left of one kind of banked reset on a seat, as the hub's cached read counts it. */
+export interface ClaudeResetKindSummary {
+  resets_left: number;
+  usable_resets: number;
+  /** Expiry of the grant a spend of this kind would use. */
+  soonest_expiry: string | null;
+}
+
+/** One line of the hub's spend ledger: the seat's last spend through this hub. */
+export interface ClaudeResetSpendRecord {
+  /** "sent" (outcome not recorded yet) or "answered". */
+  phase: string;
+  at: string;
+  auth_index: string;
+  kind?: string;
+  grant_id?: string;
+  request_id: string;
+  retry: boolean;
+  result?: string;
+  /** Reason code of a claim the hub did not send, or the provider's own code. */
+  reason?: string;
+  resets_left_before?: Record<string, number> | null;
+  resets_left_after?: Record<string, number> | null;
+}
+
 export interface ClaudeLimitResetSeat {
   name: string;
   auth_index: string;
@@ -19,6 +44,10 @@ export interface ClaudeLimitResetSeat {
       type: string;
       clears: string[];
       usable_now: boolean;
+      /** fable, weekly, full, session or unknown (the hub never spends unknown). */
+      kind?: string;
+      /** The provider's word for why the grant is not usable now. */
+      unavailable_reason?: string | null;
     }[];
   } | null;
   error?: string;
@@ -27,6 +56,12 @@ export interface ClaudeLimitResetSeat {
   stale: boolean;
   best_click_rank: number | null;
   rank_reason: string;
+  /** Absent on a hub build from before the spend route; empty when no grant is listed. */
+  kinds?: Record<string, ClaudeResetKindSummary> | null;
+  /** Null means no reset was ever spent through this hub, unless last_spend_error is set. */
+  last_spend?: ClaudeResetSpendRecord | null;
+  /** Present when the hub cannot read its spend ledger: last_spend is then not known. */
+  last_spend_error?: string;
 }
 
 interface LimitResetsResponse {

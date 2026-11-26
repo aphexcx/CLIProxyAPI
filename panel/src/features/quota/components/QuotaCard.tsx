@@ -40,6 +40,7 @@ import {
   type SeatFreshness,
 } from '../seatCard';
 import { ClaudeLimitResets } from '../providers/claude/ClaudeLimitResets';
+import { ClaudeResetSpendSection } from '../providers/claude/ClaudeResetSpend';
 import { hasClaudeUsageData } from '../providers/claude/data';
 import { getCodexPlanLabel } from '../providers/codex/planLabel';
 import { hasCodexUsageData } from '../providers/codex/data';
@@ -347,6 +348,15 @@ export function QuotaCard(props: QuotaCardProps) {
                 <>
                   <SeatWindowRows windows={rest} classes={quotaClasses} />
                   {hasData && <adapter.Body quota={quota} classes={detailClasses} extrasOnly />}
+                  {entry.type === 'claude' && (
+                    <ClaudeResetSpendSection
+                      file={file}
+                      usage={{
+                        freshness,
+                        text: describeFreshnessText(freshness, t, now, i18n.resolvedLanguage),
+                      }}
+                    />
+                  )}
                   <dl className={styles.facts}>
                     {observedAt && (
                       <div className={styles.fact}>

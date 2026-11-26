@@ -1,80 +1,17 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { apiClient } from '@/services/api/client';
-import {
-  readClaudeLimitResets,
-  matchClaudeLimitResetSeat,
-  getClaudeResetCredentialRevision,
-  subscribeClaudeResetCredentials,
-  claudeLimitResetAge,
-  type ClaudeLimitResetSeat,
-} from '@/services/api/claudeLimitResets';
+import { claudeLimitResetAge, type ClaudeLimitResetSeat } from '@/services/api/claudeLimitResets';
+import { ClaudeResetKindsView } from './ClaudeResetKinds';
+import { useClaudeLimitResetRead } from './useClaudeLimitResetRead';
 
-/** Observations for the holder's own click; deliberately no claim controls. */
+/** Observations for the holder's own click, then what is left of each kind; spend controls live in Details. */
 export function ClaudeLimitResets({ name, generation }: { name: string; generation?: string }) {
-  const [result, setResult] = useState<{
-    seat?: ClaudeLimitResetSeat;
-    rule?: string;
-    failed?: boolean;
-    revision: number;
-    name: string;
-    generation?: string;
-    credentialRevision: number;
-  }>();
-  const revision = apiClient.getConnectionRevision();
-  const credentialRevision = useSyncExternalStore(
-    subscribeClaudeResetCredentials,
-    getClaudeResetCredentialRevision,
-    getClaudeResetCredentialRevision
-  );
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
-      try {
-        const response = await readClaudeLimitResets();
-        if (active && apiClient.getConnectionRevision() === revision) {
-          setResult({
-            seat: matchClaudeLimitResetSeat(response.seats, name, generation),
-            rule: response.ranking_rule,
-            revision,
-            name,
-            generation,
-            credentialRevision,
-          });
-        }
-      } catch {
-        if (active)
-          setResult((previous) => ({
-            ...(previous?.revision === revision &&
-            previous.name === name &&
-            previous.generation === generation &&
-            previous.credentialRevision === credentialRevision
-              ? previous
-              : {}),
-            failed: true,
-            revision,
-            name,
-            generation,
-            credentialRevision,
-          }));
-      }
-    };
-    void load();
-    const timer = setInterval(() => void load(), 60_000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, [name, revision, generation, credentialRevision]);
-  const current =
-    result?.revision === revision &&
-    result.name === name &&
-    result.generation === generation &&
-    result.credentialRevision === credentialRevision
-      ? result
-      : undefined;
+  const read = useClaudeLimitResetRead(name, generation);
   return (
-    <ClaudeLimitResetsView seat={current?.seat} rule={current?.rule} failed={current?.failed} />
+    <>
+      <ClaudeLimitResetsView seat={read.seat} rule={read.rule} failed={read.failed} />
+      <ClaudeResetKindsView seat={read.seat} failed={read.failed} loaded={read.loaded} />
+    </>
   );
 }
 
