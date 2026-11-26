@@ -1,5 +1,8 @@
 import { apiClient } from './client';
 
+/** The hub's cached reset read: it asks the provider nothing. */
+export const CLAUDE_LIMIT_RESETS_PATH = '/claude/limit-resets';
+
 /** What is left of one kind of banked reset on a seat, as the hub's cached read counts it. */
 export interface ClaudeResetKindSummary {
   resets_left: number;
@@ -130,7 +133,7 @@ export function readClaudeLimitResets(): Promise<LimitResetsResponse> {
   if (pending?.revision === revision) return pending.promise;
   const startedAt = Date.now();
   const promise = apiClient
-    .get<LimitResetsResponse>('/claude/limit-resets')
+    .get<LimitResetsResponse>(CLAUDE_LIMIT_RESETS_PATH)
     .then((value) => {
       if (apiClient.getConnectionRevision() !== revision || credentialRevision !== generation)
         throw new Error('Reset status belongs to an obsolete credential list');

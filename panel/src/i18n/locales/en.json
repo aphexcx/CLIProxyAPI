@@ -2421,6 +2421,11 @@
     "no_route": "This hub's build has no spend route. Nothing was sent.",
     "http_not_known": "The hub answered HTTP {{status}}. Whether anything was spent is not known from this answer.",
     "no_answer": "The hub has not answered. Whether the reset was spent is not known yet.",
-    "ask_again": "Ask the hub again"
+    "ask_again": "Ask the hub again",
+    "ask_not_from_record": "The hub answered this ask with HTTP {{status}}, but not from its record of this spend. Whether the reset was spent is still not known.",
+    "ask_words": "The hub's words about this ask only:",
+    "ask_hold": "Do not spend again on this seat yet. Press \"Ask the hub again\" once the hub's problem is fixed. If it cannot be fixed, check this account's usage page at the provider before any new spend.",
+    "check_changed": "This seat's sign-in changed after this confirm opened, so it may now be another account. Nothing was sent. Close this and open a new confirm from the card.",
+    "check_read_failed": "The hub's reset read failed, so the page could not check that this seat is still the same sign-in. Nothing was sent. Press Spend to try again."
   }
 }
