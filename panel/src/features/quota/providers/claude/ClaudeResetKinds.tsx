@@ -93,7 +93,7 @@ export function ClaudeResetKindsView({
     );
   }
   return (
-    <div aria-label={t('claude_reset_spend.kinds_label')}>
+    <div aria-label={t('claude_reset_spend.kinds_label')} style={{ marginTop: 6 }}>
       {body}
       {last && <div>{t('claude_reset_spend.last_spent', { value: last.text })}</div>}
     </div>

@@ -61,6 +61,12 @@ const LIST_STYLE = {
   flexDirection: 'column',
   gap: 6,
 } as const;
+const CONFIRM_LIST_STYLE = {
+  display: 'grid',
+  gridTemplateColumns: 'max-content minmax(0, 1fr)',
+  gap: '6px 12px',
+  margin: '0 0 12px',
+} as const;
 const OUTCOME_STYLE = {
   display: 'flex',
   flexDirection: 'column',
@@ -298,11 +304,11 @@ export function ClaudeResetConfirmBody({
   if (last?.recorded) rows.push([t('claude_reset_spend.confirm_last'), last.text]);
   return (
     <div>
-      <dl>
+      <dl style={CONFIRM_LIST_STYLE}>
         {rows.map(([term, value]) => (
-          <div key={term}>
-            <dt>{term}</dt>
-            <dd>{value}</dd>
+          <div key={term} style={{ display: 'contents' }}>
+            <dt style={{ color: 'var(--text-secondary)' }}>{term}</dt>
+            <dd style={{ margin: 0, fontWeight: 600, overflowWrap: 'anywhere' }}>{value}</dd>
           </div>
         ))}
       </dl>
