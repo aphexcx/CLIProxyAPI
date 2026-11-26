@@ -1142,7 +1142,7 @@ func (h *Handler) claudeResetAuth(cfg *config.Config, auth *coreauth.Auth) *clau
 }
 
 func readClaudeResetStatus(ctx context.Context, client *claudeauth.ClaudeAuth, token, userAgent string) (*coreauth.ClaudeLimitResets, json.RawMessage, int, error) {
-	body, errRead := client.FetchLimitResetSpendStatus(ctx, token, userAgent)
+	body, errRead := client.FetchLimitResetStatus(ctx, token, userAgent)
 	if errRead != nil {
 		status := 0
 		var statusError interface{ StatusCode() int }

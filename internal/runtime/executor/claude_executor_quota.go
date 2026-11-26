@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
@@ -38,7 +39,8 @@ func (e *ClaudeExecutor) PollQuotaUsage(ctx context.Context, auth *cliproxyauth.
 }
 
 // PollLimitResets makes a separate observational GET. Its body never enters the
-// routine quota cache or the routing guard's window reconciliation.
+// routine quota cache or the routing guard's window reconciliation. It sends
+// the spend's own read: any other client name is answered with no grants.
 func (e *ClaudeExecutor) PollLimitResets(ctx context.Context, auth *cliproxyauth.Auth) (json.RawMessage, error) {
 	if auth == nil {
 		return nil, fmt.Errorf("Claude reset status: auth is nil")
@@ -47,5 +49,6 @@ func (e *ClaudeExecutor) PollLimitResets(ctx context.Context, auth *cliproxyauth
 	if strings.TrimSpace(accessToken) == "" {
 		accessToken, _ = auth.Metadata["accessToken"].(string)
 	}
-	return claudeauth.NewClaudeAuthWithProxyURL(e.cfg, auth.ProxyURL).FetchOAuthLimitResets(ctx, accessToken)
+	userAgent := claudeauth.LimitResetUserAgent(helps.DefaultClaudeVersion(e.cfg))
+	return claudeauth.NewClaudeAuthWithProxyURL(e.cfg, auth.ProxyURL).FetchLimitResetStatus(ctx, accessToken, userAgent)
 }
