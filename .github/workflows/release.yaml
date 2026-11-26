@@ -91,6 +91,28 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$updated_notes_file"
           fi
 
+  build-panel:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.3'
+      - name: Build management panel
+        run: |
+          # Expand the tag in the recipe shell so Make never treats its contents as code.
+          # shellcheck disable=SC2016
+          make panel-build BUN=bun PANEL_VERSION='"$$GITHUB_REF_NAME"'
+          test -s panel/dist/management.html
+      - name: Upload management panel
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" panel/dist/management.html --clobber
+
   build-hosted:
     name: build ${{ matrix.target }}
     needs: prepare-release
