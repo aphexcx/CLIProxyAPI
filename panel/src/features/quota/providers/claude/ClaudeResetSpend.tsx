@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useSyncExternalStore, type ReactNode } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { Modal } from '@/components/ui/Modal';
@@ -24,7 +24,7 @@ import {
   claudeResetKindName,
   claudeResetLastSpendText,
   claudeResetResultWord,
-  claudeResetSpendSeatKey,
+  claudeResetSpendSeatKeyFor,
   claudeResetUsageStale,
   confirmClaudeResetSpend,
   dismissClaudeResetSpend,
@@ -105,14 +105,9 @@ const HubSays = ({ t, words }: { t: TFunction; words: unknown }) =>
 /** The card's "Banked resets" section in Details: one control per kind, the confirm, the outcome. */
 export function ClaudeResetSpendSection({ file, usage }: { file: AuthFileItem; usage: Usage }) {
   const read = useClaudeLimitResetRead(file.name, file.credential_generation);
-  // Keep the seat's entry visible while the read reloads after an outcome.
-  const id = `${file.name}\u0000${file.credential_generation ?? ''}`;
-  const [remembered, setRemembered] = useState<{ id: string; authIndex: string }>();
+  const hub = apiClient.getApiBase();
   const rowIndex = read.seat?.auth_index ?? '';
-  if (rowIndex && (remembered?.id !== id || remembered.authIndex !== rowIndex))
-    setRemembered({ id, authIndex: rowIndex });
-  const authIndex = rowIndex || (remembered?.id === id ? remembered.authIndex : '');
-  const key = claudeResetSpendSeatKey(apiClient.getConnectionRevision(), authIndex);
+  const key = claudeResetSpendSeatKeyFor(hub, file.name, rowIndex);
   const spend = useSyncExternalStore(
     subscribeClaudeResetSpend,
     () => getClaudeResetSpend(key),
@@ -136,12 +131,17 @@ export function ClaudeResetSpendSection({ file, usage }: { file: AuthFileItem; u
         openClaudeResetSpend(
           key,
           { auth_index: rowIndex, kind },
-          { post: defaultClaudeResetSpendPost(), makeKey: newClaudeResetSpendKey }
+          {
+            post: defaultClaudeResetSpendPost(),
+            makeKey: newClaudeResetSpendKey,
+            file: { hub, name: file.name },
+          }
         );
       }}
       onCancel={() => cancelClaudeResetSpend(key)}
-      onConfirm={() => void confirmClaudeResetSpend(key)}
-      onAskAgain={() => void askClaudeResetSpendAgain(key)}
+      // Each delivery goes through the connection current at the press: same hub, same key and body.
+      onConfirm={() => void confirmClaudeResetSpend(key, defaultClaudeResetSpendPost())}
+      onAskAgain={() => void askClaudeResetSpendAgain(key, defaultClaudeResetSpendPost())}
       onDismiss={() => dismissClaudeResetSpend(key)}
     />
   );

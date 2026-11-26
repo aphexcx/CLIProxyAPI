@@ -28,6 +28,7 @@ import {
   cancelClaudeResetSpend,
   claudeResetSpendBusy,
   claudeResetSpendSeatKey,
+  claudeResetSpendSeatKeyFor,
   confirmClaudeResetSpend,
   dismissClaudeResetSpend,
   getClaudeResetSpend,
@@ -36,6 +37,7 @@ import {
 } from '@/features/quota/providers/claude/claudeResetSpendState';
 import {
   ClaudeResetOutcomeView,
+  ClaudeResetSpendSection,
   ClaudeResetSpendView,
 } from '@/features/quota/providers/claude/ClaudeResetSpend';
 
@@ -82,7 +84,7 @@ function freshSeat(kind: ClaudeResetSpendKind = 'fable') {
   seatCounter += 1;
   const authIndex = `idx-${seatCounter}`;
   return {
-    key: claudeResetSpendSeatKey(7, authIndex),
+    key: claudeResetSpendSeatKey('http://hub.example.test:8317', authIndex),
     body: { auth_index: authIndex, kind },
   };
 }
@@ -616,7 +618,8 @@ describe('A10: refusals', () => {
       } else {
         expect(spend.outcome?.type).toBe('not_known');
         expect(shown).not.toContain('Not spent');
-        expect(invalidations).toBe(0);
+        // An HTTP answer drops the cached read, even when its outcome is not known.
+        expect(invalidations).toBe(1);
         expect(claudeResetSpendBusy(spend)).toBe(true);
       }
       if (row.error) expect(shown).toContain(row.error);
@@ -624,6 +627,14 @@ describe('A10: refusals', () => {
       expect(shown).toContain(`Fable reset (fable) on ${SEAT_NAME}`);
     });
   }
+
+  test('LEAVE: a 200 whose body is not JSON reads as not known, with Ask the hub again', async () => {
+    const seat = await spendOnce(ok('<html>proxy page</html>'));
+    const spend = getClaudeResetSpend(seat.key);
+    expect(spend.outcome).toEqual({ type: 'not_known', status: 200 });
+    expect(outcomeText(seat.key)).toContain('Ask the hub again');
+    expect(claudeResetSpendBusy(spend)).toBe(true);
+  });
 
   test('the hub error string is rendered as sent, character for character', async () => {
     const odd = `a <b>"quoted"</b> & 'odd' refusal; nothing spent`;
@@ -665,7 +676,7 @@ describe('A10: refusals', () => {
     expect(shown).toContain(IN_FLIGHT);
     expect(shown).not.toContain('Not spent');
     expect(claudeResetSpendBusy(spend)).toBe(true);
-    expect(invalidations).toBe(0);
+    expect(invalidations).toBe(1);
   });
 });
 
@@ -828,5 +839,50 @@ describe('A14: after an outcome', () => {
   test('no answer drops nothing', async () => {
     await spendOnce(noAnswer);
     expect(invalidations).toBe(0);
+  });
+});
+
+describe('round 1 class: a spend outlives every transient change of the page', () => {
+  // Codex round 1 (cp-4f3): the entry was keyed by the connection revision, the
+  // card found it through mounted component state, and the post kept the key of
+  // the connection the confirm opened on. One test walks every transient change.
+  test('sign-out and sign-in, a folded Details with a failed read, and a new management key', async () => {
+    const hub = 'http://hub-class.example.test:8317/v8/management';
+    const file = { name: 'seat-class.json', type: 'claude', credential_generation: '4:1' };
+    // The client as the page signs in: the hub and the connection revision (spies, restored after).
+    mocks.push(spyOn(apiClient, 'getApiBase').mockReturnValue(hub));
+    const revision = spyOn(apiClient, 'getConnectionRevision').mockReturnValue(300_001);
+    mocks.push(revision);
+    const first = fakeHub([noAnswer]);
+    const key = claudeResetSpendSeatKeyFor(apiClient.getApiBase(), file.name, 'idx-class');
+    openClaudeResetSpend(key, { auth_index: 'idx-class', kind: 'weekly' }, {
+      post: first.post,
+      makeKey: () => 'key-class',
+      file: { hub: apiClient.getApiBase(), name: file.name },
+    });
+    await confirmClaudeResetSpend(key);
+    expect(getClaudeResetSpend(key).outcome?.type).toBe('no_answer');
+
+    // Sign-out, then sign-in to the same hub (with any management key): two revisions later.
+    revision.mockReturnValue(300_003);
+    // A card mounted fresh (Details folded and reopened) whose read has no row.
+    const remounted = claudeResetSpendSeatKeyFor(apiClient.getApiBase(), file.name, undefined);
+    expect(remounted).toBe(key);
+    expect(claudeResetSpendBusy(getClaudeResetSpend(remounted))).toBe(true);
+    expect(
+      openClaudeResetSpend(remounted, { auth_index: 'idx-class', kind: 'fable' }, { post: first.post, makeKey: () => 'key-other' })
+    ).toBe(false);
+    const html = renderToStaticMarkup(
+      createElement(ClaudeResetSpendSection, { file: file as never, usage: { freshness: null, text: '' } })
+    );
+    expect(text(html)).toContain('Ask the hub again');
+
+    // Ask the hub again through the connection current at the press: same key and body.
+    const current = fakeHub([ok(answer('reset', { ...routing(true), kind: 'weekly' }))]);
+    await askClaudeResetSpendAgain(remounted, current.post);
+    expect(current.calls).toHaveLength(1);
+    expect(current.calls[0].config.headers['Idempotency-Key']).toBe('key-class');
+    expect(current.calls[0].body).toEqual(first.calls[0].body);
+    expect(getClaudeResetSpend(key).outcome?.type).toBe('answer');
   });
 });

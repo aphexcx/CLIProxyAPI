@@ -236,11 +236,28 @@ export interface ClaudeResetSpendSeat {
 const IDLE: ClaudeResetSpendSeat = Object.freeze({ confirmOpen: false, inFlight: false });
 const seats = new Map<string, ClaudeResetSpendSeat>();
 const posts = new Map<string, ClaudeResetSpendPost>();
+/** The auth_index each card's last confirm used, by hub and file name. */
+const indexByFile = new Map<string, string>();
 const listeners = new Set<() => void>();
 
-/** One entry per hub connection and row auth_index; Details folding keeps it. */
-export const claudeResetSpendSeatKey = (connectionRevision: number, authIndex: string) =>
-  `${connectionRevision}\u0000${authIndex}`;
+/**
+ * One entry per hub and row auth_index. Nothing transient is part of it: a
+ * sign-out and sign-in, folding Details or a failed read never orphan a spend
+ * whose outcome is not known yet.
+ */
+export const claudeResetSpendSeatKey = (hub: string, authIndex: string) =>
+  `${hub}\u0000${authIndex}`;
+
+/**
+ * A card's entry: by the row's auth_index, or, while the read has no row,
+ * by the auth_index the card's last confirm used.
+ */
+export function claudeResetSpendSeatKeyFor(hub: string, fileName: string, rowIndex?: string) {
+  return claudeResetSpendSeatKey(
+    hub,
+    rowIndex || indexByFile.get(`${hub}\u0000${fileName}`) || ''
+  );
+}
 
 export const getClaudeResetSpend = (key: string): ClaudeResetSpendSeat => seats.get(key) ?? IDLE;
 
@@ -274,11 +291,17 @@ export const claudeResetSpendBusy = (spend: ClaudeResetSpendSeat) =>
 export function openClaudeResetSpend(
   key: string,
   body: ClaudeResetSpendBody,
-  deps: { post: ClaudeResetSpendPost; makeKey: () => string }
+  deps: {
+    post: ClaudeResetSpendPost;
+    makeKey: () => string;
+    /** The card that opened it, so the card finds its entry while the read has no row. */
+    file?: { hub: string; name: string };
+  }
 ): boolean {
   const current = getClaudeResetSpend(key);
   if (current.confirmOpen || claudeResetSpendBusy(current)) return false;
   posts.set(key, deps.post);
+  if (deps.file) indexByFile.set(`${deps.file.hub}\u0000${deps.file.name}`, body.auth_index);
   put(key, {
     delivery: { key: deps.makeKey(), body: { auth_index: body.auth_index, kind: body.kind } },
     confirmOpen: true,
@@ -293,18 +316,22 @@ export function cancelClaudeResetSpend(key: string) {
   if (current.confirmOpen && !current.inFlight) put(key, IDLE);
 }
 
-/** The confirm's one send. A second press, even in the same moment, sends nothing. */
-export function confirmClaudeResetSpend(key: string): Promise<void> {
+/**
+ * The confirm's one send. A second press, even in the same moment, sends
+ * nothing. A post given here (the connection current at the press) replaces
+ * the one the confirm opened with; the key and the body never change.
+ */
+export function confirmClaudeResetSpend(key: string, post?: ClaudeResetSpendPost): Promise<void> {
   const current = getClaudeResetSpend(key);
   if (!current.confirmOpen || current.inFlight || current.outcome) return Promise.resolve();
-  return deliver(key, current);
+  return deliver(key, current, post);
 }
 
 /** Delivers the same key and body again; only while the outcome is not known. */
-export function askClaudeResetSpendAgain(key: string): Promise<void> {
+export function askClaudeResetSpendAgain(key: string, post?: ClaudeResetSpendPost): Promise<void> {
   const current = getClaudeResetSpend(key);
   if (current.inFlight || !unresolved(current.outcome)) return Promise.resolve();
-  return deliver(key, current);
+  return deliver(key, current, post);
 }
 
 /** Drops a shown answer or refusal; an outcome not known yet stays. */
@@ -313,8 +340,9 @@ export function dismissClaudeResetSpend(key: string) {
   if (current.outcome && !current.confirmOpen && !claudeResetSpendBusy(current)) put(key, IDLE);
 }
 
-async function deliver(key: string, current: ClaudeResetSpendSeat) {
+async function deliver(key: string, current: ClaudeResetSpendSeat, fresh?: ClaudeResetSpendPost) {
   const delivery = current.delivery;
+  if (fresh) posts.set(key, fresh);
   const post = posts.get(key);
   if (!delivery || !post) return;
   // The latch: set before anything is awaited.
@@ -333,8 +361,7 @@ async function deliver(key: string, current: ClaudeResetSpendSeat) {
     return;
   }
   put(key, { delivery, confirmOpen: false, inFlight: false, outcome });
-  if (!unresolved(outcome)) {
-    posts.delete(key);
-    invalidateClaudeLimitResets();
-  }
+  if (!unresolved(outcome)) posts.delete(key);
+  // Any HTTP answer, even one whose outcome is not known yet, drops the cached read.
+  if (outcome.type !== 'no_answer') invalidateClaudeLimitResets();
 }

@@ -98,7 +98,7 @@ const lastSpend = {
 };
 const identity = { primary: 'ops-one@example.test', organization: 'Example Org One', fileName: 'seat-one.json' };
 const fresh: SeatFreshness = { kind: 'fresh', ageMs: 5_000 };
-const idle = getClaudeResetSpend(claudeResetSpendSeatKey(9, 'idx-never-opened'));
+const idle = getClaudeResetSpend(claudeResetSpendSeatKey('http://hub.example.test:8317', 'idx-never-opened'));
 
 const text = (html: string) =>
   html
@@ -292,6 +292,28 @@ describe('A4: states N, O and H', () => {
   });
 });
 
+describe('LEAVE: shapes between states take the state with fewer controls', () => {
+  test('kinds null reads as an older hub; an unlisted kind code gets a line and no control', () => {
+    expect(claudeResetCardState({ ...visible, kinds: null }, { loaded: true }).state).toBe('O');
+    expect(controlTags(details({ seat: { ...visible, kinds: null } }))).toHaveLength(0);
+    const extra = {
+      ...visible,
+      kinds: { ...visible.kinds, zeta_kind: { resets_left: 3, usable_resets: 3, soonest_expiry: null } },
+    };
+    const shown = text(face({ seat: extra }));
+    expect(shown.indexOf('Unknown kind (zeta_kind): 3 left · the hub does not spend this kind')).toBeGreaterThan(
+      shown.indexOf('Unknown kind (unknown)')
+    );
+    expect(control(details({ seat: extra }), 'zeta_kind')).toBeUndefined();
+  });
+
+  test('usage never read warns in the confirm as not read yet', () => {
+    expect(confirmBody({ seat: visible, freshness: null, usageText: '' })).toContain(
+      "This card's usage is old (not read yet)."
+    );
+  });
+});
+
 describe('A5: stale numbers', () => {
   const STALE_COUNTS =
     "These counts are old. The hub reads this seat's resets fresh before it spends, and refuses if it cannot.";
@@ -354,7 +376,7 @@ describe('A6: the confirm names the seat and the kind', () => {
 
   test('the open confirm has Cancel and one button naming the act; opening it posts nothing', () => {
     const calls: unknown[] = [];
-    const key = claudeResetSpendSeatKey(9, 'idx-one');
+    const key = claudeResetSpendSeatKey('http://hub.example.test:8317', 'idx-one');
     openClaudeResetSpend(
       key,
       { auth_index: 'idx-one', kind: 'fable' },
