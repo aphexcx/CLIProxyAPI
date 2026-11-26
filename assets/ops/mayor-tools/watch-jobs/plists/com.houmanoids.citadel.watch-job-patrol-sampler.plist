@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.houmanoids.citadel.watch-job-patrol-sampler</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/python3</string>
+        <string>-I</string>
+        <string>/Users/tailor512/city/assets/ops/mayor-tools/watch-jobs/patrol-sampler.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/tailor512/city</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/tailor512</string>
+        <key>PATH</key>
+        <string>/Users/tailor512/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/tailor512/city/.gc/watch-job-patrol-sampler.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tailor512/city/.gc/watch-job-patrol-sampler.log</string>
+</dict>
+</plist>
