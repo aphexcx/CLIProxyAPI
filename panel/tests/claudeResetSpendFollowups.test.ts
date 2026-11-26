@@ -497,6 +497,16 @@ describe('A7: Spend is dead while the confirm closes (the markup)', () => {
     expect(closing.spend).toContain('disabled=""');
     expect(closing.cancel).toContain('disabled=""');
   });
+
+  // The dialog restarts a close in its fade whenever its callbacks change identity, and marking
+  // the confirm closing re-renders the view. Only a DOM shows the close itself; this pins the wire.
+  test('the dialog gets close callbacks that never change, so marking it closing does not restart its close', async () => {
+    const view = await readFile(join('src', 'features', 'quota', 'providers', 'claude', 'ClaudeResetSpend.tsx'), 'utf8');
+    expect(view).toContain('onClose={closeConfirm}');
+    expect(view).toContain('onCloseStart={confirmClosing}');
+    expect(view).toMatch(/const closeConfirm = useCallback\([^\n]*, \[\]\);/);
+    expect(view).toMatch(/const confirmClosing = useCallback\([^\n]*, \[\]\);/);
+  });
 });
 
 describe('A8: where focus goes when the confirm closes', () => {

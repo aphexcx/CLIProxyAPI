@@ -1,4 +1,4 @@
-import { useEffect, useRef, useSyncExternalStore, type ReactNode, type Ref } from 'react';
+import { useCallback, useEffect, useRef, useSyncExternalStore, type ReactNode, type Ref } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { Modal } from '@/components/ui/Modal';
@@ -197,6 +197,14 @@ export function ClaudeResetSpendView({
   const kind = spend.delivery?.body.kind;
   // The confirm has closed or started to close: neither of its buttons acts any more.
   const closed = !spend.confirmOpen || spend.closing === true;
+  // The dialog restarts a close in its fade whenever its callbacks change, and marking the
+  // confirm closing (or the clock) re-renders this view: it gets callbacks that never change.
+  const latest = useRef({ onCancel, onClosing });
+  useEffect(() => {
+    latest.current = { onCancel, onClosing };
+  });
+  const closeConfirm = useCallback(() => latest.current.onCancel?.(), []);
+  const confirmClosing = useCallback(() => latest.current.onClosing?.(), []);
   const sectionRef = useRef<HTMLElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const outcomeRef = useRef<HTMLDivElement>(null);
@@ -257,8 +265,8 @@ export function ClaudeResetSpendView({
         <Modal
           open={spend.confirmOpen}
           title={t('claude_reset_spend.confirm_title', { kind: kindWords(t, kind) })}
-          onClose={() => onCancel?.()}
-          onCloseStart={onClosing}
+          onClose={closeConfirm}
+          onCloseStart={confirmClosing}
           closeDisabled={spend.inFlight}
           footer={
             <>
