@@ -23,7 +23,7 @@ const claudeBeta: QuotaFileEntry = {
     type: 'claude',
     email: 'shared@example.test',
     organization_name: 'Org Beta',
-    plan_tier: 'Max 20x',
+    plan_tier: 'Ultra',
   },
   type: 'claude',
 };

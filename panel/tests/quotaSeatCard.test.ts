@@ -19,7 +19,7 @@ const seat = (overrides: Partial<AuthFileItem>): AuthFileItem => ({
 
 describe('readSeatPlanTier', () => {
   test('reads the trimmed tier the hub recorded', () => {
-    expect(readSeatPlanTier(seat({ plan_tier: '  Max 20x ' }))).toBe('Max 20x');
+    expect(readSeatPlanTier(seat({ plan_tier: '  Ultra ' }))).toBe('Ultra');
   });
 
   test.each([undefined, '', '   ', 20, { label: 'Max' }])('shows no chip for %p', (value) => {

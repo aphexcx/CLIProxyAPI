@@ -15,8 +15,8 @@ func TestOAuthProfilePlanTier(t *testing.T) {
 		body string
 		want string
 	}{
-		{"max 20x", `{"organization":{"rate_limit_tier":"default_claude_max_20x","organization_type":"claude_max"}}`, "Max 20x"},
-		{"max 5x", `{"organization":{"rate_limit_tier":"default_claude_max_5x","organization_type":"claude_max"}}`, "Max 5x"},
+		{"max 20x", `{"organization":{"rate_limit_tier":"default_claude_max_20x","organization_type":"claude_max"}}`, "Ultra"},
+		{"max 5x", `{"organization":{"rate_limit_tier":"default_claude_max_5x","organization_type":"claude_max"}}`, "Max"},
 		{"team premium reuses max vocabulary", `{"organization":{"rate_limit_tier":"default_claude_max_5x","organization_type":"claude_team"}}`, "Team premium"},
 		{"team standard", `{"organization":{"rate_limit_tier":"default_raven","organization_type":"claude_team"}}`, "Team standard"},
 		{"team without tier", `{"organization":{"organization_type":"claude_team"}}`, "Team"},
@@ -55,6 +55,35 @@ const tierProfileBody = `{
 	"organization":{"uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","name":"Example Org","organization_type":"claude_max","rate_limit_tier":"default_claude_max_20x"}
 }`
 
+func TestPlanTierUsesCurrentNames(t *testing.T) {
+	for _, org := range []string{"", "claude_enterprise", "claude_team", "claude_max", "claude_pro"} {
+		for _, tier := range []string{"", "default_claude_max_20x", "default_claude_max_5x", "default_claude_max", "default_raven", "default_claude_pro"} {
+			for _, max := range []bool{false, true} {
+				for _, pro := range []bool{false, true} {
+					var profile OAuthProfile
+					profile.Organization.OrganizationType, profile.Organization.RateLimitTier = org, tier
+					profile.Account.HasClaudeMax, profile.Account.HasClaudePro = max, pro
+					if got := profile.PlanTier(); got == "Max 20x" || got == "Max 5x" {
+						t.Errorf("org=%q tier=%q max=%t pro=%t returned %q", org, tier, max, pro, got)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestDisplayPlanTier(t *testing.T) {
+	for _, tc := range []struct{ stored, want string }{
+		{" Max 20x ", "Ultra"}, {"Max 5x", "Max"}, {"Team premium", "Team premium"},
+		{"Max", "Max"}, {"Ultra", "Ultra"}, {"default_future", "default_future"},
+		{"max 20x", "max 20x"}, {"Max 20x plus", "Max 20x plus"}, {" other ", " other "},
+	} {
+		if got := DisplayPlanTier(tc.stored); got != tc.want {
+			t.Errorf("DisplayPlanTier(%q) = %q, want %q", tc.stored, got, tc.want)
+		}
+	}
+}
+
 func TestExchangeCodeForTokensKeepsPlanTier(t *testing.T) {
 	auth := &ClaudeAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.String() {
@@ -75,15 +104,15 @@ func TestExchangeCodeForTokensKeepsPlanTier(t *testing.T) {
 	if errExchange != nil {
 		t.Fatalf("ExchangeCodeForTokens() error = %v", errExchange)
 	}
-	if bundle.TokenData.PlanTier != "Max 20x" {
-		t.Fatalf("token plan tier = %q, want Max 20x", bundle.TokenData.PlanTier)
+	if bundle.TokenData.PlanTier != "Ultra" {
+		t.Fatalf("token plan tier = %q, want Ultra", bundle.TokenData.PlanTier)
 	}
 	storage := auth.CreateTokenStorage(bundle)
 	encoded, errMarshal := json.Marshal(storage)
 	if errMarshal != nil {
 		t.Fatal(errMarshal)
 	}
-	if !strings.Contains(string(encoded), `"plan_tier":"Max 20x"`) {
+	if !strings.Contains(string(encoded), `"plan_tier":"Ultra"`) {
 		t.Fatalf("stored credential omits plan_tier: %s", encoded)
 	}
 }
@@ -112,19 +141,19 @@ func TestRefreshTokensKeepsPlanTier(t *testing.T) {
 	if errRefresh != nil {
 		t.Fatalf("RefreshTokens() error = %v", errRefresh)
 	}
-	if tokenData.PlanTier != "Max 20x" {
-		t.Fatalf("refreshed plan tier = %q, want Max 20x", tokenData.PlanTier)
+	if tokenData.PlanTier != "Ultra" {
+		t.Fatalf("refreshed plan tier = %q, want Ultra", tokenData.PlanTier)
 	}
 }
 
 func TestUpdateTokenStoragePreservesPlanTierWhenRefreshOmitsIt(t *testing.T) {
-	storage := &ClaudeTokenStorage{PlanTier: "Max 5x"}
+	storage := &ClaudeTokenStorage{PlanTier: "Max"}
 	(&ClaudeAuth{}).UpdateTokenStorage(storage, &ClaudeTokenData{AccessToken: "new-access"})
-	if storage.PlanTier != "Max 5x" {
+	if storage.PlanTier != "Max" {
 		t.Fatalf("plan tier = %q, want preserved", storage.PlanTier)
 	}
-	(&ClaudeAuth{}).UpdateTokenStorage(storage, &ClaudeTokenData{AccessToken: "newer", PlanTier: "Max 20x"})
-	if storage.PlanTier != "Max 20x" {
+	(&ClaudeAuth{}).UpdateTokenStorage(storage, &ClaudeTokenData{AccessToken: "newer", PlanTier: "Ultra"})
+	if storage.PlanTier != "Ultra" {
 		t.Fatalf("plan tier = %q, want the refreshed tier", storage.PlanTier)
 	}
 }
