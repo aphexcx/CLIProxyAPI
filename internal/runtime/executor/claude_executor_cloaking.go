@@ -2944,6 +2944,47 @@ func upgradeClaudeCacheControlTTLDoc(doc *ojson.Doc, ttl string) bool {
 	return changed
 }
 
+// upgradeClaudeCacheControlTTLKeepingKeysDoc is the one-hour rule's upgrade of
+// markers the caller placed: every marker without a ttl gets ttl, and keeps
+// every key the caller wrote (type, then ttl, then the rest in the caller's
+// order), so fields such as scope and evict_on_complete survive. A marker that
+// already names a ttl is left as written.
+func upgradeClaudeCacheControlTTLKeepingKeysDoc(doc *ojson.Doc, ttl string) bool {
+	if ttl == "" || doc == nil || doc.Len() == 0 {
+		return false
+	}
+	changed := false
+	forEachClaudeCacheControlPathDoc(doc, func(path string, cacheControl ojson.Result) bool {
+		if !cacheControl.IsObject() || cacheControl.Get("ttl").Exists() {
+			return true
+		}
+		blockType := cacheControl.Get("type")
+		if blockType.Type != ojson.String {
+			return true
+		}
+		var upgraded strings.Builder
+		upgraded.WriteString(`{"type":`)
+		upgraded.WriteString(marshalJSONStringWithoutHTMLEscape(blockType.String()))
+		upgraded.WriteString(`,"ttl":`)
+		upgraded.WriteString(marshalJSONStringWithoutHTMLEscape(ttl))
+		cacheControl.ForEach(func(key, value ojson.Result) bool {
+			if name := key.String(); name != "type" {
+				upgraded.WriteByte(',')
+				upgraded.WriteString(marshalJSONStringWithoutHTMLEscape(name))
+				upgraded.WriteByte(':')
+				upgraded.WriteString(value.Raw)
+			}
+			return true
+		})
+		upgraded.WriteByte('}')
+		if errSet := doc.SetRawBytes(claudeCacheControlPath(path), []byte(upgraded.String())); errSet == nil {
+			changed = true
+		}
+		return true
+	})
+	return changed
+}
+
 // stripClaudeCacheControlTTL removes any ttl field from cache_control blocks in payload,
 // downgrading {"type":"ephemeral","ttl":"..."} to {"type":"ephemeral"}.
 // This ensures that when extended-cache-ttl-2025-04-11 is stripped (e.g. on probes,

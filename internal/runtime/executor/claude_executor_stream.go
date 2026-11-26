@@ -23,6 +23,9 @@ import (
 
 func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
+	// A refusal of the one-hour cache rule re-sends the request as it entered, so
+	// the body is rebuilt and the payload rules run once on the body that is sent.
+	entryCtx, entryReq, entryOpts := ctx, req, opts
 	if errExpand := expandClaudeResponsesCompaction(&req, &opts); errExpand != nil {
 		return nil, statusErr{code: http.StatusBadRequest, msg: errExpand.Error()}
 	}
@@ -196,11 +199,20 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	// probes omit both 1h cache and extended-cache-ttl.
 	isSubagent := isClaudeSubagentRequestDoc(incomingHeaders, doc)
 	subagent1h := isSubagent && claudeSubagentRequests1hDoc(incomingHeaders, doc)
+	oneHourRuleApplied := false
 	if cpaOwnsCacheControl && fp.ProfileClaudeCodeCLI && (!isSubagent || subagent1h) && !isProbeOrHelper {
 		upgradeClaudeCacheControlTTLDoc(doc, claudeCacheControlTTL1h)
+	} else if fp.OneHourCache && isClaudeOAuthToken(apiKey) && !cpaOwnsCacheControl && !explicitCacheMode &&
+		!isSubagent && !isProbeOrHelper && !claudeCodeDetection.HelperProfile && !helps.ClaudeOneHourCacheRuleOff(ctx) {
+		// The one-hour rule (claude-header-defaults.one-hour-cache): a main
+		// conversation on a subscription seat gets the hour on every marker it
+		// placed without a lifetime. An explicit ttl, 5m included, stays as written.
+		oneHourRuleApplied = upgradeClaudeCacheControlTTLKeepingKeysDoc(doc, claudeCacheControlTTL1h)
 	} else if (isProbeOrHelper || (isSubagent && !subagent1h)) && !explicitCacheMode {
 		stripClaudeCacheControlTTLDoc(doc)
 	}
+	cacheClient := helps.ClaudeCacheClient(opts.Metadata)
+	reporter.SetClaudeCacheScope(cacheClient, helps.ClaudeCacheKind(isSubagent, isProbeOrHelper || claudeCodeDetection.HelperProfile), oneHourRuleApplied)
 
 	// Normalize TTL values to prevent ordering violations under prompt-caching-scope-2026-01-05.
 	if !explicitCacheMode {
@@ -332,6 +344,13 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		if errClose := errBody.Close(); errClose != nil {
 			log.Errorf("response body close error: %v", errClose)
+		}
+		if oneHourRuleApplied && helps.IsClaudeCacheLifetimeRefusal(httpResp.StatusCode, b) {
+			// No byte has reached the client yet: re-send once with the rule off and
+			// let that attempt report the request's only usage record.
+			helps.NoteClaudeOneHourCacheRefusal(ctx, reporter, cacheClient, httpResp.StatusCode)
+			reporter.AbandonAttempt()
+			return e.ExecuteStream(helps.WithClaudeOneHourCacheRuleOff(entryCtx), auth, entryReq, entryOpts)
 		}
 		if fastRequest {
 			return nil, newClaudeFastDirectResponseError(httpResp, b)

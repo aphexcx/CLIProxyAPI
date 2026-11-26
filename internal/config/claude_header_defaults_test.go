@@ -67,6 +67,7 @@ func TestParseConfigBytes_ClaudeHeaderDefaultsOperatorOverrides(t *testing.T) {
       anthropic-beta-strip: [" cache-diagnosis-2026-04-07 ", "", "cache-diagnosis-2026-04-07"]
       anthropic-beta-append: ["context-1m-2025-08-07", " context-1m-2025-08-07 ", "advisor-tool-2026-03-01"]
       inject-diagnostics: false
+      one-hour-cache: false
       passthrough-newer-client: false
       client-request-id: " PassThrough "
 `))
@@ -88,6 +89,9 @@ func TestParseConfigBytes_ClaudeHeaderDefaultsOperatorOverrides(t *testing.T) {
 	}
 	if hd.InjectDiagnostics == nil || *hd.InjectDiagnostics {
 		t.Fatalf("InjectDiagnostics = %v, want explicit false", hd.InjectDiagnostics)
+	}
+	if hd.OneHourCache == nil || *hd.OneHourCache {
+		t.Fatalf("OneHourCache = %v, want explicit false", hd.OneHourCache)
 	}
 	if hd.ClientRequestID != ClaudeClientRequestIDPassthrough {
 		t.Fatalf("ClientRequestID = %q, want %q", hd.ClientRequestID, ClaudeClientRequestIDPassthrough)

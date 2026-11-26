@@ -656,6 +656,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					} else {
 						delete(meta, cliproxyexecutor.ParentSessionIDMetadataKey)
 					}
+					copyClaudeSeatClientHash(meta, pickOpts.Metadata)
 					execOpts.Metadata = meta
 				}
 			}
@@ -1254,7 +1255,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 		} else if pickOpts.Metadata != nil {
 			if canonicalID, ok := pickOpts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey]; ok {
-				meta := make(map[string]any, len(execOpts.Metadata)+2)
+				meta := make(map[string]any, len(execOpts.Metadata)+3)
 				for k, v := range execOpts.Metadata {
 					meta[k] = v
 				}
@@ -1264,6 +1265,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				} else {
 					delete(meta, cliproxyexecutor.ParentSessionIDMetadataKey)
 				}
+				copyClaudeSeatClientHash(meta, pickOpts.Metadata)
 				execOpts.Metadata = meta
 			}
 		}

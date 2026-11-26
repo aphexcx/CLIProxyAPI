@@ -59,6 +59,9 @@ const (
 	// across explicit harness headers, body fields, execution sessions, LCP inference,
 	// and fallback context derivation for unified debugging and cross-subsystem tracing.
 	CanonicalSessionIDMetadataKey = "canonical_session_id"
+	// ClaudeSeatClientHashMetadataKey stores the client hash the Claude seat router
+	// logs as client_hash, so executor-side measures name the same client.
+	ClaudeSeatClientHashMetadataKey = "claude_seat_client_hash"
 	// ParentSessionIDMetadataKey stores the parent session identity for hierarchical sessions and forks.
 	// For top-level Merkle LCP forks, it represents the deterministic Merkle prefix hash at the divergence point.
 	ParentSessionIDMetadataKey = "parent_session_id"

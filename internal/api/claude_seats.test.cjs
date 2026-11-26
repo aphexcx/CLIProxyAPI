@@ -5,13 +5,14 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const script = fs.readFileSync(path.join(__dirname, 'claude_seats.html'), 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
-function page() {
-  const element = () => ({
+function page(meter = { rule_enabled: true, since: '2026-11-26T19:25:44Z', days: [] }) {
+  const element = tag => ({
+    tag,
     children: [], hidden: false, value: '', textContent: '',
     append(child) { this.children.push(child); },
     replaceChildren() { this.children = []; }, focus() {}, setAttribute() {}
   });
-  const elements = Object.fromEntries(['login', 'key', 'logout', 'seats', 'status'].map(id => [id, element()]));
+  const elements = Object.fromEntries(['login', 'key', 'logout', 'seats', 'status', 'cache'].map(id => [id, element()]));
   const timers = new Map();
   let nextTimer = 0, responseStatus = 200, resetStatus = 200, calls = 0;
   const context = vm.createContext({
@@ -21,6 +22,7 @@ function page() {
     fetch: async path => {
       calls++;
       const resets = path.endsWith('claude/limit-resets');
+      if (responseStatus === 200 && path.endsWith('observability/claude-cache')) return { ok: true, status: 200, json: async () => meter };
       const code = responseStatus !== 200 ? responseStatus : resets ? resetStatus : 200;
       return { ok: code === 200, status: code, json: async () => resets ? { seats: [{ name: 'Seat', credential_generation: '1:1', stale: false, age_seconds: 12, best_click_rank: 1, rank_reason: 'holder action only', cedar_ember: { eligible: true, grants: [{ id: 'fixture', resets_left: 2, usable_now: true }] } }] } : { files: [{ provider: 'claude', name: 'Seat', credential_generation: '1:1', auth_index: 'seat', claude_usage: { windows: {}, holds: [] } }] } };
     }
@@ -101,3 +103,39 @@ for (const status of [401, 403]) {
     });
   }
 }
+
+const cacheMeter = (write5m, clients) => ({
+  rule_enabled: true, since: '2026-11-26T19:25:44Z',
+  days: [{ day: '2026-11-26', main_clients_with_5m_writes: clients.length,
+    totals: { main: { requests: 9, write_5m: write5m, write_1h: 5000, write_unsplit: 0, read: 70000 } },
+    rule: { applied: 9, refused: 0 }, clients }]
+});
+const flatten = element => element.textContent + ' ' + element.children.map(flatten).join(' ');
+const tags = (element, tag) => (element.tag === tag ? 1 : 0) + element.children.reduce((sum, child) => sum + tags(child, tag), 0);
+
+test('cache section lists main clients that wrote at five minutes', async () => {
+  const p = page(cacheMeter(1200, [
+    { client: '1a2b3c4d5e6f', kind: 'main', requests: 3, write_5m: 1200, write_1h: 0, read: 10, last_5m_write_at: '2026-11-26T20:00:00Z' },
+    { client: 'ffffffffffff', kind: 'subagent', requests: 4, write_5m: 800, write_1h: 0, read: 0, last_5m_write_at: '2026-11-26T20:00:00Z' }
+  ]));
+  p.elements.key.value = 'fixture-key';
+  p.elements.login.onsubmit({ preventDefault() {} });
+  await settle();
+  const text = flatten(p.elements.cache);
+  assert.match(text, /written at one hour 5,000/);
+  assert.match(text, /written at five minutes 1,200/);
+  assert.match(text, /read 70,000/);
+  assert.equal(tags(p.elements.cache, 'table'), 1);
+  assert.match(text, /1a2b3c4d5e6f/);
+  assert.doesNotMatch(text, /ffffffffffff/, 'a subagent is not a main conversation');
+});
+
+test('cache section shows no table when no main conversation wrote at five minutes', async () => {
+  const p = page(cacheMeter(0, []));
+  p.elements.key.value = 'fixture-key';
+  p.elements.login.onsubmit({ preventDefault() {} });
+  await settle();
+  const text = flatten(p.elements.cache);
+  assert.match(text, /written at five minutes 0/);
+  assert.equal(tags(p.elements.cache, 'table'), 0);
+});

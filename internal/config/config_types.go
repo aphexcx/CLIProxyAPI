@@ -164,7 +164,9 @@ func (c ClaudeConfig) SessionDatePinRetention() time.Duration {
 // NativeEntrypoints extends the built-in native Claude Code entrypoint allowlist.
 // AnthropicBetaStrip and AnthropicBetaAppend are exact-name operator overrides applied
 // to the final Anthropic-Beta set; InjectDiagnostics and ClientRequestID tune the
-// first-party Claude Code CLI request shape.
+// first-party Claude Code CLI request shape. OneHourCache (default true) gives a
+// main conversation on a subscription seat the one-hour prompt cache on every
+// cache marker that names no lifetime, and holds its seat for the same hour.
 type ClaudeHeaderDefaults struct {
 	UserAgent              string   `yaml:"user-agent" json:"user-agent"`
 	PackageVersion         string   `yaml:"package-version" json:"package-version"`
@@ -180,6 +182,7 @@ type ClaudeHeaderDefaults struct {
 	AnthropicBetaAppend    []string `yaml:"anthropic-beta-append,omitempty" json:"anthropic-beta-append,omitempty"`
 	InjectDiagnostics      *bool    `yaml:"inject-diagnostics,omitempty" json:"inject-diagnostics,omitempty"`
 	ClientRequestID        string   `yaml:"client-request-id,omitempty" json:"client-request-id,omitempty"`
+	OneHourCache           *bool    `yaml:"one-hour-cache,omitempty" json:"one-hour-cache,omitempty"`
 }
 
 // Supported ClaudeHeaderDefaults.ClientRequestID values. An empty value means

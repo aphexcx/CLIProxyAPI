@@ -14,6 +14,8 @@ article { border: 1px solid #888; border-radius: .6rem; padding: 1rem; overflow-
 h2 { font-size: 1rem; margin-top: 0; } progress { width: 100%; accent-color: #388c77; }
 .muted, small { opacity: .75; } .window { margin-bottom: 1rem; }
 #status { min-height: 1.5em; } .hold { color: light-dark(#923800, #ffbc84); }
+#cache { margin-top: 2rem; overflow-x: auto; } #cache table { border-collapse: collapse; }
+#cache th, #cache td { text-align: left; padding: .25rem .9rem .25rem 0; border-bottom: 1px solid #888; }
 </style>
 <h1>Claude seats</h1>
 <p class="muted">Usage from the hub’s latest observations. Updates every 60 seconds.</p>
@@ -26,6 +28,7 @@ h2 { font-size: 1rem; margin-top: 0; } progress { width: 100%; accent-color: #38
 <button id="logout" hidden>Lock view</button>
 <p id="status" role="status" aria-live="polite"></p>
 <main id="seats"></main>
+<section id="cache"></section>
 <script>
 'use strict';
 const login = document.getElementById('login');
@@ -33,6 +36,7 @@ const keyInput = document.getElementById('key');
 const logout = document.getElementById('logout');
 const seats = document.getElementById('seats');
 const status = document.getElementById('status');
+const cache = document.getElementById('cache');
 let key = '', timer, revision = 0, loading = false;
 let lastFiles = [], lastResets = { seats: [] }, resetReadAt = 0;
 const node = (tag, text, parent, className) => {
@@ -105,6 +109,27 @@ function render(files, resets) {
   }
   if (!seats.children.length) node('p', 'No Claude seats found.', seats);
 }
+const tokens = value => Number(value || 0).toLocaleString();
+function renderCache(meter) {
+  cache.replaceChildren();
+  if (!meter) { node('p', 'Cache writes unavailable.', cache, 'muted'); return; }
+  node('h2', 'Cache writes today', cache);
+  const today = (meter.days || [])[0] || {};
+  const main = today.totals?.main || {};
+  node('p', 'Main conversations: written at one hour ' + tokens(main.write_1h) + ' · written at five minutes ' + tokens(main.write_5m) + ' · read ' + tokens(main.read) + ' tokens · since ' + date(meter.since) + (meter.rule_enabled === false ? ' · one-hour rule off' : ''), cache);
+  const clients = (today.clients || []).filter(client => client.kind === 'main' && client.write_5m > 0);
+  if (!(main.write_5m > 0) || !clients.length) return;
+  const table = node('table', undefined, cache);
+  const head = node('tr', undefined, table);
+  for (const title of ['Client', 'Requests', 'Five-minute tokens', 'Last five-minute write']) node('th', title, head);
+  for (const client of clients) {
+    const row = node('tr', undefined, table);
+    node('td', client.client, row);
+    node('td', tokens(client.requests), row);
+    node('td', tokens(client.write_5m), row);
+    node('td', date(client.last_5m_write_at), row);
+  }
+}
 async function load() {
   if (!key || loading) return;
   const current = revision;
@@ -114,8 +139,12 @@ async function load() {
     if (current !== revision) return;
     const resets = await request('claude/limit-resets');
     if (current !== revision) return;
+    let meter = null;
+    try { meter = await request('observability/claude-cache'); } catch { meter = null; }
+    if (current !== revision) return;
     lastFiles = data.files || []; lastResets = resets; resetReadAt = Date.now();
     render(lastFiles, lastResets);
+    renderCache(meter);
     login.hidden = true; logout.hidden = false;
     status.textContent = 'Updated ' + new Date().toLocaleTimeString();
     return true;
@@ -136,7 +165,7 @@ login.onsubmit = event => {
   clearInterval(timer); void load(); timer = setInterval(load, 60000);
 };
 function lockView(message = '') {
-  revision++; key = ''; keyInput.value = ''; clearInterval(timer); seats.replaceChildren(); status.textContent = message;
+  revision++; key = ''; keyInput.value = ''; clearInterval(timer); seats.replaceChildren(); cache.replaceChildren(); status.textContent = message;
   lastFiles = []; lastResets = { seats: [] }; resetReadAt = 0;
   login.hidden = false; logout.hidden = true; keyInput.focus();
 }
