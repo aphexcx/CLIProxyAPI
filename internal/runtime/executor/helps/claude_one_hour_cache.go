@@ -42,7 +42,9 @@ func IsClaudeCacheLifetimeRefusal(status int, body []byte) bool {
 	}
 	message := string(body)
 	if ojson.ValidBytes(body) {
-		message = ojson.GetBytesNoCopy(body, "error.message").String()
+		if errorMessage := ojson.GetBytesNoCopy(body, "error.message").String(); errorMessage != "" {
+			message = errorMessage
+		}
 	}
 	return claudeCacheLifetimeWords.MatchString(message)
 }

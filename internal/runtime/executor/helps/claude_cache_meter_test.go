@@ -206,6 +206,7 @@ func TestIsClaudeCacheLifetimeRefusal(t *testing.T) {
 		{http.StatusBadRequest, `{"type":"error","error":{"message":"messages: text content blocks must be non-empty"}}`, false},
 		{http.StatusBadRequest, `{"type":"error","error":{"message":"ok"},"echo":"cache_control"}`, false},
 		{http.StatusBadRequest, `plain text naming cache_control`, true},
+		{http.StatusBadRequest, `{"message":"ttl not supported on this route"}`, true},
 		{http.StatusTooManyRequests, `{"type":"error","error":{"message":"cache_control"}}`, false},
 	} {
 		if got := IsClaudeCacheLifetimeRefusal(tc.status, []byte(tc.body)); got != tc.want {

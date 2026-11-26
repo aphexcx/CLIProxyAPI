@@ -490,6 +490,27 @@ func TestClaudeOneHourCacheRuleRefusalOfUnchangedRequestReturnsToCaller(t *testi
 	}
 }
 
+// Guard: when the order pass removes every hour the rule added (an explicit 5m
+// on the first marker), the sent body is the client's, so a lifetime 400 goes
+// back to the caller after one upstream request.
+func TestClaudeOneHourCacheRuleRefusalWithoutSentHourReturnsToCaller(t *testing.T) {
+	for _, stream := range oneHourPaths {
+		t.Run(oneHourPathName(stream), func(t *testing.T) {
+			upstream, _, err := runOneHourCall(t, oneHourCall{stream: stream, payload: oneHourPayload(`{"type":"ephemeral","ttl":"5m"}`, oneHourBare, oneHourBare, "", ""),
+				refuse: func([]byte) string { return oneHourLifetimeRefusal }})
+			if err == nil || !strings.Contains(err.Error(), "cache_control") {
+				t.Fatalf("caller error = %v, want the upstream 400", err)
+			}
+			if got := upstream.count(); got != 1 {
+				t.Fatalf("upstream saw %d requests, want 1", got)
+			}
+			if bytes.Contains(upstream.body(0), []byte(`"ttl":"1h"`)) {
+				t.Fatalf("the order pass left a one-hour marker after an explicit 5m: %s", upstream.body(0))
+			}
+		})
+	}
+}
+
 // Guards: requests the rule must leave as the client wrote them.
 func TestClaudeOneHourCacheRuleLeavesOtherRequestsUnchanged(t *testing.T) {
 	subagent := oneHourNativeHeaders()
