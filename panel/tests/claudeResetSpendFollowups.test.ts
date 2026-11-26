@@ -10,6 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import axios, { AxiosError, type AxiosAdapter } from 'axios';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createElement } from 'react';
@@ -920,4 +921,80 @@ describe("the check's read: the POST's own connection, never the page's cache", 
     expect(posts).toHaveLength(1);
     expect(capture).toHaveBeenCalledTimes(1);
   });
+});
+
+describe('round 1 class (Codex): only an HTTP 200 settles a later ask', () => {
+  // The page's client hands back only the body of any 2xx. Here the real client runs over a
+  // fake transport that keeps the status and settles as axios's own adapters do (validateStatus).
+  type Wire = { status: number; data: unknown } | 'no answer';
+  function transport(replies: Wire[]): AxiosAdapter {
+    return (config) =>
+      new Promise((resolve, reject) => {
+        const reply = replies.shift() ?? 'no answer';
+        if (reply === 'no answer') {
+          reject(new AxiosError('timeout of 120000ms exceeded', 'ECONNABORTED', config));
+          return;
+        }
+        const response = { data: reply.data, status: reply.status, statusText: '', headers: {}, config, request: {} };
+        if (!config.validateStatus || config.validateStatus(reply.status)) resolve(response);
+        else
+          reject(
+            new AxiosError(
+              `Request failed with status code ${reply.status}`,
+              reply.status >= 400 && reply.status < 500 ? AxiosError.ERR_BAD_REQUEST : AxiosError.ERR_BAD_RESPONSE,
+              config,
+              {},
+              response
+            )
+          );
+      });
+  }
+  const own = (body: ClaudeResetSpendBody) => ({
+    auth_index: body.auth_index,
+    kind: body.kind,
+    grant_id: 'grant-f1',
+    request_id: '00000000-0000-4000-8000-0000000000c1',
+    retry: false,
+    result: 'reset',
+  });
+  type Row = { name: string; wire: (body: ClaudeResetSpendBody) => Wire; settles: boolean; status?: number };
+  const rows: Row[] = [
+    { name: "202 naming this delivery's seat and kind, with a request id", wire: (body) => ({ status: 202, data: own(body) }), settles: false, status: 202 },
+    { name: '202 marked replayed', wire: (body) => ({ status: 202, data: { ...own(body), replayed: true } }), settles: false, status: 202 },
+    { name: '203 marked replayed', wire: (body) => ({ status: 203, data: { ...own(body), replayed: true } }), settles: false, status: 203 },
+    { name: '201 marked replayed, with an error string', wire: () => ({ status: 201, data: { replayed: true, error: 'fixture words; nothing spent' } }), settles: false, status: 201 },
+    { name: '204 with no body', wire: () => ({ status: 204, data: '' }), settles: false, status: 204 },
+    { name: "200 naming this delivery's seat and kind, with a request id", wire: (body) => ({ status: 200, data: own(body) }), settles: true },
+    { name: '200 marked replayed', wire: (body) => ({ status: 200, data: { ...own(body), replayed: true } }), settles: true },
+    { name: '409 marked replayed, the claim not sent', wire: () => ({ status: 409, data: { replayed: true, error: 'the claim was not sent; nothing spent' } }), settles: true },
+  ];
+  let previousAdapter: typeof axios.defaults.adapter;
+  beforeEach(() => {
+    previousAdapter = axios.defaults.adapter;
+    apiClient.setConfig({ apiBase: 'http://hub-status.example.test:8317', managementKey: 'fixture-key' });
+  });
+  afterEach(() => {
+    axios.defaults.adapter = previousAdapter;
+    apiClient.setConfig({ apiBase: '', managementKey: '' });
+  });
+  for (const row of rows) {
+    test(`after "not known", ${row.name} ${row.settles ? 'settles' : 'stays not known'}`, async () => {
+      const seat = freshSeat();
+      axios.defaults.adapter = transport(['no answer', row.wire(seat.body)]);
+      spend.openClaudeResetSpend(seat.key, seat.body, { post: api.defaultClaudeResetSpendPost(), makeKey: countingKeys });
+      await spend.confirmClaudeResetSpend(seat.key);
+      expect(spend.getClaudeResetSpend(seat.key).outcome?.type).toBe('no_answer');
+      await spend.askClaudeResetSpendAgain(seat.key, api.defaultClaudeResetSpendPost());
+      const entry = spend.getClaudeResetSpend(seat.key);
+      const shown = outcomeText(seat.key);
+      console.log(`R1 | ${row.name} | type=${entry.outcome?.type} | busy=${spend.claudeResetSpendBusy(entry)} | ${shown}`);
+      expect(spend.claudeResetSpendBusy(entry)).toBe(!row.settles);
+      if (!row.settles) {
+        expect(shown).toContain(DICTATED.notFromRecord(row.status as number));
+        expect(shown).toContain(en('ask_again'));
+        expect(shown).not.toContain('The provider confirmed it.');
+        expect(shown).not.toContain(en('not_spent'));
+      }
+    });
+  }
 });

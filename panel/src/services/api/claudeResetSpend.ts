@@ -31,7 +31,12 @@ export interface ClaudeResetSpendBody {
 export type ClaudeResetSpendPost = (
   path: string,
   body: ClaudeResetSpendBody,
-  config: { headers: Record<string, string>; timeout: number }
+  config: {
+    headers: Record<string, string>;
+    timeout: number;
+    /** Set on a delivery after an outcome not known yet: any status but 200 comes back as an error with its status. */
+    validateStatus?: (status: number) => boolean;
+  }
 ) => Promise<unknown>;
 
 /** The press's check: one read of the hub's cached reset read, never the page's cache. */
@@ -90,16 +95,28 @@ export type ClaudeResetSpendOutcome =
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-/** One delivery: the path, a body of auth_index and kind only, the key, and the long wait. */
+/** The status of a 2xx answer is otherwise lost: the client hands back only its body. */
+const only200 = (status: number) => status === 200;
+
+/**
+ * One delivery: the path, a body of auth_index and kind only, the key, and the
+ * long wait. A later delivery ("Ask the hub again") accepts only an HTTP 200 as
+ * an answer, so any other status reaches its reading with its own number.
+ */
 export function sendClaudeResetSpend(
   post: ClaudeResetSpendPost,
   key: string,
-  body: ClaudeResetSpendBody
+  body: ClaudeResetSpendBody,
+  later = false
 ): Promise<unknown> {
   return post(
     CLAUDE_RESET_SPEND_PATH,
     { auth_index: body.auth_index, kind: body.kind },
-    { headers: { [KEY_HEADER]: key }, timeout: CLAUDE_RESET_SPEND_TIMEOUT_MS }
+    {
+      headers: { [KEY_HEADER]: key },
+      timeout: CLAUDE_RESET_SPEND_TIMEOUT_MS,
+      ...(later && { validateStatus: only200 }),
+    }
   );
 }
 
@@ -162,12 +179,13 @@ export function readClaudeResetSpendOutcome(
 
 /**
  * Reads a delivery made while the outcome is not known yet ("Ask the hub
- * again"). Only the hub's own record of the key settles the click: a replay
- * (an answer or a refusal marked replayed), or the hub's first answer for a
- * key its ledger did not hold, which names this delivery's seat and kind and
- * carries a request id. No answer, a key in flight and a 401 read as for a
- * first delivery. Every other answer, whatever its status, leaves the outcome
- * not known.
+ * again"), sent with sendClaudeResetSpend(..., true) so that only an HTTP 200
+ * arrives as data. Only the hub's own record of the key settles the click: a
+ * replay (an HTTP 200 or a refusal marked replayed), or the hub's first answer
+ * for a key its ledger did not hold, an HTTP 200 that names this delivery's
+ * seat and kind and carries a request id. No answer, a key in flight and a 401
+ * read as for a first delivery. Every other answer, whatever its status, leaves
+ * the outcome not known.
  */
 export function readClaudeResetSpendAskAgain(
   settled: { data: unknown } | { error: unknown },
@@ -186,7 +204,9 @@ export function readClaudeResetSpendAskAgain(
     )
       return outcome;
   }
-  if (outcome.type === 'refusal' && outcome.refusal.replayed === true) return outcome;
+  // A refusal is a status outside 2xx; a 2xx other than 200 is never a replay.
+  if (outcome.type === 'refusal' && outcome.refusal.replayed === true && (outcome.status < 200 || outcome.status > 299))
+    return outcome;
   const sent = 'data' in settled ? settled.data : isRecord(settled.error) ? settled.error.data : undefined;
   const words = (field: string) =>
     isRecord(sent) && typeof sent[field] === 'string' && sent[field] ? (sent[field] as string) : undefined;

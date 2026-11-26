@@ -470,14 +470,15 @@ async function deliver(key: string, current: ClaudeResetSpendSeat, fresh?: Claud
   if (!delivery || !post) return;
   // The latch: set before anything is awaited.
   put(key, { ...current, inFlight: true });
+  // After an outcome not known yet, only the hub's own record of the key settles the click.
+  const later = unresolved(current.outcome);
   let settled: { data: unknown } | { error: unknown };
   try {
-    settled = { data: await sendClaudeResetSpend(post, delivery.key, delivery.body) };
+    settled = { data: await sendClaudeResetSpend(post, delivery.key, delivery.body, later) };
   } catch (error) {
     settled = { error };
   }
-  // After an outcome not known yet, only the hub's own record of the key settles the click.
-  const outcome = unresolved(current.outcome)
+  const outcome = later
     ? readClaudeResetSpendAskAgain(settled, delivery.body)
     : readClaudeResetSpendOutcome(settled);
   if (!outcome) {
