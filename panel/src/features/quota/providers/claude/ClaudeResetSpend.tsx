@@ -197,32 +197,31 @@ export function ClaudeResetSpendView({
   const kind = spend.delivery?.body.kind;
   // The confirm has closed or started to close: neither of its buttons acts any more.
   const closed = !spend.confirmOpen || spend.closing === true;
-  // The dialog restarts a close in its fade whenever its callbacks change, and marking the
-  // confirm closing (or the clock) re-renders this view: it gets callbacks that never change.
-  const latest = useRef({ onCancel, onClosing });
-  useEffect(() => {
-    latest.current = { onCancel, onClosing };
-  });
-  const closeConfirm = useCallback(() => latest.current.onCancel?.(), []);
-  const confirmClosing = useCallback(() => latest.current.onClosing?.(), []);
   const sectionRef = useRef<HTMLElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const outcomeRef = useRef<HTMLDivElement>(null);
-  const openKind = spend.confirmOpen ? kind : undefined;
-  const lastOpenKind = useRef<string | undefined>(undefined);
-  // When the confirm closes, focus comes back to this seat's section, never to the page body.
+  // The latest handlers and state, for callbacks that never change. The dialog restarts a close
+  // in its fade whenever its callbacks change, and marking the confirm closing (or the clock)
+  // re-renders this view.
+  const latest = useRef({ onCancel, onClosing, spend });
   useEffect(() => {
-    const closedKind = lastOpenKind.current;
-    lastOpenKind.current = openKind;
-    if (!closedKind || openKind) return;
-    const button =
-      sectionRef.current?.querySelector<HTMLButtonElement>(`button[data-reset-kind="${closedKind}"]`) ?? null;
+    latest.current = { onCancel, onClosing, spend };
+  });
+  const closeConfirm = useCallback(() => latest.current.onCancel?.(), []);
+  const confirmClosing = useCallback(() => latest.current.onClosing?.(), []);
+  // Once the confirm's content is gone, focus comes back to this seat's section, never to the
+  // page body. It runs after the dialog's own focus return, which would otherwise win.
+  const focusAfterClose = useCallback((closedKind: ClaudeResetSpendKind) => {
+    const section = sectionRef.current;
+    const now = latest.current.spend;
+    if (!section?.isConnected || now.confirmOpen) return;
+    const button = section.querySelector<HTMLButtonElement>(`button[data-reset-kind="${closedKind}"]`);
     const target = claudeResetFocusAfterClose({
-      outcome: spend.outcome,
+      outcome: now.outcome,
       kindButton: !button ? 'gone' : button.disabled ? 'disabled' : 'live',
     });
     (target === 'outcome' ? outcomeRef.current : target === 'kind_button' ? button : headingRef.current)?.focus();
-  }, [openKind, spend.outcome]);
+  }, []);
   let plain: ReactNode = null;
   if (card.state === 'N') plain = t(`claude_reset_spend.state_${card.why}`);
   else if (card.state === 'O') plain = t('claude_reset_spend.state_old_hub');
@@ -299,10 +298,27 @@ export function ClaudeResetSpendView({
             inFlight={spend.inFlight}
             check={spend.check}
           />
+          <WhenConfirmGone kind={kind} onGone={focusAfterClose} />
         </Modal>
       )}
     </section>
   );
+}
+
+/**
+ * Rendered inside the dialog's content, which goes away when the confirm has closed: at once on
+ * Cancel, after the fade on Escape, the X or a send. One microtask later, so after the dialog's
+ * own focus return in the same commit, it calls onGone.
+ */
+function WhenConfirmGone({
+  kind,
+  onGone,
+}: {
+  kind: ClaudeResetSpendKind;
+  onGone: (kind: ClaudeResetSpendKind) => void;
+}) {
+  useEffect(() => () => queueMicrotask(() => onGone(kind)), [kind, onGone]);
+  return null;
 }
 
 /** What the confirm says before one reset is spent; it sends nothing and asks the hub nothing. */
