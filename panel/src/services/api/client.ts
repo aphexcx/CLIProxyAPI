@@ -51,6 +51,11 @@ class ApiClient {
     }
   }
 
+  /** The hub this client talks to; unlike the revision, it survives sign-out and sign-in. */
+  getApiBase(): string {
+    return this.apiBase;
+  }
+
   /** Guards read/modify/write operations across connection changes, including ABA switches. */
   getConnectionRevision(): number {
     return this.connectionRevision;
