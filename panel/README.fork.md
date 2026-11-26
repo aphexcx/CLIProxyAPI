@@ -39,7 +39,9 @@ native-cache seat never trigger that fallback. Reset-grant reads on the quota
 page require the separate **Check reset grants** action; cached quota appearing
 on screen does not start an upstream grant request.
 
-Publishing the release asset, changing `management.panel-github-repository`,
-and deploying the hub are separate rollout operations. Periodic panel updates
-run every three hours unless `management.disable-auto-update-panel` is true;
+The tag workflow builds `management.html` and attaches it to every release.
+When `management.panel-github-repository` points here and automatic updates
+are enabled, the hub picks up the new panel within three hours without a restart.
+Periodic panel updates run every three hours unless
+`management.disable-auto-update-panel` is true;
 that flag still permits downloading an absent asset on first access.
