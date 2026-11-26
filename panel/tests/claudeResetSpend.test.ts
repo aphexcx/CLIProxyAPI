@@ -184,7 +184,7 @@ describe('A7: one click, one key', () => {
     },
     {
       name: 'a press, no answer, then Ask the hub again three times',
-      replies: [noAnswer, noAnswer, noAnswer, ok(answer('reset', routing(true)))],
+      replies: [noAnswer, noAnswer, noAnswer, ok(answer('reset', { ...routing(true), replayed: true }))],
       drive: async (key) => {
         await confirmClaudeResetSpend(key);
         for (let i = 0; i < 3; i += 1) await askClaudeResetSpendAgain(key);
@@ -193,7 +193,7 @@ describe('A7: one click, one key', () => {
     },
     {
       name: 'a press, a 409 that says the key is in flight, then again',
-      replies: [refusal(409, { error: IN_FLIGHT }), ok(answer('reset', routing(true)))],
+      replies: [refusal(409, { error: IN_FLIGHT }), ok(answer('reset', { ...routing(true), replayed: true }))],
       drive: async (key) => {
         await confirmClaudeResetSpend(key);
         await askClaudeResetSpendAgain(key);
@@ -202,7 +202,7 @@ describe('A7: one click, one key', () => {
     },
     {
       name: 'no answer, then two presses of Ask the hub again in the same moment',
-      replies: [noAnswer, ok(answer('reset', routing(true)))],
+      replies: [noAnswer, ok(answer('reset', { ...routing(true), replayed: true }))],
       drive: async (key) => {
         await confirmClaudeResetSpend(key);
         await Promise.all([askClaudeResetSpendAgain(key), askClaudeResetSpendAgain(key)]);
@@ -654,7 +654,7 @@ describe('A10: refusals', () => {
 
   test('a 401 on Ask the hub again keeps the earlier unknown outcome and its key', async () => {
     const seat = freshSeat();
-    const hub = fakeHub([noAnswer, refusal(401, { error: 'Invalid management key' }), ok(answer('reset', routing(true)))]);
+    const hub = fakeHub([noAnswer, refusal(401, { error: 'Invalid management key' }), ok(answer('reset', { ...routing(true), replayed: true }))]);
     openClaudeResetSpend(seat.key, seat.body, { post: hub.post, makeKey: countingKeys });
     await confirmClaudeResetSpend(seat.key);
     await askClaudeResetSpendAgain(seat.key);
@@ -880,7 +880,7 @@ describe('round 1 class: a spend outlives every transient change of the page', (
     expect(text(html)).toContain('Ask the hub again');
 
     // Ask the hub again through the connection current at the press: same key and body.
-    const current = fakeHub([ok(answer('reset', { ...routing(true), kind: 'weekly' }))]);
+    const current = fakeHub([ok(answer('reset', { ...routing(true), kind: 'weekly', replayed: true }))]);
     await askClaudeResetSpendAgain(remounted, current.post);
     expect(current.calls).toHaveLength(1);
     expect(current.calls[0].config.headers['Idempotency-Key']).toBe('key-class');

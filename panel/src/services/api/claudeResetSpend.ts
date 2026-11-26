@@ -9,7 +9,7 @@
  */
 
 import { apiClient } from './client';
-import type { ClaudeResetKindSummary } from './claudeLimitResets';
+import { CLAUDE_LIMIT_RESETS_PATH, type ClaudeResetKindSummary } from './claudeLimitResets';
 
 export const CLAUDE_RESET_SPEND_PATH = '/claude/limit-resets/spend';
 /**
@@ -33,6 +33,9 @@ export type ClaudeResetSpendPost = (
   body: ClaudeResetSpendBody,
   config: { headers: Record<string, string>; timeout: number }
 ) => Promise<unknown>;
+
+/** The press's check: one read of the hub's cached reset read, never the page's cache. */
+export type ClaudeResetSpendCheckRead = () => Promise<unknown>;
 
 /** The route's HTTP 200, as it builds a first answer or a replay from its ledger. */
 export interface ClaudeResetSpendAnswer {
@@ -76,7 +79,13 @@ export type ClaudeResetSpendOutcome =
   /** The hub says this key's first delivery has not answered yet. */
   | { type: 'key_in_flight'; error: string }
   /** A timeout or a network error. */
-  | { type: 'no_answer' };
+  | { type: 'no_answer' }
+  /**
+   * After an outcome not known yet, a later delivery answered without the
+   * hub's record of the key: whether the reset was spent is still not known.
+   * error and cure are the hub's own words about this delivery only.
+   */
+  | { type: 'not_from_record'; status: number; error?: string; cure?: string };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -98,6 +107,22 @@ export function sendClaudeResetSpend(
 export function defaultClaudeResetSpendPost(): ClaudeResetSpendPost {
   const client = apiClient.captureConnection();
   return (path, body, config) => client.post(path, body, config);
+}
+
+/**
+ * The press's post and its check's read, pinned to one connection: the read
+ * goes to the hub that the post would reach. The read is never served from
+ * the page's cached read and never put into it.
+ */
+export function defaultClaudeResetSpendConnection(): {
+  post: ClaudeResetSpendPost;
+  read: ClaudeResetSpendCheckRead;
+} {
+  const client = apiClient.captureConnection();
+  return {
+    post: (path, body, config) => client.post(path, body, config),
+    read: () => client.get(CLAUDE_LIMIT_RESETS_PATH),
+  };
 }
 
 /** A random UUID: printable, no comma, 36 characters, as the route requires. */
@@ -133,4 +158,47 @@ export function readClaudeResetSpendOutcome(
   if (message)
     return { type: 'refusal', status, refusal: { ...(data as object), error: message } };
   return { type: 'not_known', status };
+}
+
+/**
+ * Reads a delivery made while the outcome is not known yet ("Ask the hub
+ * again"). Only the hub's own record of the key settles the click: a replay
+ * (an answer or a refusal marked replayed), or the hub's first answer for a
+ * key its ledger did not hold, which names this delivery's seat and kind and
+ * carries a request id. No answer, a key in flight and a 401 read as for a
+ * first delivery. Every other answer, whatever its status, leaves the outcome
+ * not known.
+ */
+export function readClaudeResetSpendAskAgain(
+  settled: { data: unknown } | { error: unknown },
+  body: ClaudeResetSpendBody
+): ClaudeResetSpendOutcome | undefined {
+  const outcome = readClaudeResetSpendOutcome(settled);
+  if (!outcome || outcome.type === 'no_answer' || outcome.type === 'key_in_flight') return outcome;
+  if (outcome.type === 'answer') {
+    const answer = outcome.answer;
+    if (answer.replayed === true) return outcome;
+    if (
+      answer.auth_index === body.auth_index &&
+      answer.kind === body.kind &&
+      typeof answer.request_id === 'string' &&
+      answer.request_id
+    )
+      return outcome;
+  }
+  if (outcome.type === 'refusal' && outcome.refusal.replayed === true) return outcome;
+  const sent = 'data' in settled ? settled.data : isRecord(settled.error) ? settled.error.data : undefined;
+  const words = (field: string) =>
+    isRecord(sent) && typeof sent[field] === 'string' && sent[field] ? (sent[field] as string) : undefined;
+  return {
+    type: 'not_from_record',
+    status:
+      outcome.type === 'refusal' || outcome.type === 'not_known'
+        ? outcome.status
+        : outcome.type === 'no_route'
+          ? 404
+          : 200,
+    error: words('error'),
+    cure: words('cure'),
+  };
 }

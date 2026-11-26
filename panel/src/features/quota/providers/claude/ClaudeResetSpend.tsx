@@ -1,4 +1,4 @@
-import { useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useRef, useSyncExternalStore, type ReactNode, type Ref } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { Modal } from '@/components/ui/Modal';
@@ -6,6 +6,7 @@ import type { AuthFileItem } from '@/types';
 import { apiClient } from '@/services/api/client';
 import { claudeLimitResetAge, type ClaudeLimitResetSeat } from '@/services/api/claudeLimitResets';
 import {
+  defaultClaudeResetSpendConnection,
   defaultClaudeResetSpendPost,
   newClaudeResetSpendKey,
   type ClaudeResetSpendAnswer,
@@ -20,15 +21,17 @@ import {
   claudeResetCardState,
   claudeResetControls,
   claudeResetCountLines,
+  claudeResetFocusAfterClose,
   claudeResetKindLines,
   claudeResetKindName,
   claudeResetLastSpendText,
   claudeResetResultWord,
   claudeResetSpendSeatKeyFor,
   claudeResetUsageStale,
-  confirmClaudeResetSpend,
+  confirmClaudeResetSpendChecked,
   dismissClaudeResetSpend,
   getClaudeResetSpend,
+  markClaudeResetSpendClosing,
   openClaudeResetSpend,
   subscribeClaudeResetSpend,
   type ClaudeResetControlBlock,
@@ -113,21 +116,22 @@ export function ClaudeResetSpendSection({ file, usage }: { file: AuthFileItem; u
     () => getClaudeResetSpend(key),
     () => getClaudeResetSpend(key)
   );
-  const identity = deriveAuthFileIdentity(file);
+  const fileIdentity = deriveAuthFileIdentity(file);
+  const identity = {
+    primary: fileIdentity.primary,
+    organization: getQuotaSeatIdentity(file).organization,
+    fileName: fileIdentity.fullName,
+  };
   return (
     <ClaudeResetSpendView
       seat={read.seat}
       failed={read.failed}
       loaded={read.loaded}
-      identity={{
-        primary: identity.primary,
-        organization: getQuotaSeatIdentity(file).organization,
-        fileName: identity.fullName,
-      }}
+      identity={identity}
       usage={usage}
       spend={spend}
       onPress={(kind) => {
-        if (!rowIndex) return;
+        if (!rowIndex || !read.seat) return;
         openClaudeResetSpend(
           key,
           { auth_index: rowIndex, kind },
@@ -135,12 +139,23 @@ export function ClaudeResetSpendSection({ file, usage }: { file: AuthFileItem; u
             post: defaultClaudeResetSpendPost(),
             makeKey: newClaudeResetSpendKey,
             file: { hub, name: file.name },
+            // The sign-in the press checks: the row matched this file name and generation.
+            opened: { fileName: file.name, generation: read.seat.credential_generation, identity },
           }
         );
       }}
       onCancel={() => cancelClaudeResetSpend(key)}
+      onClosing={() => markClaudeResetSpendClosing(key)}
       // Each delivery goes through the connection current at the press: same hub, same key and body.
-      onConfirm={() => void confirmClaudeResetSpend(key, defaultClaudeResetSpendPost())}
+      // The press first checks the sign-in, through that same connection.
+      onConfirm={() => {
+        const connection = defaultClaudeResetSpendConnection();
+        void confirmClaudeResetSpendChecked(key, {
+          post: connection.post,
+          read: connection.read,
+          file: { name: file.name, credential_generation: file.credential_generation },
+        });
+      }}
       onAskAgain={() => void askClaudeResetSpendAgain(key, defaultClaudeResetSpendPost())}
       onDismiss={() => dismissClaudeResetSpend(key)}
     />
@@ -156,6 +171,7 @@ export function ClaudeResetSpendView({
   spend,
   onPress,
   onCancel,
+  onClosing,
   onConfirm,
   onAskAgain,
   onDismiss,
@@ -168,6 +184,8 @@ export function ClaudeResetSpendView({
   spend: ClaudeResetSpendSeat;
   onPress?: (kind: ClaudeResetSpendKind) => void;
   onCancel?: () => void;
+  /** The person started to close the confirm (Escape or the X). */
+  onClosing?: () => void;
   onConfirm?: () => void;
   onAskAgain?: () => void;
   onDismiss?: () => void;
@@ -177,13 +195,35 @@ export function ClaudeResetSpendView({
   const card = claudeResetCardState(seat, { failed, loaded });
   const controls = claudeResetControls(seat, card, spend, clock.wall);
   const kind = spend.delivery?.body.kind;
+  // The confirm has closed or started to close: neither of its buttons acts any more.
+  const closed = !spend.confirmOpen || spend.closing === true;
+  const sectionRef = useRef<HTMLElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const outcomeRef = useRef<HTMLDivElement>(null);
+  const openKind = spend.confirmOpen ? kind : undefined;
+  const lastOpenKind = useRef<string | undefined>(undefined);
+  // When the confirm closes, focus comes back to this seat's section, never to the page body.
+  useEffect(() => {
+    const closedKind = lastOpenKind.current;
+    lastOpenKind.current = openKind;
+    if (!closedKind || openKind) return;
+    const button =
+      sectionRef.current?.querySelector<HTMLButtonElement>(`button[data-reset-kind="${closedKind}"]`) ?? null;
+    const target = claudeResetFocusAfterClose({
+      outcome: spend.outcome,
+      kindButton: !button ? 'gone' : button.disabled ? 'disabled' : 'live',
+    });
+    (target === 'outcome' ? outcomeRef.current : target === 'kind_button' ? button : headingRef.current)?.focus();
+  }, [openKind, spend.outcome]);
   let plain: ReactNode = null;
   if (card.state === 'N') plain = t(`claude_reset_spend.state_${card.why}`);
   else if (card.state === 'O') plain = t('claude_reset_spend.state_old_hub');
   else if (!seat?.auth_index) plain = t('claude_reset_spend.state_no_index');
   return (
-    <section aria-label={t('claude_reset_spend.section')} style={SECTION_STYLE}>
-      <h3 style={HEADING_STYLE}>{t('claude_reset_spend.section')}</h3>
+    <section ref={sectionRef} aria-label={t('claude_reset_spend.section')} style={SECTION_STYLE}>
+      <h3 ref={headingRef} tabIndex={-1} style={HEADING_STYLE}>
+        {t('claude_reset_spend.section')}
+      </h3>
       {plain && <div>{plain}</div>}
       {controls.length > 0 && (
         <ul style={LIST_STYLE}>
@@ -211,12 +251,14 @@ export function ClaudeResetSpendView({
         seatName={identity.primary}
         onAskAgain={onAskAgain}
         onDismiss={onDismiss}
+        blockRef={outcomeRef}
       />
       {kind && (
         <Modal
           open={spend.confirmOpen}
           title={t('claude_reset_spend.confirm_title', { kind: kindWords(t, kind) })}
           onClose={() => onCancel?.()}
+          onCloseStart={onClosing}
           closeDisabled={spend.inFlight}
           footer={
             <>
@@ -224,7 +266,7 @@ export function ClaudeResetSpendView({
                 type="button"
                 className="btn btn-secondary"
                 onClick={onCancel}
-                disabled={spend.inFlight}
+                disabled={closed || spend.inFlight}
               >
                 {t('claude_reset_spend.cancel')}
               </button>
@@ -232,7 +274,7 @@ export function ClaudeResetSpendView({
                 type="button"
                 className="btn btn-danger"
                 onClick={onConfirm}
-                disabled={spend.inFlight}
+                disabled={closed || spend.inFlight || spend.check === 'changed'}
               >
                 {t('claude_reset_spend.spend', { kind: kindWords(t, kind) })}
               </button>
@@ -243,9 +285,11 @@ export function ClaudeResetSpendView({
             seat={seat}
             failed={failed}
             kind={kind}
-            identity={identity}
+            // What the confirm opened with, for as long as it is open; never the card's present lines.
+            identity={spend.opened?.identity ?? identity}
             usage={usage}
             inFlight={spend.inFlight}
+            check={spend.check}
           />
         </Modal>
       )}
@@ -261,6 +305,7 @@ export function ClaudeResetConfirmBody({
   identity,
   usage,
   inFlight,
+  check,
 }: {
   seat?: ClaudeLimitResetSeat;
   failed?: boolean;
@@ -268,6 +313,8 @@ export function ClaudeResetConfirmBody({
   identity: SeatIdentity;
   usage: Usage;
   inFlight: boolean;
+  /** The press's check refused (the sign-in changed) or could not read the hub. */
+  check?: 'changed' | 'read_failed';
 }) {
   const { t, i18n } = useTranslation();
   const clock = useClaudeResetClock();
@@ -323,6 +370,8 @@ export function ClaudeResetConfirmBody({
       <p>
         <strong>{t('claude_reset_spend.confirm_irreversible')}</strong>
       </p>
+      {check === 'changed' && <p role="alert">{t('claude_reset_spend.check_changed')}</p>}
+      {check === 'read_failed' && <p role="alert">{t('claude_reset_spend.check_read_failed')}</p>}
       {inFlight && <p role="status">{t('claude_reset_spend.waiting')}</p>}
     </div>
   );
@@ -435,11 +484,14 @@ export function ClaudeResetOutcomeView({
   seatName,
   onAskAgain,
   onDismiss,
+  blockRef,
 }: {
   spend: ClaudeResetSpendSeat;
   seatName: string;
   onAskAgain?: () => void;
   onDismiss?: () => void;
+  /** The block itself, so focus can move to it after a send. */
+  blockRef?: Ref<HTMLDivElement>;
 }) {
   const { t, i18n } = useTranslation();
   const outcome = spend.outcome;
@@ -451,6 +503,19 @@ export function ClaudeResetOutcomeView({
   });
   let body: ReactNode;
   let settled = true;
+  const askAgain = (
+    <>
+      {spend.inFlight && <div role="status">{t('claude_reset_spend.waiting')}</div>}
+      <button
+        type="button"
+        className="btn btn-secondary btn-sm"
+        onClick={onAskAgain}
+        disabled={spend.inFlight}
+      >
+        {t('claude_reset_spend.ask_again')}
+      </button>
+    </>
+  );
   switch (outcome.type) {
     case 'answer':
       body = <AnswerBody t={t} answer={outcome.answer} locale={i18n.resolvedLanguage} />;
@@ -461,6 +526,27 @@ export function ClaudeResetOutcomeView({
     case 'no_route':
       body = <div>{t('claude_reset_spend.no_route')}</div>;
       break;
+    case 'not_from_record':
+      // A later ask answered without the hub's record of the key: the hub's words are about that ask only.
+      settled = false;
+      body = (
+        <>
+          <div>{t('claude_reset_spend.ask_not_from_record', { status: outcome.status })}</div>
+          {outcome.error && (
+            <div>
+              {t('claude_reset_spend.ask_words')} {outcome.error}
+            </div>
+          )}
+          {outcome.cure && (
+            <div>
+              {t('claude_reset_spend.cure')} {outcome.cure}
+            </div>
+          )}
+          <div>{t('claude_reset_spend.ask_hold')}</div>
+          {askAgain}
+        </>
+      );
+      break;
     default:
       settled = false;
       body = (
@@ -470,20 +556,17 @@ export function ClaudeResetOutcomeView({
           )}
           <div>{t('claude_reset_spend.no_answer')}</div>
           {outcome.type === 'key_in_flight' && <HubSays t={t} words={outcome.error} />}
-          {spend.inFlight && <div role="status">{t('claude_reset_spend.waiting')}</div>}
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            onClick={onAskAgain}
-            disabled={spend.inFlight}
-          >
-            {t('claude_reset_spend.ask_again')}
-          </button>
+          {askAgain}
         </>
       );
   }
   return (
-    <div role={outcome.type === 'answer' ? 'status' : 'alert'} style={OUTCOME_STYLE}>
+    <div
+      ref={blockRef}
+      tabIndex={-1}
+      role={outcome.type === 'answer' ? 'status' : 'alert'}
+      style={OUTCOME_STYLE}
+    >
       <div>
         <strong>{heading}</strong>
       </div>

@@ -2427,6 +2427,11 @@
     "no_route": "Bản dựng hub này không có tuyến dùng lượt. Không gửi gì.",
     "http_not_known": "Hub trả lời HTTP {{status}}. Không thể biết từ câu trả lời này liệu có gì đã bị dùng hay không.",
     "no_answer": "Hub chưa trả lời. Chưa rõ lượt đặt lại đã bị dùng hay chưa.",
-    "ask_again": "Hỏi lại hub"
+    "ask_again": "Hỏi lại hub",
+    "ask_not_from_record": "Hub trả lời lần hỏi này bằng HTTP {{status}}, nhưng không theo bản ghi của hub về lượt dùng này. Vẫn chưa rõ lượt đặt lại đã bị dùng hay chưa.",
+    "ask_words": "Lời của hub chỉ về lần hỏi này:",
+    "ask_hold": "Chưa dùng lại trên tài khoản này. Nhấn \"Hỏi lại hub\" khi sự cố của hub đã được khắc phục. Nếu không khắc phục được, hãy kiểm tra trang mức sử dụng của tài khoản này tại nhà cung cấp trước khi dùng lượt mới.",
+    "check_changed": "Đăng nhập của tài khoản này đã thay đổi sau khi hộp xác nhận này mở, nên giờ có thể là một tài khoản khác. Không gửi gì. Hãy đóng hộp này và mở một hộp xác nhận mới từ thẻ.",
+    "check_read_failed": "Bản đọc lượt đặt lại của hub thất bại, nên trang không kiểm tra được tài khoản này có còn cùng đăng nhập hay không. Không gửi gì. Nhấn Dùng để thử lại."
   }
 }
