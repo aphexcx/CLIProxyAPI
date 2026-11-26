@@ -1432,6 +1432,17 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, answer)
 		return
 	}
+	// Once the sent record is durable, finish the claim and its balance read
+	// even if the caller disconnects. A later delivery can replay the result.
+	spendCtx := context.WithoutCancel(ctx)
+	respond := func(status int, answer gin.H) {
+		if ctx.Err() != nil {
+			log.WithFields(log.Fields{
+				"auth_index": request.authIndex, "kind": kind, "request_id": requestID,
+			}).Info("Claude reset spend finished after caller left")
+		}
+		c.JSON(status, answer)
+	}
 	// The hold and the retry window run from the sent line's stamp; a retry's
 	// window runs from its first send's.
 	sentAt, firstSentAt := record.At, record.At
@@ -1444,7 +1455,7 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 		if errAnswer := journal.answer(&record, ledger.clock); errAnswer != nil {
 			answer["ledger_error"] = claudeResetLedgerErrorText
 		}
-		c.JSON(claudeResetNotSentStatus(reason), answer)
+		respond(claudeResetNotSentStatus(reason), answer)
 	}
 	abort := journal.dispatch(func() string {
 		return h.claudeResetDispatchAbort(auth, grant, sentAt, firstSentAt, ledger.clock())
@@ -1459,7 +1470,7 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 		return
 	}
 	claim := resetclaim.Claim{OrganizationUUID: organization, GrantID: grant.ID, RequestID: requestID}
-	outcome, errClaim := sendClaudeResetClaim(ctx, client, token, userAgent, claim)
+	outcome, errClaim := sendClaudeResetClaim(spendCtx, client, token, userAgent, claim)
 	if errClaim != nil {
 		notSent(claudeResetAbortTransport, "claim not sent")
 		return
@@ -1500,11 +1511,11 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 	spent := outcome.Result == claudeauth.LimitResetResultReset || outcome.Result == claudeauth.LimitResetResultAlreadyUsed || outcome.Result == claudeauth.LimitResetResultUnknown
 	h.authManager.PublishClaudeResetSpendRead(auth, grant.ID, spent, time.Now(), nil, errClaudeResetAfterReadPending)
 	afterStarted := time.Now()
-	after, afterBody, _, errAfter := readClaudeResetStatus(ctx, client, token, userAgent)
+	after, afterBody, _, errAfter := readClaudeResetStatus(spendCtx, client, token, userAgent)
 	h.authManager.PublishClaudeResetSpendRead(auth, grant.ID, spent, afterStarted, afterBody, errAfter)
 	if errAfter != nil {
 		answer["after_read_error"] = "the grants read after the claim failed"
-		c.JSON(http.StatusOK, answer)
+		respond(http.StatusOK, answer)
 		return
 	}
 	kindsAfter := coreauth.SummarizeClaudeResetKinds(after.Grants, ledger.clock())
@@ -1518,5 +1529,5 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 			answer["balance_error"] = claudeResetBalanceErrorText
 		}
 	}
-	c.JSON(http.StatusOK, answer)
+	respond(http.StatusOK, answer)
 }
