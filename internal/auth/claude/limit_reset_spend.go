@@ -51,9 +51,11 @@ func limitResetReasonCode(reason string) string {
 	return LimitResetReasonUnrecognized
 }
 
-// LimitResetUserAgent is the client name a spend's reads and claim carry: the
-// Claude Code shape the hub's earlier dashboard used, the only one observed to
-// list grants and claim one through the hub.
+// LimitResetUserAgent is the client name every reset read and claim carries:
+// the Claude Code shape the hub's earlier dashboard used, the only one
+// observed to list grants and claim one through the hub. The same read with
+// any other client name (axios, or claude-code/<version>) answers eligible
+// false with ineligible_reason "surface" and no grants.
 func LimitResetUserAgent(version string) string {
 	return "claude-cli/" + version + " (external, cli)"
 }
@@ -133,11 +135,11 @@ func (o *ClaudeAuth) FetchLimitResetSpendProfile(ctx context.Context, accessToke
 	return &profile, nil
 }
 
-// FetchLimitResetSpendStatus reads the seat's banked reset grants fresh,
-// never from a cache, with the established reader's checks: a response with
+// FetchLimitResetStatus reads the seat's banked reset grants fresh, never
+// from a cache, for both the background poller and a spend. A response with
 // no valid usage window is refused. The body is returned raw for the shared
-// parser.
-func (o *ClaudeAuth) FetchLimitResetSpendStatus(ctx context.Context, accessToken, userAgent string) (json.RawMessage, error) {
+// parser and is never authoritative for usage windows.
+func (o *ClaudeAuth) FetchLimitResetStatus(ctx context.Context, accessToken, userAgent string) (json.RawMessage, error) {
 	body, errFetch := o.fetchLimitResetSpendJSON(ctx, LimitResetsUsageURL, accessToken, userAgent, "reset status")
 	if errFetch != nil {
 		return nil, errFetch

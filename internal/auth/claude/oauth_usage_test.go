@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -105,19 +106,31 @@ func TestFetchOAuthUsageCurrentTokenOnly(t *testing.T) {
 	}
 }
 
-func TestFetchOAuthLimitResetsUsesSeparateReadAndBeta(t *testing.T) {
+// The provider lists grants only to a read that names the Claude Code CLI:
+// the same URL with User-Agent axios/1.15.2 or claude-code/<version> answers
+// eligible false, ineligible_reason "surface", and no grants.
+func TestFetchLimitResetStatusSendsClaudeCodeCLIRead(t *testing.T) {
 	calls := 0
-	fixture, errRead := os.ReadFile("testdata/limit_resets_surface.json")
+	fixture, errRead := os.ReadFile("testdata/limit_resets_eligible.json")
 	if errRead != nil {
 		t.Fatal(errRead)
 	}
 	auth := &ClaudeAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		calls++
-		if req.URL.String() != LimitResetsUsageURL || req.Method != http.MethodGet || req.Body != nil {
+		if req.URL.String() != "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1" || req.Method != http.MethodGet || req.Body != nil {
 			t.Fatalf("unexpected request %s %s", req.Method, req.URL)
 		}
-		if req.Header.Get("Authorization") != "Bearer fixture-only" || req.Header.Get("Anthropic-Beta") != "oauth-2025-04-20" || req.Header.Get("User-Agent") != "axios/1.15.2" {
-			t.Fatal("missing honest OAuth usage headers")
+		want := map[string]string{
+			"Authorization":  "Bearer fixture-only",
+			"Anthropic-Beta": "oauth-2025-04-20",
+			"User-Agent":     "claude-cli/2.1.332 (external, cli)",
+			"Accept":         "application/json, text/plain, */*",
+			"Cache-Control":  "no-cache",
+		}
+		for key, value := range want {
+			if got := req.Header.Get(key); got != value {
+				t.Fatalf("header %s = %q, want %q", key, got, value)
+			}
 		}
 		if _, deadline := req.Context().Deadline(); deadline {
 			t.Fatal("added response deadline")
@@ -129,17 +142,26 @@ func TestFetchOAuthLimitResetsUsesSeparateReadAndBeta(t *testing.T) {
 		}
 		return jsonResponse(req, string(fixture)), nil
 	})}}
-	usage, err := auth.FetchOAuthLimitResets(context.Background(), "fixture-only")
-	if err != nil || calls != 1 || !strings.Contains(string(usage), `"cedar_ember"`) {
+	usage, err := auth.FetchLimitResetStatus(context.Background(), "fixture-only", LimitResetUserAgent("2.1.332"))
+	if err != nil || calls != 1 {
 		t.Fatalf("calls=%d err=%v", calls, err)
+	}
+	var answer struct {
+		CedarEmber struct {
+			Eligible bool              `json:"eligible"`
+			Grants   []json.RawMessage `json:"grants"`
+		} `json:"cedar_ember"`
+	}
+	if errDecode := json.Unmarshal(usage, &answer); errDecode != nil || !answer.CedarEmber.Eligible || len(answer.CedarEmber.Grants) != 2 {
+		t.Fatalf("reset status lost the grants: err=%v answer=%+v", errDecode, answer)
 	}
 }
 
-func TestFetchOAuthLimitResetsRejectsBodyWithoutUsageWindows(t *testing.T) {
+func TestFetchLimitResetStatusRejectsBodyWithoutUsageWindows(t *testing.T) {
 	auth := &ClaudeAuth{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return jsonResponse(req, `{"cedar_ember":{"eligible":false,"grants":[]}}`), nil
 	})}}
-	if _, err := auth.FetchOAuthLimitResets(context.Background(), "fixture-only"); err == nil {
+	if _, err := auth.FetchLimitResetStatus(context.Background(), "fixture-only", LimitResetUserAgent("2.1.332")); err == nil {
 		t.Fatal("reset-only response accepted without usage windows")
 	}
 }

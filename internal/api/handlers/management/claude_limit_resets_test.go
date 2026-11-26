@@ -174,6 +174,24 @@ func TestLimitResetRanking(t *testing.T) {
 	}
 }
 
+// The Claude Code CLI read's answer carries the grants the page counts.
+func TestLimitResetEligibleAnswerCountsKinds(t *testing.T) {
+	body, err := os.ReadFile("../../../auth/claude/testdata/limit_resets_eligible.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := coreauth.ParseClaudeLimitResets(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 26, 19, 0, 0, 0, time.UTC)
+	kinds := coreauth.SummarizeClaudeResetKinds(status.Grants, now)
+	weekly, fable := kinds[coreauth.ClaudeResetKindWeekly], kinds[coreauth.ClaudeResetKindFable]
+	if !status.Eligible || len(kinds) != 2 || weekly.ResetsLeft != 1 || weekly.UsableResets != 1 || fable.ResetsLeft != 1 || fable.UsableResets != 0 {
+		t.Fatalf("eligible answer lost its counts: eligible=%v kinds=%+v", status.Eligible, kinds)
+	}
+}
+
 func TestLimitResetSurfacePreservesReasonAndCannotRank(t *testing.T) {
 	body, err := os.ReadFile("../../../auth/claude/testdata/limit_resets_surface.json")
 	if err != nil {

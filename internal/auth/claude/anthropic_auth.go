@@ -285,7 +285,7 @@ func (o *ClaudeAuth) fetchOAuthControlPlaneJSON(ctx context.Context, endpoint, a
 	applyClaudeOAuthAxiosHeaders(req)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Cache-Control", "no-cache")
-	if endpoint == UsageURL || endpoint == LimitResetsUsageURL {
+	if endpoint == UsageURL {
 		req.Header.Set("Anthropic-Beta", "oauth-2025-04-20")
 		req = req.WithContext(context.WithValue(req.Context(), claudeUsageConnectTimeoutContextKey{}, claudeUsageConnectTimeout))
 	}
@@ -337,20 +337,6 @@ func (o *ClaudeAuth) FetchOAuthUsage(ctx context.Context, accessToken string) (m
 // while parsing the canonical windows used by the routing guard.
 func (o *ClaudeAuth) FetchOAuthUsageSnapshot(ctx context.Context, accessToken string) (map[string]OAuthUsageWindow, json.RawMessage, error) {
 	return o.fetchOAuthUsageSnapshot(ctx, UsageURL, accessToken)
-}
-
-// FetchOAuthLimitResets is independent of routine quota usage. Its response is
-// never authoritative for usage windows, even if the server includes them.
-func (o *ClaudeAuth) FetchOAuthLimitResets(ctx context.Context, accessToken string) (json.RawMessage, error) {
-	body, _, errFetch := o.fetchOAuthControlPlaneJSON(ctx, LimitResetsUsageURL, accessToken, "reset status")
-	if errFetch != nil {
-		return nil, errFetch
-	}
-	windows, errParse := parseOAuthUsage(body)
-	if errParse != nil || len(windows) == 0 {
-		return nil, fmt.Errorf("reset status response has no valid usage windows")
-	}
-	return json.RawMessage(body), nil
 }
 
 func (o *ClaudeAuth) fetchOAuthUsageSnapshot(ctx context.Context, endpoint, accessToken string) (map[string]OAuthUsageWindow, json.RawMessage, error) {

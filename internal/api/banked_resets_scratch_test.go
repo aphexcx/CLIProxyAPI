@@ -43,7 +43,7 @@ func (p *scratchResetPoller) PollQuotaUsage(ctx context.Context, auth *coreauth.
 }
 
 func (p *scratchResetPoller) PollLimitResets(ctx context.Context, auth *coreauth.Auth) (json.RawMessage, error) {
-	return p.client.FetchOAuthLimitResets(ctx, auth.Metadata["access_token"].(string))
+	return p.client.FetchLimitResetStatus(ctx, auth.Metadata["access_token"].(string), claudeauth.LimitResetUserAgent("2.1.332"))
 }
 
 type scratchResetTransport struct{ handler http.Handler }
