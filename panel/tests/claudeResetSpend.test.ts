@@ -642,7 +642,8 @@ describe('A10: refusals', () => {
     expect(outcomeText(seat.key)).toContain(odd);
   });
 
-  test('401 runs the page sign-out and shows nothing of its own', async () => {
+  // The sign-out itself is the client's interceptor (client.ts, unchanged); this fake 401 bypasses it.
+  test('401 shows nothing of its own and closes the confirm', async () => {
     const seat = await spendOnce(refusal(401, { error: 'Invalid management key' }));
     const spend = getClaudeResetSpend(seat.key);
     expect(spend.outcome).toBeUndefined();
@@ -762,7 +763,8 @@ describe('A11: no answer', () => {
 });
 
 describe('A12: nothing spends by itself', () => {
-  test('views, Details, opening and cancelling a confirm, a failed read and the minute timer call the post zero times', async () => {
+  // Without a DOM the hook's interval does not run; the reads it makes are called directly here.
+  test('views, opening and cancelling a confirm, a failed read and the reads a minute timer makes call the post zero times', async () => {
     const hub = fakeHub([ok(answer('reset'))]);
     const post = spyOn(apiClient, 'post');
     mocks.push(post);
