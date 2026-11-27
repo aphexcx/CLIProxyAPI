@@ -1669,11 +1669,18 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 					if !errors.As(errExec, &cdErr) {
 						t.Fatalf("%s Execute() error = %T (%v), want *modelCooldownError", m, errExec, errExec)
 					}
-					if got := cdErr.Headers().Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "seven_day" {
-						t.Fatalf("%s Representative-Claim = %q, want seven_day (from governing 2h deadline)", m, got)
+					// On a usage-reporting provider (Claude, Codex) this fork lets a quota 429 follow
+					// its latest reported reset, including a shorter replacement reset, and the
+					// usage poll holds the real windows (docs/management-api-v8.md).
+					// The later 1h five_hour 429 therefore governs, with its own signals.
+					if got := cdErr.Headers().Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "five_hour" {
+						t.Fatalf("%s Representative-Claim = %q, want five_hour (from the latest reported 1h reset)", m, got)
 					}
-					if got := cdErr.Headers().Get("Anthropic-Ratelimit-Unified-7d-Status"); got != "rejected" {
-						t.Fatalf("%s 7d-Status = %q, want rejected", m, got)
+					if got := cdErr.Headers().Get("Anthropic-Ratelimit-Unified-7d-Status"); got != "allowed" {
+						t.Fatalf("%s 7d-Status = %q, want allowed", m, got)
+					}
+					if got := cdErr.Headers().Get("Retry-After"); got != "3600" {
+						t.Fatalf("%s Retry-After = %q, want 3600", m, got)
 					}
 				}
 
@@ -1682,8 +1689,13 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 				if !errors.As(errRPM, &rpmCdErr) {
 					t.Fatalf("%s Execute() error = %T (%v), want *modelCooldownError", rpmFirstModel, errRPM, errRPM)
 				}
-				if got := rpmCdErr.Headers().Get("Anthropic-Ratelimit-Unified-Status"); got != "" {
-					t.Fatalf("%s leaked unified status %q while 10m ordinary RPM deadline still governs", rpmFirstModel, got)
+				// The fork's reported-reset rule also lets the later 1m unified 429
+				// replace the 10m deadline on this Claude seat, so its signals show.
+				if got := rpmCdErr.Headers().Get("Anthropic-Ratelimit-Unified-Status"); got != "rejected" {
+					t.Fatalf("%s unified status = %q, want rejected from the latest reported 1m reset", rpmFirstModel, got)
+				}
+				if got := rpmCdErr.Headers().Get("Retry-After"); got != "60" {
+					t.Fatalf("%s Retry-After = %q, want 60", rpmFirstModel, got)
 				}
 			})
 		}
@@ -2002,8 +2014,15 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 					if !errors.As(errExec, &cdErr) {
 						t.Fatalf("%s Execute() error = %T (%v), want *modelCooldownError", m, errExec, errExec)
 					}
-					if got := cdErr.Headers().Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "seven_day" {
-						t.Fatalf("%s Representative-Claim = %q, want seven_day", m, got)
+					// On a usage-reporting provider (Claude, Codex) this fork lets a quota 429 follow
+					// its latest reported reset, including a shorter replacement reset, and the
+					// usage poll holds the real windows (docs/management-api-v8.md).
+					// A hintless 429 there takes the fixed 10-second probe interval.
+					if got := cdErr.Headers().Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "five_hour" {
+						t.Fatalf("%s Representative-Claim = %q, want five_hour", m, got)
+					}
+					if got := cdErr.Headers().Get("Retry-After"); got != "10" {
+						t.Fatalf("%s Retry-After = %q, want 10", m, got)
 					}
 				}
 			})

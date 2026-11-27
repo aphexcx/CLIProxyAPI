@@ -143,11 +143,12 @@ func TestExecuteSingleCredentialSubFloorHintReportsActualPoolRecovery(t *testing
 	if errExec == nil {
 		t.Fatal("expected terminal 429 error")
 	}
-	// MarkResult clamps the 7s hint up to minQuotaCooldownFloor (10s), so the
-	// pool's actual recovery is 10s out. The wrap must advertise that real
-	// deadline, not the shorter per-attempt hint.
-	if got := SafeResponseHeaders(errExec).Get("Retry-After"); got != "10" {
-		t.Fatalf("Retry-After = %q, want 10 (minQuotaCooldownFloor)", got)
+	// This fork lets a usage-reporting provider's quota 429 follow its reported
+	// reset (docs/management-api-v8.md), so MarkResult keeps the 7s hint and the
+	// pool's actual recovery is 7s out. The wrap must advertise that real
+	// deadline.
+	if got := SafeResponseHeaders(errExec).Get("Retry-After"); got != "7" {
+		t.Fatalf("Retry-After = %q, want 7 (the reported reset)", got)
 	}
 	var marker interface{ IsModelCooldown() bool }
 	if !errors.As(errExec, &marker) || marker == nil || !marker.IsModelCooldown() {
