@@ -145,8 +145,8 @@ func TestStartOAuthV8ClaudeOmitsCreateAPIKeyScopeWhenDisabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	var probe *claudeAuthorizationProbe
 	originalFactory := newClaudeOAuthService
-	newClaudeOAuthService = func(cfg *config.Config, proxyURL string) claudeOAuthService {
-		probe = &claudeAuthorizationProbe{ClaudeAuth: claude.NewClaudeAuthWithProxyURL(cfg, proxyURL)}
+	newClaudeOAuthService = func(cfg *config.Config, proxyURL string, opts ...claude.AuthOption) claudeOAuthService {
+		probe = &claudeAuthorizationProbe{ClaudeAuth: claude.NewClaudeAuthWithProxyURL(cfg, proxyURL, opts...)}
 		return probe
 	}
 	defer func() { newClaudeOAuthService = originalFactory }()
