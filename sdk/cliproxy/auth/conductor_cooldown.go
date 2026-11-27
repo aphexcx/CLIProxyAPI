@@ -665,9 +665,9 @@ func (m *Manager) restoreCooldownRecordWithCredentialDeadlineLocked(record Coold
 				nonCapacityCooldownUntil: recordNonCapacityUntil,
 				forceCooldownSeeded:      true,
 			}
-			preferred := state.credentialQuotaShadow.cloneShallow()
+			preferred := state.credentialQuotaShadow.Clone()
 			if liveShadow != nil {
-				preferred = mergeModelState(preferred, liveShadow.cloneShallow())
+				preferred = mergeModelState(preferred, liveShadow.Clone())
 			}
 			preferred = mergeModelState(preferred, recordShadow)
 			state.credentialQuotaShadow = preferred
@@ -949,6 +949,10 @@ func clearDisabledCooldownStateForAuth(auth *Auth, now time.Time) bool {
 	if auth == nil || hasUnauthorizedAuthFailure(auth) {
 		return false
 	}
+	// Disabling cooling also drops the independent auth layer the fork keeps
+	// beneath advisory quota, as clearing the cooldown state does.
+	shadowCleared := auth.quotaFailureShadow != nil
+	auth.quotaFailureShadow = nil
 	seedInitialForceCooldownDeadlines(auth)
 
 	keepCredQuotaForce := auth.Quota.Exceeded &&
@@ -1003,9 +1007,9 @@ func clearDisabledCooldownStateForAuth(auth *Auth, now time.Time) bool {
 				auth.Generation++
 				auth.UpdatedAt = now
 			}
-			return changed
+			return changed || shadowCleared
 		}
-		return clearCooldownStateForAuth(auth, now)
+		return clearCooldownStateForAuth(auth, now) || shadowCleared
 	}
 
 	savedAuthNextRetry := combinedAuthForceUntil
@@ -1148,7 +1152,7 @@ func clearDisabledCooldownStateForAuth(auth *Auth, now time.Time) bool {
 		auth.Generation++
 		auth.UpdatedAt = now
 	}
-	return changed
+	return changed || shadowCleared
 }
 
 func clearCooldownStateForAuth(auth *Auth, now time.Time) bool {
@@ -3382,7 +3386,7 @@ func clearAuthStateOnSuccess(auth *Auth, now time.Time) {
 		if state.credentialQuotaPropagated || state.Quota.Reason == "credential_quota" {
 			if shadow := state.credentialQuotaShadow; shadow != nil && isModelStateActiveCooldown(shadow, now) {
 				preservedSeq := shadow.cooldownRecordedSeq
-				*state = *shadow.cloneShallow()
+				*state = *shadow.Clone()
 				state.cooldownRecordedSeq = preservedSeq
 			} else {
 				resetModelState(state, now)

@@ -1158,7 +1158,7 @@ func clearUnauthorizedModelStates(auth *Auth, now time.Time) []string {
 		if (state.credentialQuotaPropagated || state.Quota.Reason == "credential_quota") &&
 			(!state.Quota.Exceeded || (!state.Quota.NextRecoverAt.IsZero() && !state.Quota.NextRecoverAt.After(now))) {
 			if shadow := state.credentialQuotaShadow; shadow != nil && isModelStateActiveCooldown(shadow, now) {
-				*state = *shadow.cloneShallow()
+				*state = *shadow.Clone()
 				state.UpdatedAt = now
 				isUnauth = isUnauthorizedModelState(state)
 				shadowUnauth = false
