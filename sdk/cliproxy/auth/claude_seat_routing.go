@@ -25,6 +25,15 @@ type claudeSeatRouting struct {
 	placements  map[string]*claudeSeatPlacement
 	counts      map[claudeSeatCountKey]uint64
 	nextCleanup time.Time
+	// now is the routing clock; nil means time.Now. Tests move it instead of sleeping.
+	now func() time.Time
+}
+
+func (r *claudeSeatRouting) clock() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
 }
 
 // Keep only the last seat per hashed identity for process-lifetime move accounting.
@@ -94,12 +103,18 @@ func claudeClientKey(identity string, opts cliproxyexecutor.Options) string {
 
 // Only protocol cache controls affect affinity, never arbitrary tool input or text.
 // The longest declared cache lifetime protects all the request's cacheable blocks.
-func claudePromptCacheTTL(payload []byte) time.Duration {
+// bareIsHour holds a marker that names no lifetime for one hour: on a subscription
+// seat with claude-header-defaults.one-hour-cache on, the executor sends such a
+// marker upstream at one hour, so the seat must hold the client that long too.
+func claudePromptCacheTTL(payload []byte, bareIsHour bool) time.Duration {
 	ttl := 5 * time.Minute
 	root := ojson.ParseBytes(payload)
 	check := func(block ojson.Result) {
 		control := block.Get("cache_control")
-		if control.Get("type").String() == "ephemeral" && control.Get("ttl").String() == "1h" {
+		if control.Get("type").String() != "ephemeral" {
+			return
+		}
+		if lifetime := control.Get("ttl"); lifetime.String() == "1h" || (bareIsHour && !lifetime.Exists()) {
 			ttl = time.Hour
 		}
 	}
@@ -129,8 +144,8 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
 		auths = positiveWeightAuths(auths)
 	}
-	now := time.Now()
 	routing := &s.manager.claudeSeats
+	now := routing.clock()
 	routing.mu.Lock()
 	defer routing.mu.Unlock()
 	opts.EnsureMetadata()
@@ -230,13 +245,17 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 		}
 	}
 	opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = identity
+	if key != "" {
+		opts.Metadata[cliproxyexecutor.ClaudeSeatClientHashMetadataKey] = key
+	}
 	index := selected.EnsureIndex()
 	placement := "fresh"
 	if reason == "cache_warm" {
 		placement = "warm"
 	}
 	if key != "" {
-		expiresAt := now.Add(claudePromptCacheTTL(opts.OriginalRequest))
+		bareIsHour := s.manager.claudeOneHourCacheEnabled() && IsClaudeSubscriptionSeat(selected)
+		expiresAt := now.Add(claudePromptCacheTTL(opts.OriginalRequest, bareIsHour))
 		if previous.authID == selected.ID && previous.expiresAt.After(expiresAt) {
 			expiresAt = previous.expiresAt
 		}
@@ -322,7 +341,7 @@ func (r *claudeSeatRouting) lookup(sessionID string) (string, string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var found string
-	now := time.Now()
+	now := r.clock()
 	candidates := []string{identity}
 	hasPrefix := false
 	for _, prefix := range cliproxysession.CandidateSessionPrefixes {

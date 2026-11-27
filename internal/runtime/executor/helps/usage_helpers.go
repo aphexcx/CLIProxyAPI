@@ -74,6 +74,10 @@ type UsageReporter struct {
 	// upstreamModel holds the canonical upstream model expected to be served when
 	// it differs from the requested model (e.g. local Kimi model mappings).
 	upstreamModel string
+
+	// claudeCacheScope, when set, feeds this attempt's successful record to the
+	// Claude cache meter.
+	claudeCacheScope *ClaudeCacheScope
 }
 
 type usageExecutor interface {
@@ -177,6 +181,26 @@ func (r *UsageReporter) SetSessionHierarchy(sessionID, parentSessionID string) {
 	if r.sessionID == "" || r.sessionID == r.parentSessionID || !isHierarchyParent(r.sessionID, r.parentSessionID) {
 		r.parentSessionID = ""
 	}
+}
+
+// SetClaudeCacheScope names the client and kind of a Claude Messages request, and
+// whether the one-hour cache rule changed it, so its successful record is
+// counted by the Claude cache meter. A reporter with no scope is not metered.
+// Callers should invoke it on the request thread before Publish or EnsurePublished.
+func (r *UsageReporter) SetClaudeCacheScope(client, kind string, ruleApplied bool) {
+	if r == nil {
+		return
+	}
+	r.claudeCacheScope = &ClaudeCacheScope{Client: client, Kind: kind, RuleApplied: ruleApplied}
+}
+
+// AbandonAttempt marks this attempt as superseded by a re-sent request whose own
+// reporter publishes the record, so this reporter publishes nothing.
+func (r *UsageReporter) AbandonAttempt() {
+	if r == nil {
+		return
+	}
+	r.once.Do(func() {})
 }
 
 func isHierarchyParent(primary, parent string) bool {
@@ -612,6 +636,9 @@ func (r *UsageReporter) EnsurePublished(ctx context.Context) {
 // publishAttemptRecord emits the record for one upstream attempt and the
 // observability warnings that belong to the attempt rather than to a single event.
 func (r *UsageReporter) publishAttemptRecord(ctx context.Context, record usage.Record) {
+	if r != nil && r.claudeCacheScope != nil && !record.Failed {
+		DefaultClaudeCacheMeter().Record(*r.claudeCacheScope, record.Detail)
+	}
 	r.publishRecord(ctx, record)
 	r.warnModelSubstitution(ctx)
 }

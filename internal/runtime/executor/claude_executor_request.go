@@ -1894,8 +1894,10 @@ func rawJSONArray(items []string) []byte {
 	return []byte(builder.String())
 }
 
+// isClaudeOAuthToken is the shared subscription-seat test, so the executor and
+// the seat router agree on which seats the one-hour cache rule covers.
 func isClaudeOAuthToken(apiKey string) bool {
-	return strings.Contains(apiKey, "sk-ant-oat")
+	return cliproxyauth.IsClaudeSubscriptionCredential(apiKey)
 }
 
 type claudeMCPAliasOptions struct {

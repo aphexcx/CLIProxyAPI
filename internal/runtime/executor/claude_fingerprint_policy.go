@@ -49,6 +49,10 @@ type claudeFingerprintPolicy struct {
 	MCPAlias             bool
 	InjectDiagnostics    bool
 	OAuthCancellation    bool
+	// OneHourCache is claude-header-defaults.one-hour-cache (default true): a main
+	// conversation on a subscription seat gets the one-hour cache on every marker
+	// that names no lifetime.
+	OneHourCache bool
 }
 
 func normalizeClaudeFingerprintProfile(raw string) string {
@@ -116,6 +120,7 @@ func resolveClaudeFingerprintPolicy(cfg *config.Config, auth *cliproxyauth.Auth,
 		MCPAlias:             profileClaudeCodeCLI,
 		InjectDiagnostics:    injectDiagnostics,
 		OAuthCancellation:    authIsOAuth,
+		OneHourCache:         cliproxyauth.ClaudeOneHourCacheEnabled(cfg),
 	}
 }
 

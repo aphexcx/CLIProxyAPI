@@ -211,6 +211,7 @@ retain the corresponding business operation's fields.
 | `/observability/logs/errors/<name>` | GET | Download an error-log file. |
 | `/observability/logs/requests/<id>` | GET | Get a request log. |
 | `/observability/usage/api-keys` | GET | Get API-key usage. |
+| `/observability/claude-cache` | GET | Get today's and yesterday's Claude cache writes (five minutes, one hour) and reads per client, and whether `claude-header-defaults.one-hour-cache` is on. In memory; resets on restart. |
 | `/observability/usage/queue` | GET | Get queued usage events. |
 | `/credentials` | GET, POST, DELETE | List, upload, or delete credential files. |
 | `/credentials/models` | GET | Get credential models. |

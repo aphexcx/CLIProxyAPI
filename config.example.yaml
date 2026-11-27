@@ -569,6 +569,11 @@ upstream:
     #   # Cloaked requests to api.anthropic.com get a "diagnostics" body field like Claude Code, which in
     #   # turn adds cache-diagnosis-2026-04-07. Set false to stop injecting it (default true).
     #   inject-diagnostics: true
+    #   # On a subscription (OAuth) seat, a main conversation's cache markers that name no lifetime
+    #   # go upstream with "ttl":"1h", and the seat holds that client for the hour. An explicit ttl,
+    #   # subagents, probes and title requests keep what the client sent. If the upstream refuses the
+    #   # hour, the request is sent once more as the client wrote it. Set false to turn it off (default true).
+    #   one-hour-cache: true
     #   # x-client-request-id on first-party CLI-profile requests: "on" (default) synthesizes a fresh
     #   # UUID per request (a confirmed Claude Code client keeps its own), "passthrough" forwards only
     #   # the caller's value and never synthesizes one, "off" never sends the header.
