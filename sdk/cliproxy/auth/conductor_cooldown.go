@@ -724,7 +724,9 @@ func (m *Manager) restoreCooldownRecordWithCredentialDeadlineLocked(record Coold
 				restoredShadow.Quota.cooldownSignals = sanitizePersistedClaudeCooldownSignals(record.IndependentCooldownSignals)
 			}
 		}
-		state.credentialQuotaShadow = mergeModelState(liveShadow, restoredShadow)
+		// mergeModelState writes into its target; merge into a copy so the
+		// live guard ownership below still reads the live layer.
+		state.credentialQuotaShadow = mergeModelState(liveShadow.Clone(), restoredShadow)
 		if state.credentialQuotaShadow != nil && state.credentialQuotaShadow.NextRetryAfter.After(state.NextRetryAfter) {
 			state.NextRetryAfter = state.credentialQuotaShadow.NextRetryAfter
 		}
