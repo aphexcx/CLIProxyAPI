@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Modal } from '@/components/ui/Modal';
 import type { AuthFileItem } from '@/types';
 import { apiClient } from '@/services/api/client';
+import { authFilesApi } from '@/services/api/authFiles';
 import { claudeLimitResetAge, type ClaudeLimitResetSeat } from '@/services/api/claudeLimitResets';
 import {
   defaultClaudeResetSpendConnection,
@@ -150,10 +151,17 @@ export function ClaudeResetSpendSection({ file, usage }: { file: AuthFileItem; u
       // The press first checks the sign-in, through that same connection.
       onConfirm={() => {
         const connection = defaultClaudeResetSpendConnection();
+        const revision = apiClient.getConnectionRevision();
         void confirmClaudeResetSpendChecked(key, {
           post: connection.post,
           read: connection.read,
           file: { name: file.name, credential_generation: file.credential_generation },
+          onUsageRead: () => {
+            if (apiClient.getConnectionRevision() === revision) {
+              // This cache-only listing seeds the card with the hub's observation and its time.
+              void authFilesApi.list({ name: file.name, authIndex: rowIndex }).catch(() => {});
+            }
+          },
         });
       }}
       onAskAgain={() => void askClaudeResetSpendAgain(key, defaultClaudeResetSpendPost())}
@@ -401,6 +409,35 @@ export function ClaudeResetConfirmBody({
   );
 }
 
+function ResetRouting({ routing, t, locale }: {
+  routing: NonNullable<ClaudeResetSpendAnswer['routing']>;
+  t: TFunction;
+  locale?: string;
+}) {
+  const time = (at: string) => new Date(at).toLocaleString(locale);
+  if (routing.usage_read === false) {
+    return <div>{routing.next_poll_at
+      ? t('claude_reset_spend.usage_failed', { time: time(routing.next_poll_at) })
+      : t('claude_reset_spend.usage_unscheduled')}</div>;
+  }
+  if (routing.usage_read !== true) return null;
+  if (Array.isArray(routing.holds) && routing.holds.length) {
+    return <>{routing.holds.map((hold) => (
+      <div key={hold.model_key || 'credential'}>
+        {t('claude_reset_spend.held_until', {
+          seat: hold.model_key || t('claude_reset_spend.this_seat'),
+          reason: hold.reason === 'quota_cap' ? t('claude_reset_spend.quota_cap') : hold.reason.replace(/_/g, ' '),
+          time: time(hold.retry_at),
+        })}
+      </div>
+    ))}</>;
+  }
+  if (routing.available) return <div>{t('claude_reset_spend.in_rotation')}</div>;
+  return <div>{routing.retry_at
+    ? t('claude_reset_spend.unavailable_until', { time: time(routing.retry_at) })
+    : t('claude_reset_spend.unavailable_now')}</div>;
+}
+
 function AnswerBody({ t, answer, locale }: { t: TFunction; answer: ClaudeResetSpendAnswer; locale?: string }) {
   const result = claudeResetResultWord(answer.result);
   const replayed = answer.replayed === true;
@@ -412,27 +449,6 @@ function AnswerBody({ t, answer, locale }: { t: TFunction; answer: ClaudeResetSp
             time: new Date(answer.retry_until).toLocaleString(locale),
           })
         : t('claude_reset_spend.result_unknown_no_hold');
-  let routing: ReactNode = null;
-  if (result === 'reset' || result === 'already_used') {
-    const note = !replayed && typeof answer.routing?.note === 'string' ? answer.routing.note : '';
-    const queued = replayed ? undefined : answer.routing?.usage_poll_queued;
-    routing = (
-      <>
-        <div>
-          {note ? (
-            <>
-              {t('claude_reset_spend.routing_lead')} {note}
-            </>
-          ) : (
-            t('claude_reset_spend.routing_own')
-          )}
-        </div>
-        {typeof queued === 'boolean' && (
-          <div>{t(queued ? 'claude_reset_spend.usage_queued' : 'claude_reset_spend.usage_not_queued')}</div>
-        )}
-      </>
-    );
-  }
   let left: ReactNode;
   if (replayed) {
     const counts = claudeResetCountLines(answer.resets_left_after);
@@ -461,7 +477,9 @@ function AnswerBody({ t, answer, locale }: { t: TFunction; answer: ClaudeResetSp
       {replayed && <div>{t('claude_reset_spend.replayed')}</div>}
       <HubSays t={t} words={answer.recorded} />
       <div>{sentence}</div>
-      {routing}
+      {result === 'reset' && !replayed && answer.routing && (
+        <ResetRouting routing={answer.routing} t={t} locale={locale} />
+      )}
       {left}
       <HubSays t={t} words={answer.after_read_error} />
       <HubSays t={t} words={answer.ledger_error} />

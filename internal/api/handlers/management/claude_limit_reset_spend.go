@@ -1490,20 +1490,18 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 	case !claudeResetSettles(record):
 		answer["retry_until"] = firstSentAt.Add(claudeResetRetryWindow)
 	}
-	if outcome.Result == claudeauth.LimitResetResultReset || outcome.Result == claudeauth.LimitResetResultAlreadyUsed {
-		// The spend never edits the hub's routing state: which of the seat's
-		// cooldowns the provider's refill lifted is not known here, and a
-		// blanket clear would also lift limits this kind did not refill,
-		// independent failures, or a replacement credential's cooldown. A
-		// usage poll of this same credential is asked for; until the operator
-		// calls the routing reset, the hub's own cooldown can keep the seat out
-		// of rotation.
-		answer["routing"] = gin.H{
-			"cooldown_changed":     false,
-			"usage_poll_queued":    h.authManager.RequestClaudeResetFollowUpPoll(auth),
-			"cooldown_reset_route": "/v8/management/routing/cooldown/reset",
-			"note":                 "a confirmed reset does not return the seat to rotation: the hub's own cooldown can hold it until the routing reset is called",
+	// Start the usage read immediately and let the existing balance read and
+	// its journal write finish independently of the usage endpoint.
+	var routing chan gin.H
+	if outcome.Result == claudeauth.LimitResetResultReset {
+		routing = make(chan gin.H, 1)
+		go func() { routing <- h.claudeResetRouting(auth) }()
+	}
+	respondWithBalance := func() {
+		if routing != nil {
+			answer["routing"] = <-routing
 		}
+		respond(http.StatusOK, answer)
 	}
 	// The reset cache shows the claim's seat, and every other seat listing the
 	// grant when the claim spent or may have, as awaiting a fresh read from
@@ -1515,7 +1513,7 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 	h.authManager.PublishClaudeResetSpendRead(auth, grant.ID, spent, afterStarted, afterBody, errAfter)
 	if errAfter != nil {
 		answer["after_read_error"] = "the grants read after the claim failed"
-		respond(http.StatusOK, answer)
+		respondWithBalance()
 		return
 	}
 	kindsAfter := coreauth.SummarizeClaudeResetKinds(after.Grants, ledger.clock())
@@ -1529,5 +1527,21 @@ func (h *Handler) SpendClaudeLimitReset(c *gin.Context) {
 			answer["balance_error"] = claudeResetBalanceErrorText
 		}
 	}
-	respond(http.StatusOK, answer)
+	respondWithBalance()
+}
+
+func (h *Handler) claudeResetRouting(auth *coreauth.Auth) gin.H {
+	current, next := h.authManager.ReadClaudeResetUsage(auth)
+	routing := gin.H{"usage_read": current != nil, "next_poll_at": next}
+	if current == nil {
+		return routing
+	}
+	now := time.Now()
+	unavailable, _, _, retryAt := reconcileAuthFileCooldownState(current, now)
+	routing["available"] = !unavailable && !current.Disabled && current.Status != coreauth.StatusDisabled
+	routing["holds"] = coreauth.CooldownSnapshotForAuth(current, now)
+	if !retryAt.IsZero() {
+		routing["retry_at"] = retryAt
+	}
+	return routing
 }

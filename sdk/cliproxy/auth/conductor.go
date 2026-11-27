@@ -235,6 +235,7 @@ type Manager struct {
 	// Quota polling has its own lifecycle; config reloads cancel in-flight reads.
 	quotaPollMu     sync.Mutex
 	quotaPollParent context.Context
+	quotaPollCtx    context.Context // Current loop generation, including post-spend usage reads.
 	quotaPollCancel context.CancelFunc
 	quotaPollDone   chan struct{}
 	quotaPollWake   chan struct{} // Broadcast channel protected by mu.

@@ -584,6 +584,24 @@ describe('A9: the press checks the sign-in', () => {
     expect(opened).toBe(true);
     return { ...seat, hub, key0: spend.getClaudeResetSpend(seat.key).delivery?.key };
   }
+  test('only a new successful usage observation refreshes the card', async () => {
+    for (const [usageRead, replayed, refreshes] of [
+      [true, false, 1], [false, false, 0], [true, true, 0],
+    ] as const) {
+      const seat = openChecked();
+      const check = fakeRead([readOf(visibleSeat(seat.fileName, seat.body.auth_index, '1:1'))]);
+      const hub = fakeHub([ok({ result: 'reset', replayed, routing: { usage_read: usageRead } })]);
+      let refreshed = 0;
+      await spend.confirmClaudeResetSpendChecked(seat.key, {
+        post: hub.post,
+        read: check.read,
+        file: { name: seat.fileName, credential_generation: '1:1' },
+        onUsageRead: () => { refreshed++; },
+      });
+      expect(refreshed).toBe(refreshes);
+      expect(hub.calls).toHaveLength(1);
+    }
+  });
   type Row = {
     name: string;
     card: string;

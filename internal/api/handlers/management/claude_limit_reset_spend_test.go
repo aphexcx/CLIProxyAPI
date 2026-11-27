@@ -1033,13 +1033,7 @@ func TestClaudeResetSpendReadsConfigurationUnderTheLock(t *testing.T) {
 	<-reloaded
 }
 
-// Codex rounds 3 and 4: the spend never edits the hub's routing state. A
-// confirmed reset leaves the seat's cooldowns as they are (clearing them
-// blindly lifted limits the spent kind did not refill, independent model
-// failures and a replacement credential's cooldown), says so, and reports
-// truthfully whether a usage poll was queued. The existing routing reset is
-// the operator's step that lifts the cooldown.
-func TestClaudeResetSpendLeavesTheHubRoutingStateToTheOperator(t *testing.T) {
+func TestClaudeResetSpendPreservesCooldownWithoutUsageEvidence(t *testing.T) {
 	block := func(t *testing.T, f *resetSpendFixture) {
 		t.Helper()
 		next := time.Now().Add(7 * 24 * time.Hour)
@@ -1082,12 +1076,14 @@ func TestClaudeResetSpendLeavesTheHubRoutingStateToTheOperator(t *testing.T) {
 			if !blocked(f) {
 				t.Fatal("the spend edited the hub's routing state")
 			}
-			if answer["result"] != "reset" && answer["result"] != "already_used" {
+			if answer["result"] != "reset" {
+				if answer["routing"] != nil {
+					t.Fatalf("unexpected usage follow-up for %v", answer["result"])
+				}
 				return
 			}
 			routing, _ := answer["routing"].(map[string]any)
-			// Quota polling is off in this fixture, so no poll can be queued.
-			if routing["cooldown_changed"] != false || routing["usage_poll_queued"] != false || routing["cooldown_reset_route"] != "/v8/management/routing/cooldown/reset" {
+			if routing["usage_read"] != false || routing["next_poll_at"] != nil {
 				t.Fatalf("routing=%v", answer["routing"])
 			}
 			rec := httptest.NewRecorder()
@@ -1097,6 +1093,95 @@ func TestClaudeResetSpendLeavesTheHubRoutingStateToTheOperator(t *testing.T) {
 			f.h.ResetQuota(ctx)
 			if auth, _ := f.h.authManager.GetByID("fixture"); rec.Code != http.StatusOK || auth.Unavailable || auth.Quota.Exceeded {
 				t.Fatalf("the routing reset did not lift the cooldown: %d %s", rec.Code, rec.Body)
+			}
+		})
+	}
+}
+
+type resetUsagePoller struct {
+	coreauth.ProviderExecutor
+	read func(*coreauth.Auth) (map[string]coreauth.QuotaWindow, error)
+}
+
+func (*resetUsagePoller) Identifier() string { return "claude" }
+func (p *resetUsagePoller) PollQuota(_ context.Context, seat *coreauth.Auth) (map[string]coreauth.QuotaWindow, error) {
+	return p.read(seat)
+}
+
+func TestConfirmedClaudeResetReadsSeatUsage(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		usage    float64
+		failures int
+	}{
+		{"room", 0, 0}, {"at cap", 100, 0}, {"retry succeeds", 0, 1}, {"both reads fail", 100, 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newResetSpendFixture(t, resetFixtureGrants()...)
+			m := f.h.authManager
+			cfg := *f.h.cfg
+			cfg.Claude.Quota.Enabled, cfg.Claude.Quota.PollInterval = true, "10m"
+			m.SetConfig(&cfg)
+			first := make(chan struct{})
+			before := make(chan coreauth.ClaudeQuotaSnapshot, 1)
+			var calls atomic.Int32
+			m.RegisterExecutor(&resetUsagePoller{read: func(seat *coreauth.Auth) (map[string]coreauth.QuotaWindow, error) {
+				if seat.ID != "fixture" {
+					t.Errorf("unexpected usage read of %s", seat.ID)
+					return nil, errors.New("wrong seat")
+				}
+				n := int(calls.Add(1))
+				usage := test.usage
+				switch n {
+				case 1: // The ordinary poll installs both Fable cap holds.
+					usage = 100
+					close(first)
+				case 2:
+					snapshot, _ := m.ClaudeQuotaCached(seat.ID)
+					before <- snapshot
+				}
+				if n > 1 && n <= 1+test.failures {
+					return nil, errors.New("fixture usage read failed")
+				}
+				now := time.Now()
+				return map[string]coreauth.QuotaWindow{"Fable": {Utilization: usage, ObservedAt: now, ResetsAt: now.Add(7 * 24 * time.Hour)}}, nil
+			}})
+			m.StartQuotaPolling(t.Context())
+			defer m.StopQuotaPolling()
+			<-first
+			body := spendBody(map[string]any{"auth_index": f.index, "kind": "fable"})
+			code, answer := f.spendKeyed(t, "post-spend-usage", body)
+			routing, _ := answer["routing"].(map[string]any)
+			read := test.failures < 2
+			if code != http.StatusOK || answer["result"] != "reset" || routing["usage_read"] != read {
+				t.Fatalf("status=%d answer=%v", code, answer)
+			}
+			expectedCalls := int32(2 + min(test.failures, 1)) // Includes the initial scheduled poll.
+			if calls.Load() != expectedCalls {
+				t.Fatalf("usage reads=%d, want %d", calls.Load(), expectedCalls)
+			}
+			old := <-before
+			after, _ := m.ClaudeQuotaCached("fixture")
+			next, err := time.Parse(time.RFC3339Nano, fmt.Sprint(routing["next_poll_at"]))
+			if err != nil || !next.After(time.Now()) || len(old.Holds) != 2 || old.Windows["Fable"].Utilization != 100 {
+				t.Fatalf("old holds=%v, next poll=%v", old.Holds, routing["next_poll_at"])
+			}
+			if after.Windows["Fable"].Utilization != test.usage || after.PolledAt == nil || old.PolledAt == nil || (after.PolledAt.After(*old.PolledAt) != read) {
+				t.Fatalf("usage=%v, old=%v new=%v", after.Windows, old.PolledAt, after.PolledAt)
+			}
+			if test.usage == 0 {
+				seat, _ := m.GetByID("fixture")
+				row := f.h.buildAuthFileEntry(seat, authFileQuotaContext{v8: true})
+				if len(after.Holds) != 0 || routing["available"] != true || row["unavailable"] != false {
+					t.Fatalf("holds=%v routing=%v row unavailable=%v", after.Holds, routing, row["unavailable"])
+				}
+			} else if len(after.Holds) != 2 || after.Holds[0].Reason != "quota_cap" || (read && len(routing["holds"].([]any)) != 2) {
+				t.Fatalf("holds=%v, routing=%v", after.Holds, routing)
+			}
+			_, replay := f.spendKeyed(t, "post-spend-usage", body)
+			_, reads, claims := f.provider.counts()
+			if replay["replayed"] != true || calls.Load() != expectedCalls || reads != 2 || len(claims) != 1 {
+				t.Fatalf("replayed=%v, usage=%d, grant reads=%d, claims=%d", replay["replayed"], calls.Load(), reads, len(claims))
 			}
 		})
 	}

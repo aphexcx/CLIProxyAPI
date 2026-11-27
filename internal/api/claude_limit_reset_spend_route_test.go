@@ -18,6 +18,7 @@ func TestClaudeLimitResetSpendRouteRequiresManagementKey(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.RemoteManagement.SecretKey = "fixture-management-key"
 	h := management.NewHandler(cfg, "", nil)
+	h.SetLogDirectory(t.TempDir())
 	h.SetLocalPassword("fixture-management-key")
 	s := &Server{cfg: cfg, engine: gin.New(), mgmt: h}
 	s.managementRoutesEnabled.Store(true)
