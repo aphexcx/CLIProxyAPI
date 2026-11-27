@@ -2220,7 +2220,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								prevAuthCredRecoverAt := auth.Quota.NextRecoverAt
 								prevAuthCredSignals := maps.Clone(auth.Quota.cooldownSignals)
 								var credCooldownSignals map[string]string
-								if prevAuthCredActive && (prevAuthCredRecoverAt.After(credentialNext) || result.RetryAfter == nil) {
+								if !reportedQuotaFailure && prevAuthCredActive && (prevAuthCredRecoverAt.After(credentialNext) || result.RetryAfter == nil) {
 									credCooldownSignals = prevAuthCredSignals
 								} else {
 									credCooldownSignals = rejectedClaudeSignalsForCooldown(result.Provider, responseHeaders)
@@ -2479,7 +2479,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					prevAuthRecoverAt := auth.Quota.NextRecoverAt
 					prevAuthCooldownSignals := maps.Clone(auth.Quota.cooldownSignals)
 					keptPriorAuthQuota := false
-					if !disableCooling && statusCodeFromResult(result.Error) == 429 && prevAuthQuotaActive {
+					if !reportedQuotaFailure && !disableCooling && statusCodeFromResult(result.Error) == 429 && prevAuthQuotaActive {
 						if result.RetryAfter == nil {
 							keptPriorAuthQuota = true
 						} else {
@@ -2519,7 +2519,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								auth.forceCooldownSeeded = true
 							}
 							credSignals := auth.Quota.cooldownSignals
-							if prevAuthCredActive && (prevAuthCredRecoverAt.After(auth.Quota.NextRecoverAt) || result.RetryAfter == nil) {
+							if !reportedQuotaFailure && prevAuthCredActive && (prevAuthCredRecoverAt.After(auth.Quota.NextRecoverAt) || result.RetryAfter == nil) {
 								credSignals = prevAuthCredSignals
 							}
 							propagateCredentialQuotaToModelStatesLocked(auth, nil, auth.Quota.NextRecoverAt, auth.Quota.BackoffLevel, credSignals, prevAuthCredActive, prevAuthCredRecoverAt, reportedQuotaFailure, now)
@@ -3332,7 +3332,7 @@ func propagateCredentialQuotaToModelStatesLocked(auth *Auth, exclude *ModelState
 		otherState.Status = StatusError
 		otherQuotaNext := credentialNext
 		otherSignals := credCooldownSignals
-		if prevAuthCredActive && prevAuthCredRecoverAt.After(otherQuotaNext) {
+		if !reportedQuotaFailure && prevAuthCredActive && prevAuthCredRecoverAt.After(otherQuotaNext) {
 			otherQuotaNext = prevAuthCredRecoverAt
 		}
 		if shadow := otherState.credentialQuotaShadow; shadow != nil && shadow.Quota.Exceeded && shadow.Quota.NextRecoverAt.After(otherQuotaNext) {
