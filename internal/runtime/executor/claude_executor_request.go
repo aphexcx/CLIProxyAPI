@@ -115,7 +115,6 @@ var claudeManagedBetaSet = func() map[string]bool {
 		claudeRedactThinkingBeta,
 		claudeThinkingTokenCountBeta,
 		claudeAFKModeBeta,
-		claudeThinkingTokenCountBeta,
 		claudeMessageThreadsBeta,
 	}
 	managed = append(managed, claudeCodeCLIConstantBetas...)
