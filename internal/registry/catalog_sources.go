@@ -2,7 +2,6 @@ package registry
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"

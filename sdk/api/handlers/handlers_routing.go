@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/MoeForge/moego/ojson"
@@ -199,15 +200,7 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 		return []string{"home"}, resolvedModelName, nil
 	}
 
-	providers = util.GetProviderName(baseModel)
-	// Fallback: if baseModel has no provider but differs from resolvedModelName,
-	// try using the full model name. This handles edge cases where custom models
-	// may be registered with their full suffixed name (e.g., "my-model(8192)").
-	// Evaluated in Story 11.8: This fallback is intentionally preserved to support
-	// custom model registrations that include thinking suffixes.
-	if len(providers) == 0 && baseModel != resolvedModelName {
-		providers = util.GetProviderName(resolvedModelName)
-	}
+	providers = RegisteredModelProviders(resolvedModelName, baseModel)
 	// A native one-million-token Claude model needs no alternate upstream ID
 	// for the CLI's [1m] spelling. Keep explicit registrations authoritative.
 	if len(providers) == 0 && strings.HasPrefix(baseModel, "claude-") && strings.HasSuffix(baseModel, "[1m]") {
@@ -245,6 +238,19 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	// The thinking suffix is preserved in the model name itself, so no
 	// metadata-based configuration passing is needed.
 	return providers, resolvedModelName, nil
+}
+
+// RegisteredModelProviders resolves a model and its suffix-free base against
+// the registry. Exact Copilot routes take precedence over base-model inference.
+func RegisteredModelProviders(modelName, baseModel string) []string {
+	providers := util.GetProviderName(baseModel)
+	if baseModel != modelName {
+		exactProviders := util.GetProviderName(modelName)
+		if len(providers) == 0 || slices.Contains(exactProviders, "copilot") {
+			return exactProviders
+		}
+	}
+	return providers
 }
 
 func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageModel bool) *interfaces.ErrorMessage {
@@ -399,6 +405,9 @@ func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, mode
 	switch resp.TargetKind {
 	case pluginapi.ModelRouteTargetSelf, pluginapi.ModelRouteTargetExecutor:
 		decision.ExecutorPluginID = strings.TrimSpace(resp.Target)
+		if h.AuthManager != nil && h.AuthManager.HomeEnabled() {
+			return modelRouteDecision{}
+		}
 	case pluginapi.ModelRouteTargetProvider:
 		decision.Provider = strings.ToLower(strings.TrimSpace(resp.Target))
 		decision.Model = strings.TrimSpace(resp.TargetModel)

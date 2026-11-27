@@ -9,7 +9,6 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/MoeForge/moego/base64"
 	"github.com/MoeForge/moego/ojson"
+	"github.com/MoeForge/moego/regexp"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
@@ -44,6 +44,15 @@ var (
 	siwcTokenEndpointURL = SIWCTokenURL
 	siwcRefreshGroup     singleflight.Group
 )
+
+// OverrideSIWCTokenEndpointURLForTest overrides the SIWC token endpoint URL for tests and returns a restore function.
+func OverrideSIWCTokenEndpointURLForTest(endpoint string) func() {
+	previous := siwcTokenEndpointURL
+	siwcTokenEndpointURL = endpoint
+	return func() {
+		siwcTokenEndpointURL = previous
+	}
+}
 
 // IsValidUUID reports whether raw is a canonical 36-char UUID string.
 func IsValidUUID(raw string) bool {
@@ -122,13 +131,17 @@ func (o *CodexAuth) GenerateSIWCReauthURL(clientID, state, nonce, deviceID, redi
 func (o *CodexAuth) requestSIWCToken(ctx context.Context, form url.Values, clientID, deviceID string, requireIDToken bool) (result *CodexSIWCTokenData, errResult error) {
 	stage := "request-create"
 	defer func() {
-		if form.Get("grant_type") == "refresh_token" && errResult != nil && !isNonRetryableRefreshErr(errResult) {
+		if form.Get("grant_type") == "refresh_token" && errResult != nil && !isNonRetryableRefreshErr(errResult) && !IsRefreshPreSendError(errResult) && !IsRefreshOutcomeUnknown(errResult) {
 			errResult = &RefreshOutcomeUnknownError{Stage: stage, Cause: errResult}
 		}
 	}()
 	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, siwcTokenEndpointURL, strings.NewReader(form.Encode()))
 	if errReq != nil {
-		return nil, fmt.Errorf("failed to create SIWC token request: %w", errReq)
+		errCreate := fmt.Errorf("failed to create SIWC token request: %w", errReq)
+		if form.Get("grant_type") == "refresh_token" {
+			return nil, &RefreshPreSendError{Stage: "request-create", Cause: errCreate}
+		}
+		return nil, errCreate
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")

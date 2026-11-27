@@ -62,7 +62,7 @@ func testClaudeExecutorClientVersion(t *testing.T, stabilized bool) {
 				if tc.off && !stabilize {
 					want = "2.1.400"
 				}
-				cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{
+				cfg := &config.Config{Claude: config.ClaudeConfig{ServerSideFallback: true}, ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{
 					StabilizeDeviceProfile: &stabilize, PassthroughNewerClient: &enabled,
 					OS: "Linux", Arch: "x64",
 				}}

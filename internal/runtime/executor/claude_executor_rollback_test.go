@@ -74,7 +74,7 @@ func TestClaudeExecutorRollbackMatchesMain(t *testing.T) {
 					_, _ = io.WriteString(w, `{"id":"msg_test","type":"message","role":"assistant","content":[],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
 				}))
 				defer server.Close()
-				cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{
+				cfg := &config.Config{Claude: config.ClaudeConfig{ServerSideFallback: true}, ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{
 					StabilizeDeviceProfile: &tc.Stabilize, PassthroughNewerClient: &enabled, OS: "Linux", Arch: "x64",
 				}}
 				auth := &cliproxyauth.Auth{ID: "rollback", Provider: "claude", Attributes: map[string]string{

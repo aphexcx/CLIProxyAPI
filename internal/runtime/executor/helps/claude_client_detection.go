@@ -2,13 +2,13 @@ package helps
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
-	"regexp"
 	"sort"
 	"strings"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
+	"github.com/MoeForge/moego/regexp"
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
@@ -188,7 +188,7 @@ func detectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bo
 	entrypoint := userAgent.entrypoint
 	subclient := claudeSubclientForEntrypoint(entrypoint, cfg)
 	detection := ClaudeCodeRequestDetection{
-		XAppCLI:         headerValue(headers, "X-App") == "cli",
+		XAppCLI:         isNativeClaudeXApp(headerValue(headers, "X-App")),
 		UserAgent:       validUserAgent && plausibleClaudeCodeVersion(userAgent.version, cfg),
 		BetasPresent:    headerContainsClaudeCodeBeta(headers),
 		Entrypoint:      entrypoint,
@@ -231,6 +231,15 @@ func detectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bo
 			measuredClaudeCodeHaiku55HelperSessionMatches(headers, payload) &&
 			measuredClaudeCodeBillingAndIdentityMatch(payload, entrypoint))
 	return detection
+}
+
+func isNativeClaudeXApp(value string) bool {
+	switch value {
+	case "cli", "cli-bg":
+		return true
+	default:
+		return false
+	}
 }
 
 func claudeCodeHelperBetaProfile(redactThinking bool, trailing ...string) string {
@@ -335,11 +344,11 @@ func measuredClaudeCodeHaiku55HelperHeadersMatch(headers http.Header, cfg *confi
 			return false
 		}
 	}
+	// Claude Code omits prompt-caching-scope when using a non-first-party base URL.
 	betaHeader := normalizedClaudeBetaHeader(headers)
 	return strings.Contains(betaHeader, "interleaved-thinking-2025-05-14") &&
 		strings.Contains(betaHeader, "thinking-token-count-2026-05-13") &&
-		strings.Contains(betaHeader, "context-management-2025-06-27") &&
-		strings.Contains(betaHeader, "prompt-caching-scope-2026-01-05")
+		strings.Contains(betaHeader, "context-management-2025-06-27")
 }
 
 func measuredClaudeCodeHaiku55HelperSessionMatches(headers http.Header, payload []byte) bool {
