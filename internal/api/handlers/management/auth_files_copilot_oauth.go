@@ -20,7 +20,8 @@ func (h *Handler) requestCopilotToken(c *gin.Context) {
 		return
 	}
 	sessionProxyURL := oauthSessionProxyURLFromContext(c)
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := newManagementHTTPClient(nil)
+	client.Timeout = 30 * time.Second
 	if cfg := h.oauthConfigWithProxy(sessionProxyURL); cfg != nil {
 		util.SetProxy(&cfg.SDKConfig, client)
 	}

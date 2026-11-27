@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 )
@@ -144,9 +145,9 @@ func (e *CopilotExecutor) doHTTPRequest(ctx context.Context, auth *cliproxyauth.
 	client := *helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	if reporter != nil {
-		return reporter.TrackHTTPClient(&client).Do(req)
+		return httptransport.Do(reporter.TrackHTTPClient(&client), req)
 	}
-	return client.Do(req)
+	return httptransport.Do(&client, req)
 }
 
 type copilotPreparedRequest struct {

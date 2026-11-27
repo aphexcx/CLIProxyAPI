@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/MoeForge/moego/json"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 )
 
 const Provider = "copilot"
@@ -116,7 +117,7 @@ func RequestJSON(ctx context.Context, client *http.Client, endpoint, bearer stri
 	}
 	safeClient := *client
 	safeClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	resp, err := safeClient.Do(req)
+	resp, err := httptransport.Do(&safeClient, req)
 	if err != nil {
 		return err
 	}
