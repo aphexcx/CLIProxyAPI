@@ -285,3 +285,63 @@ func TestClaudeSeatMoveTagNeverRidesAlong(t *testing.T) {
 		t.Fatalf("the copy dropped the pick's move tag: %+v", dst)
 	}
 }
+
+// The read's case: a move from A to B fails on B and is retried on a third seat
+// C. Each attempt carries its own tag; the retry is a move from B.
+func TestClaudeSeatMoveFailedMoveRetriedOnThirdSeat(t *testing.T) {
+	f, clock := newSeatHoldFixture(t, false)
+	first := f.request(t, "third-seat-client", seatOpus, "", "execute")
+	setSeatOrganization(t, f, first, seatMoveOrgOne)
+	// B holds the highest priority tier and fails; C holds the next tier.
+	moved := addSeatMoveSeat(t, f, "moved", seatMoveOrgTwo, "10")
+	third := addSeatMoveSeat(t, f, "third", seatMoveOrgOne, "5")
+	setSeatDisabled(t, f, first)
+	f.failSeat = moved
+	clock.advance(time.Minute)
+	attempts := len(f.attempts)
+	if got := f.request(t, "third-seat-client", seatOpus, "", "execute"); got != third {
+		t.Fatalf("request ended on %s, want the third seat %s", got, third)
+	}
+	if got := f.attempts[attempts:]; len(got) != 2 || got[0] != moved || got[1] != third {
+		t.Fatalf("attempts = %v, want the moved seat then the third", got)
+	}
+	wantMoved := cliproxyexecutor.ClaudeSeatMove{Relation: "other_org", Warm: true, Reason: "disabled"}
+	if got, _ := f.moves[attempts].(cliproxyexecutor.ClaudeSeatMove); got != wantMoved {
+		t.Fatalf("failed attempt's tag = %+v, want %+v", f.moves[attempts], wantMoved)
+	}
+	wantThird := cliproxyexecutor.ClaudeSeatMove{Relation: "other_org", Warm: true, Reason: "upstream_error"}
+	if move := f.lastMove(t); move == nil || *move != wantThird {
+		t.Fatalf("retry's tag = %+v, want %+v", move, wantThird)
+	}
+	lines := f.events("claude routing: client moved")
+	if len(lines) != 2 {
+		t.Fatalf("client moved lines = %d, want 2", len(lines))
+	}
+	data := lines[1].Data
+	if data["previous_organization"] != seatMoveOrgLogName(seatMoveOrgTwo) || data["organization"] != seatMoveOrgLogName(seatMoveOrgOne) ||
+		data["same_org_available"] != 0 {
+		t.Fatalf("retry's client moved line = %+v", data)
+	}
+}
+
+// A removed old seat cannot be read, so its organization is unknown.
+func TestClaudeSeatMoveFromRemovedSeatIsUnknownOrg(t *testing.T) {
+	f, clock := newSeatHoldFixture(t, false)
+	first := f.request(t, "removed-client", seatOpus, "", "execute")
+	second := otherSeat(f, first)
+	setSeatOrganization(t, f, first, seatMoveOrgOne)
+	setSeatOrganization(t, f, second, seatMoveOrgOne)
+	f.m.Remove(context.Background(), first)
+	clock.advance(time.Minute)
+	if got := f.request(t, "removed-client", seatOpus, "", "execute"); got != second {
+		t.Fatalf("move went to %s, want %s", got, second)
+	}
+	want := cliproxyexecutor.ClaudeSeatMove{Relation: "unknown_org", Warm: true, Reason: "removed"}
+	if move := f.lastMove(t); move == nil || *move != want {
+		t.Fatalf("move tag = %+v, want %+v", move, want)
+	}
+	lines := f.events("claude routing: client moved")
+	if len(lines) != 1 || lines[0].Data["previous_organization"] != "none" || lines[0].Data["same_org_available"] != 0 {
+		t.Fatalf("client moved lines = %+v", lines)
+	}
+}

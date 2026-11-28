@@ -277,7 +277,7 @@ func (m *ClaudeCacheMeter) Record(scope ClaudeCacheScope, detail usage.Detail) {
 		outcome, filed = claudeCacheMoveOutcome(detail.CacheReadTokens, written, detail.InputTokens)
 	}
 	if filed {
-		log.WithFields(log.Fields{"provider": "claude", "client_hash": client, "relation": move.relation,
+		log.WithFields(log.Fields{"provider": "claude", "client_hash": client, "kind": kind, "relation": move.relation,
 			"warm": move.warm, "reason": scope.Move.Reason, "outcome": outcome,
 			"read": detail.CacheReadTokens, "written": written, "input": detail.InputTokens}).Info("claude routing: move outcome")
 	}

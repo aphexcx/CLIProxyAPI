@@ -183,3 +183,31 @@ func TestClaudeSeatMoveTagLeavesUpstreamRequestUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// The one-hour cache rule's refusal re-send: the refused attempt is abandoned
+// and the re-sent request files the moved reply exactly once.
+func TestClaudeSeatMoveFiledOnceAcrossOneHourRefusalResend(t *testing.T) {
+	const hash = "e1b2c3d4e5f60718293a4b5c6d7e8f90"
+	for _, stream := range oneHourPaths {
+		t.Run(oneHourPathName(stream), func(t *testing.T) {
+			before := seatMoveRow(t, "same_seat", false)
+			upstream, _, err := runOneHourCall(t, oneHourCall{stream: stream, payload: oneHourPayload(oneHourBare, oneHourBare, oneHourBare, "", ""),
+				refuse: oneHourRefuseHour, metadata: map[string]any{cliproxyexecutor.ClaudeSeatClientHashMetadataKey: hash,
+					cliproxyexecutor.ClaudeSeatMoveMetadataKey: cliproxyexecutor.ClaudeSeatMove{
+						Relation: cliproxyexecutor.ClaudeSeatMoveSameSeat, Warm: false, Reason: "cache_expired"}}})
+			if err != nil {
+				t.Fatalf("request error = %v", err)
+			}
+			if got := upstream.count(); got != 2 {
+				t.Fatalf("upstream saw %d requests, want the refused one and the re-send", got)
+			}
+			after := seatMoveRow(t, "same_seat", false)
+			if got := after.RePaid + after.Kept - before.RePaid - before.Kept; got != 1 {
+				t.Fatalf("moves same_seat/expired filed %d replies, want 1 (table row %+v)", got, after)
+			}
+			if got := after.Read - before.Read; got != 40 {
+				t.Fatalf("moves same_seat/expired: read += %d, want 40", got)
+			}
+		})
+	}
+}

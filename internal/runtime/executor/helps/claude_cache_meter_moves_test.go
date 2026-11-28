@@ -149,7 +149,7 @@ func TestClaudeCacheMoveOutcomeLogLine(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("move outcome lines = %d, want 1", len(entries))
 	}
-	want := log.Fields{"provider": "claude", "client_hash": "0123456789ab", "relation": "other_org", "warm": false,
+	want := log.Fields{"provider": "claude", "client_hash": "0123456789ab", "kind": "main", "relation": "other_org", "warm": false,
 		"reason": "fixture_reason", "outcome": "re_paid", "read": int64(10), "written": int64(300), "input": int64(5)}
 	if !reflect.DeepEqual(entries[0].Data, want) {
 		t.Fatalf("move outcome fields = %v, want %v", entries[0].Data, want)
