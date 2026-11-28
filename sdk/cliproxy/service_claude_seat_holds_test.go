@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
@@ -127,6 +128,9 @@ func TestServiceKeepsClaudeSeatHoldsAcrossRestart(t *testing.T) {
 
 	first, stop := runSeatHoldService(t, cfgPath)
 	seat, reason := pickSeat(t, first, hook, "seat-hold-service-conversation")
+	// Run registered the seat's models in the global registry; a stopped hub
+	// leaves them there. This cleanup runs after both hubs stop.
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(seat) })
 	if reason != "new_client" {
 		t.Fatalf("setup: first placement %s (%s), want new_client", seat, reason)
 	}
