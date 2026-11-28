@@ -6,6 +6,8 @@ cli-proxy-api
 # Configuration
 config.yaml
 .env
+# Claude seat hold files beside a config, and their temporary files
+*.claude-seat-holds*
 
 # Generated content
 bin/*

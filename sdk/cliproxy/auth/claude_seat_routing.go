@@ -18,7 +18,8 @@ import (
 
 // Claude cache affinity is automatic for built-in routing. It shares the manager's
 // existing eligibility and model-availability checks; it never makes a seat ready.
-// State is process-local and survives selector/config reloads on this manager.
+// State survives selector/config reloads on this manager; the holds also
+// survive a restart through the hold file (claude_seat_hold_file.go).
 type claudeSeatRouting struct {
 	mu          sync.Mutex
 	bindings    map[string]*claudeSeatBinding
@@ -27,6 +28,9 @@ type claudeSeatRouting struct {
 	nextCleanup time.Time
 	// now is the routing clock; nil means time.Now. Tests move it instead of sleeping.
 	now func() time.Time
+	// changes counts hold placements, so the hold file is written only when changed.
+	changes  uint64
+	holdFile claudeSeatHoldStore
 }
 
 func (r *claudeSeatRouting) clock() time.Time {
@@ -52,6 +56,10 @@ type claudeSeatBinding struct {
 	expiresAt  time.Time
 	// move is the conversation's last move until a reply files it; nil otherwise.
 	move *cliproxyexecutor.ClaudeSeatMove
+	// lateSubagent marks a subagent that came back after its hold expired, for
+	// the late subagent hour. It lives as long as the binding, and the hold file
+	// keeps it across a restart.
+	lateSubagent bool
 }
 
 type claudeSeatCountKey struct {
@@ -258,16 +266,35 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 	// Only the conversation's own pending move rides along, never a tag the
 	// caller's metadata already holds.
 	delete(opts.Metadata, cliproxyexecutor.ClaudeSeatMoveMetadataKey)
+	delete(opts.Metadata, cliproxyexecutor.ClaudeLateSubagentHourMetadataKey)
 	if key != "" {
-		bareIsHour := s.manager.claudeOneHourCacheEnabled() && IsClaudeSubscriptionSeat(selected)
-		expiresAt := now.Add(claudePromptCacheTTL(opts.OriginalRequest, bareIsHour))
-		if previous.authID == selected.ID && previous.expiresAt.After(expiresAt) {
-			expiresAt = previous.expiresAt
+		last := routing.placements[key]
+		if last == nil {
+			last = routing.placements[rootKey]
+		}
+		if last != nil && !hadBinding {
+			reason = "cache_expired"
 		}
 		if binding == nil {
 			binding = &claudeSeatBinding{clientKey: key, identities: make(map[string]bool)}
 		}
+		bareIsHour := s.manager.claudeOneHourCacheEnabled() && IsClaudeSubscriptionSeat(selected)
+		if s.manager.claudeLateSubagentHourEnabled() && claudeLateSubagentRequest(opts) {
+			// The late subagent hour: a subagent is held for the five minutes the
+			// executor sends its bare markers at, so its return after them is seen
+			// as an expiry; from that expiry on it is held, and sent, at the hour.
+			binding.lateSubagent = binding.lateSubagent || reason == "cache_expired"
+			bareIsHour = bareIsHour && binding.lateSubagent
+			if bareIsHour {
+				opts.Metadata[cliproxyexecutor.ClaudeLateSubagentHourMetadataKey] = true
+			}
+		}
+		expiresAt := now.Add(claudePromptCacheTTL(opts.OriginalRequest, bareIsHour))
+		if previous.authID == selected.ID && previous.expiresAt.After(expiresAt) {
+			expiresAt = previous.expiresAt
+		}
 		binding.authID, binding.authIndex, binding.expiresAt = selected.ID, index, expiresAt
+		routing.changes++
 		binding.identities[identity] = true
 		binding.identities[rootIdentity] = true
 		routing.bindings[key] = binding
@@ -276,13 +303,6 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 		}
 		if identityKey := claudeClientKey(identity, opts); identityKey != "" {
 			routing.bindings[identityKey] = binding
-		}
-		last := routing.placements[key]
-		if last == nil {
-			last = routing.placements[rootKey]
-		}
-		if last != nil && !hadBinding {
-			reason = "cache_expired"
 		}
 		// A known conversation placed on another seat, or placed again after its
 		// hold expired, is a move. The move stays pending on the binding, and each
@@ -359,6 +379,18 @@ func (s *claudeSeatSelector) conversationIdentity(model string, opts cliproxyexe
 		parent = cliproxysession.BoundSessionIdentity(match.ParentSessionID)
 	}
 	return identity, parent, true
+}
+
+// claudeLateSubagentRequest reports whether the late subagent hour covers a
+// request: a Claude Code subagent (IsClaudeSubagentRequest) that the session
+// code gives a session of its own. One filed under its main conversation's
+// session shares that conversation's hold, which the rule must not shorten.
+func claudeLateSubagentRequest(opts cliproxyexecutor.Options) bool {
+	if !IsClaudeSubagentRequest(opts.Headers, opts.OriginalRequest) {
+		return false
+	}
+	info, ok := cliproxysession.ExtractSessionInfo(opts.Headers, opts.OriginalRequest, nil)
+	return ok && info.ClientType == "claude" && info.AgentName != "main"
 }
 
 func (r *claudeSeatRouting) lookup(sessionID string) (string, string) {

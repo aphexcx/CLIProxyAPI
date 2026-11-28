@@ -199,14 +199,19 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	// probes omit both 1h cache and extended-cache-ttl.
 	isSubagent := isClaudeSubagentRequestDoc(incomingHeaders, doc)
 	subagent1h := isSubagent && claudeSubagentRequests1hDoc(incomingHeaders, doc)
+	// A subagent the seat router holds for the hour, because it came back after
+	// its five-minute hold expired, gets the one-hour rule as a main conversation
+	// does, while claude-header-defaults.late-subagent-hour is on.
+	lateSubagentHour := fp.LateSubagentHour && isSubagent && helps.ClaudeLateSubagentHour(opts.Metadata)
 	oneHourRuleApplied := false
 	if cpaOwnsCacheControl && fp.ProfileClaudeCodeCLI && (!isSubagent || subagent1h) && !isProbeOrHelper {
 		upgradeClaudeCacheControlTTLDoc(doc, claudeCacheControlTTL1h)
 	} else if fp.OneHourCache && isClaudeOAuthToken(apiKey) && !cpaOwnsCacheControl && !explicitCacheMode &&
-		!isSubagent && !isProbeOrHelper && !claudeCodeDetection.HelperProfile && !helps.ClaudeOneHourCacheRuleOff(ctx) {
+		(!isSubagent || lateSubagentHour) && !isProbeOrHelper && !claudeCodeDetection.HelperProfile && !helps.ClaudeOneHourCacheRuleOff(ctx) {
 		// The one-hour rule (claude-header-defaults.one-hour-cache): a main
-		// conversation on a subscription seat gets the hour on every marker it
-		// placed without a lifetime. An explicit ttl, 5m included, stays as written.
+		// conversation or late subagent on a subscription seat gets the hour on
+		// every marker it placed without a lifetime. An explicit ttl, 5m included,
+		// stays as written.
 		oneHourRuleApplied = upgradeClaudeCacheControlTTLKeepingKeysDoc(doc, claudeCacheControlTTL1h)
 	} else if (isProbeOrHelper || (isSubagent && !subagent1h)) && !explicitCacheMode {
 		stripClaudeCacheControlTTLDoc(doc)

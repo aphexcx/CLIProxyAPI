@@ -53,6 +53,9 @@ type claudeFingerprintPolicy struct {
 	// conversation on a subscription seat gets the one-hour cache on every marker
 	// that names no lifetime.
 	OneHourCache bool
+	// LateSubagentHour is claude-header-defaults.late-subagent-hour (default
+	// false): a subagent the seat router marks gets the one-hour rule too.
+	LateSubagentHour bool
 }
 
 func normalizeClaudeFingerprintProfile(raw string) string {
@@ -121,6 +124,7 @@ func resolveClaudeFingerprintPolicy(cfg *config.Config, auth *cliproxyauth.Auth,
 		InjectDiagnostics:    injectDiagnostics,
 		OAuthCancellation:    authIsOAuth,
 		OneHourCache:         cliproxyauth.ClaudeOneHourCacheEnabled(cfg),
+		LateSubagentHour:     cliproxyauth.ClaudeLateSubagentHourEnabled(cfg),
 	}
 }
 
