@@ -18,7 +18,8 @@ import (
 
 // Claude cache affinity is automatic for built-in routing. It shares the manager's
 // existing eligibility and model-availability checks; it never makes a seat ready.
-// State is process-local and survives selector/config reloads on this manager.
+// State survives selector/config reloads on this manager; the holds also
+// survive a restart through the hold file (claude_seat_hold_file.go).
 type claudeSeatRouting struct {
 	mu          sync.Mutex
 	bindings    map[string]*claudeSeatBinding
@@ -27,6 +28,9 @@ type claudeSeatRouting struct {
 	nextCleanup time.Time
 	// now is the routing clock; nil means time.Now. Tests move it instead of sleeping.
 	now func() time.Time
+	// changes counts hold placements, so the hold file is written only when changed.
+	changes  uint64
+	holdFile claudeSeatHoldStore
 }
 
 func (r *claudeSeatRouting) clock() time.Time {
@@ -268,6 +272,7 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 			binding = &claudeSeatBinding{clientKey: key, identities: make(map[string]bool)}
 		}
 		binding.authID, binding.authIndex, binding.expiresAt = selected.ID, index, expiresAt
+		routing.changes++
 		binding.identities[identity] = true
 		binding.identities[rootIdentity] = true
 		routing.bindings[key] = binding

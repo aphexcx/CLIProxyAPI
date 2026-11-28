@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
@@ -97,6 +98,8 @@ func (s *Service) Run(ctx context.Context) error {
 				log.Warnf("failed to restore cooldown state: %v", errRestoreCooldown)
 			}
 		}
+		// After the seats are known, so a hold on a gone or disabled seat is dropped.
+		s.coreManager.StartClaudeSeatHolds(ctx, claudeSeatHoldFilePath(s.configPath))
 		s.registerAvailableExecutors(ctx, executorRegistrationOptions{
 			includeBaseline: true,
 			auths:           s.coreManager.List(),
@@ -387,6 +390,10 @@ func (s *Service) Shutdown(ctx context.Context) error {
 				}
 			}
 		}
+		if s.coreManager != nil {
+			// After the server stops, so the holds of its last requests are written.
+			s.coreManager.StopClaudeSeatHolds()
+		}
 
 		if s.pluginHost != nil {
 			sdktranslator.SetPluginHooks(nil)
@@ -417,6 +424,18 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		usage.StopDefault()
 	})
 	return shutdownErr
+}
+
+// claudeSeatHoldFilePath names the Claude seat hold file beside the config
+// file, one per config, so two hubs on one machine keep their own. Its name
+// does not end in ".json", so the auth watcher never takes it for a credential
+// even where the auth directory holds the config. "" without a config path.
+func claudeSeatHoldFilePath(configPath string) string {
+	configPath = strings.TrimSpace(configPath)
+	if configPath == "" {
+		return ""
+	}
+	return configPath + ".claude-seat-holds"
 }
 
 func (s *Service) ensureAuthDir() error {

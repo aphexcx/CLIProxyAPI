@@ -56,6 +56,7 @@ var logFieldOrder = []string{
 	"auth_file", "http_status", "latency_ms", "success", "window", "resets_at", "quota_rank",
 	"plugin_id", "plugin_name", "source_id",
 	"version", "active_version", "retired_version", "overwritten",
+	"want_version", "holds_restored", "holds_expired", "holds_gone_seat", "holds_disabled_seat", "holds_invalid",
 	"mode", "budget", "level", "original_mode", "original_value", "min", "max", "clamped_to", "error",
 	"credential", "auth_id", "auth_index", "connection", "proxy_scheme", "remote_transport",
 	"operation", "upstream_host", "reused", "was_idle", "idle_time",
