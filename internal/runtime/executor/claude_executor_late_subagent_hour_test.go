@@ -29,6 +29,12 @@ func lateSubagentMark(hour bool) map[string]any {
 	return map[string]any{cliproxyexecutor.ClaudeLateSubagentHourMetadataKey: hour}
 }
 
+// lateSubagentConfig is a config with claude-header-defaults.late-subagent-hour
+// on; the executor honours the router's mark only while it is.
+func lateSubagentConfig() *config.Config {
+	return &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{LateSubagentHour: true}}
+}
+
 // A marked subagent on a subscription seat: its bare markers go upstream at the
 // hour with the beta the hour needs, marker for marker as a main conversation's.
 func TestClaudeLateSubagentHourSendsMarkedSubagentAtTheHour(t *testing.T) {
@@ -39,7 +45,7 @@ func TestClaudeLateSubagentHourSendsMarkedSubagentAtTheHour(t *testing.T) {
 			if errMain != nil {
 				t.Fatalf("main conversation: %v", errMain)
 			}
-			late, _, errLate := runOneHourCall(t, oneHourCall{stream: stream, headers: lateSubagentHeaders(), metadata: lateSubagentMark(true), payload: payload})
+			late, _, errLate := runOneHourCall(t, oneHourCall{cfg: lateSubagentConfig(), stream: stream, headers: lateSubagentHeaders(), metadata: lateSubagentMark(true), payload: payload})
 			if errLate != nil {
 				t.Fatalf("late subagent: %v", errLate)
 			}
@@ -59,8 +65,9 @@ func TestClaudeLateSubagentHourSendsMarkedSubagentAtTheHour(t *testing.T) {
 	}
 }
 
-// Guards: a mark the one-hour rule cannot honour leaves the subagent request as
-// the client wrote it, at five minutes and without the beta.
+// Guards: a mark with the key off, or one the one-hour rule cannot honour,
+// leaves the subagent request as the client wrote it, at five minutes and
+// without the beta.
 func TestClaudeLateSubagentHourLeavesOtherSubagentRequestsUnchanged(t *testing.T) {
 	ruleOff := false
 	payload := oneHourPayload(oneHourBare, oneHourBare, oneHourBare, "", "")
@@ -68,14 +75,15 @@ func TestClaudeLateSubagentHourLeavesOtherSubagentRequestsUnchanged(t *testing.T
 		name string
 		call oneHourCall
 	}{
-		{name: "no mark", call: oneHourCall{payload: payload}},
-		{name: "mark false", call: oneHourCall{metadata: lateSubagentMark(false), payload: payload}},
-		{name: "key seat", call: oneHourCall{apiKey: oneHourKeySeatKey, metadata: lateSubagentMark(true), payload: payload}},
-		{name: "one-hour-cache off", call: oneHourCall{cfg: &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{OneHourCache: &ruleOff}},
+		{name: "key off", call: oneHourCall{metadata: lateSubagentMark(true), payload: payload}},
+		{name: "no mark", call: oneHourCall{cfg: lateSubagentConfig(), payload: payload}},
+		{name: "mark false", call: oneHourCall{cfg: lateSubagentConfig(), metadata: lateSubagentMark(false), payload: payload}},
+		{name: "key seat", call: oneHourCall{cfg: lateSubagentConfig(), apiKey: oneHourKeySeatKey, metadata: lateSubagentMark(true), payload: payload}},
+		{name: "one-hour-cache off", call: oneHourCall{cfg: &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{OneHourCache: &ruleOff, LateSubagentHour: true}},
 			metadata: lateSubagentMark(true), payload: payload}},
-		{name: "explicit cache mode", call: oneHourCall{metadata: lateSubagentMark(true),
+		{name: "explicit cache mode", call: oneHourCall{cfg: lateSubagentConfig(), metadata: lateSubagentMark(true),
 			payload: oneHourPayload(oneHourBare, oneHourBare, oneHourBare, "", `"prompt_cache_options":{"mode":"explicit"},`)}},
-		{name: "token counting", call: oneHourCall{count: true, metadata: lateSubagentMark(true), payload: payload}},
+		{name: "token counting", call: oneHourCall{cfg: lateSubagentConfig(), count: true, metadata: lateSubagentMark(true), payload: payload}},
 	}
 	for _, tc := range cases {
 		for _, stream := range oneHourPaths {
@@ -110,10 +118,11 @@ func TestClaudeLateSubagentHourLeavesOtherSubagentRequestsUnchanged(t *testing.T
 // The payload rules stay the last word: a rule that sets or removes a marker's
 // ttl wins over the late subagent hour in the body that is sent.
 func TestClaudeLateSubagentHourYieldsToPayloadRules(t *testing.T) {
-	cfg := &config.Config{Payload: config.PayloadConfig{
+	cfg := lateSubagentConfig()
+	cfg.Payload = config.PayloadConfig{
 		Override: []config.PayloadRule{{Models: []config.PayloadModelRule{{Name: "claude-*"}}, Params: map[string]any{"system.1.cache_control.ttl": "5m"}}},
 		Filter:   []config.PayloadFilterRule{{Models: []config.PayloadModelRule{{Name: "claude-*"}}, Params: []string{"messages.2.content.0.cache_control.ttl"}}},
-	}}
+	}
 	for _, stream := range oneHourPaths {
 		t.Run(oneHourPathName(stream), func(t *testing.T) {
 			upstream, _, err := runOneHourCall(t, oneHourCall{cfg: cfg, stream: stream, headers: lateSubagentHeaders(), metadata: lateSubagentMark(true),
@@ -140,7 +149,7 @@ func TestClaudeLateSubagentHourYieldsToPayloadRules(t *testing.T) {
 func TestClaudeLateSubagentHourRefusalResendsAsWritten(t *testing.T) {
 	for _, stream := range oneHourPaths {
 		t.Run(oneHourPathName(stream), func(t *testing.T) {
-			upstream, _, err := runOneHourCall(t, oneHourCall{stream: stream, headers: lateSubagentHeaders(), metadata: lateSubagentMark(true),
+			upstream, _, err := runOneHourCall(t, oneHourCall{cfg: lateSubagentConfig(), stream: stream, headers: lateSubagentHeaders(), metadata: lateSubagentMark(true),
 				payload: oneHourPayload(oneHourBare, oneHourBare, oneHourBare, "", ""), refuse: oneHourRefuseHour})
 			if err != nil {
 				t.Fatalf("caller got error %v, want the re-sent request's 200", err)
@@ -160,7 +169,7 @@ func TestClaudeLateSubagentHourRefusalResendsAsWritten(t *testing.T) {
 // the hour inside that thread, and its fixed betas still cover the body.
 func TestClaudeLateSubagentHourInsideAThread(t *testing.T) {
 	server, upstream := newOneHourUpstream(t, nil)
-	executor := NewClaudeExecutor(&config.Config{})
+	executor := NewClaudeExecutor(lateSubagentConfig())
 	auth := &cliproxyauth.Auth{ID: "late-subagent-" + t.Name(), Provider: "claude", Metadata: claudeOAuthTestMetadata(),
 		Attributes: map[string]string{"api_key": oneHourSubscriptionKey, "base_url": server.URL}}
 	headers := lateSubagentHeaders()

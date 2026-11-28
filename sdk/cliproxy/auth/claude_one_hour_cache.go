@@ -38,10 +38,11 @@ func IsClaudeSubscriptionSeat(a *Auth) bool {
 
 // IsClaudeSubagentRequest reports whether a request comes from a Claude Code
 // subagent: an agent header, a parent session in metadata.user_id, or the
-// subagent flag in the first system block. It is the one subagent test: the
-// Claude executor applies it to the request it sends, and the seat router to
-// the request it places, so the late subagent hour and its hold cannot
-// disagree about which conversations are subagents.
+// subagent flag in the first system block. The seat router applies it to the
+// request it places and the Claude executor's beta code to the request it
+// sends; the executor's body check, isClaudeSubagentRequestDoc, is the same
+// test on its parsed body, so the late subagent hour and its hold agree about
+// which conversations are subagents.
 func IsClaudeSubagentRequest(headers http.Header, body []byte) bool {
 	if headerValueFromHTTPHeader(headers, "X-Claude-Code-Agent-Id") != "" ||
 		headerValueFromHTTPHeader(headers, "X-Claude-Code-Parent-Agent-Id") != "" {

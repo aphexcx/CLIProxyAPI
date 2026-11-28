@@ -57,7 +57,8 @@ type claudeSeatBinding struct {
 	// move is the conversation's last move until a reply files it; nil otherwise.
 	move *cliproxyexecutor.ClaudeSeatMove
 	// lateSubagent marks a subagent that came back after its hold expired, for
-	// the late subagent hour. It lives as long as the binding, in memory only.
+	// the late subagent hour. It lives as long as the binding, and the hold file
+	// keeps it across a restart.
 	lateSubagent bool
 }
 
@@ -278,7 +279,7 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 			binding = &claudeSeatBinding{clientKey: key, identities: make(map[string]bool)}
 		}
 		bareIsHour := s.manager.claudeOneHourCacheEnabled() && IsClaudeSubscriptionSeat(selected)
-		if s.manager.claudeLateSubagentHourEnabled() && IsClaudeSubagentRequest(opts.Headers, opts.OriginalRequest) {
+		if s.manager.claudeLateSubagentHourEnabled() && claudeLateSubagentRequest(opts) {
 			// The late subagent hour: a subagent is held for the five minutes the
 			// executor sends its bare markers at, so its return after them is seen
 			// as an expiry; from that expiry on it is held, and sent, at the hour.
@@ -378,6 +379,18 @@ func (s *claudeSeatSelector) conversationIdentity(model string, opts cliproxyexe
 		parent = cliproxysession.BoundSessionIdentity(match.ParentSessionID)
 	}
 	return identity, parent, true
+}
+
+// claudeLateSubagentRequest reports whether the late subagent hour covers a
+// request: a Claude Code subagent (IsClaudeSubagentRequest) that the session
+// code gives a session of its own. One filed under its main conversation's
+// session shares that conversation's hold, which the rule must not shorten.
+func claudeLateSubagentRequest(opts cliproxyexecutor.Options) bool {
+	if !IsClaudeSubagentRequest(opts.Headers, opts.OriginalRequest) {
+		return false
+	}
+	info, ok := cliproxysession.ExtractSessionInfo(opts.Headers, opts.OriginalRequest, nil)
+	return ok && info.ClientType == "claude" && info.AgentName != "main"
 }
 
 func (r *claudeSeatRouting) lookup(sessionID string) (string, string) {

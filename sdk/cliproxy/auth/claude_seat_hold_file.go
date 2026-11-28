@@ -17,8 +17,9 @@ import (
 
 // The Claude seat hold file keeps each conversation's seat hold across a
 // restart. Per hold it names the conversation's keys (claudeClientKey's 64-hex
-// hashes), the seat's ID and the hold's expiry: no session identity in clear
-// and no token. A failed read or write is logged and never stops the hub.
+// hashes), the seat's ID, the hold's expiry and, for a late subagent, its mark:
+// no session identity in clear and no token. A failed read or write is logged
+// and never stops the hub.
 const (
 	// claudeSeatHoldFileVersion must change whenever claudeClientKey changes how
 	// it derives a key (its "claude-seat-v1" prefix): a file of another version
@@ -40,6 +41,8 @@ type claudeSeatHoldRecord struct {
 	Keys      []string  `json:"keys"`
 	AuthID    string    `json:"auth_id"`
 	ExpiresAt time.Time `json:"expires_at"`
+	// LateSubagent keeps the late subagent hour's mark (claudeSeatBinding).
+	LateSubagent bool `json:"late_subagent,omitempty"`
 }
 
 // claudeSeatHoldStore is the hold file's lifecycle on one manager.
@@ -179,7 +182,7 @@ func (r *claudeSeatRouting) holdRecordsLocked(now time.Time) []claudeSeatHoldRec
 			i = len(holds)
 			index[binding] = i
 			holds = append(holds, claudeSeatHoldRecord{Client: binding.clientKey,
-				AuthID: binding.authID, ExpiresAt: binding.expiresAt.UTC()})
+				AuthID: binding.authID, ExpiresAt: binding.expiresAt.UTC(), LateSubagent: binding.lateSubagent})
 		}
 		holds[i].Keys = append(holds[i].Keys, key)
 	}
@@ -262,7 +265,8 @@ func (m *Manager) loadClaudeSeatHolds(path string) error {
 			continue
 		}
 		restored = append(restored, &claudeSeatBinding{authID: auth.ID, authIndex: auth.EnsureIndex(),
-			clientKey: record.Client, identities: make(map[string]bool), expiresAt: record.ExpiresAt})
+			clientKey: record.Client, identities: make(map[string]bool), expiresAt: record.ExpiresAt,
+			lateSubagent: record.LateSubagent})
 		restoredKeys = append(restoredKeys, record.Keys)
 	}
 	routing.mu.Lock()

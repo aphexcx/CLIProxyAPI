@@ -269,7 +269,9 @@ var (
 )
 
 // A2: with the key off, absent or false, every turn equals today's choice and
-// today's bytes upstream. These expectations pass at the start commit too.
+// today's bytes upstream. The expectations are today's: run on the commit before
+// this change with only this file and claude_seat_clock_export_test.go added,
+// this test passes there too.
 func TestClaudeLateSubagentKeyOffKeepsToday(t *testing.T) {
 	for name, configYAML := range map[string]string{
 		"key absent": "claude-header-defaults:\n  one-hour-cache: true\n",

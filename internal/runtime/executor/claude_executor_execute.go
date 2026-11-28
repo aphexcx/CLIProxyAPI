@@ -195,8 +195,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	isSubagent := isClaudeSubagentRequestDoc(incomingHeaders, doc)
 	subagent1h := isSubagent && claudeSubagentRequests1hDoc(incomingHeaders, doc)
 	// A subagent the seat router holds for the hour, because it came back after
-	// its five-minute hold expired, gets the one-hour rule as a main conversation does.
-	lateSubagentHour := isSubagent && helps.ClaudeLateSubagentHour(opts.Metadata)
+	// its five-minute hold expired, gets the one-hour rule as a main conversation
+	// does, while claude-header-defaults.late-subagent-hour is on.
+	lateSubagentHour := fp.LateSubagentHour && isSubagent && helps.ClaudeLateSubagentHour(opts.Metadata)
 	oneHourRuleApplied := false
 	if cpaOwnsCacheControl && fp.ProfileClaudeCodeCLI && (!isSubagent || subagent1h) && !isProbeOrHelper {
 		upgradeClaudeCacheControlTTLDoc(doc, claudeCacheControlTTL1h)
