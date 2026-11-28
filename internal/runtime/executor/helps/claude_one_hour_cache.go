@@ -6,6 +6,7 @@ import (
 	"regexp"
 
 	"github.com/MoeForge/moego/ojson"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -19,6 +20,14 @@ func WithClaudeOneHourCacheRuleOff(ctx context.Context) context.Context {
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, claudeOneHourCacheRuleOffContextKey{}, true)
+}
+
+// ClaudeLateSubagentHour reports whether the seat router holds this request's
+// subagent conversation for the hour, because it came back after its
+// five-minute hold expired (claude-header-defaults.late-subagent-hour).
+func ClaudeLateSubagentHour(metadata map[string]any) bool {
+	hour, _ := metadata[cliproxyexecutor.ClaudeLateSubagentHourMetadataKey].(bool)
+	return hour
 }
 
 // ClaudeOneHourCacheRuleOff reports whether ctx carries WithClaudeOneHourCacheRuleOff.

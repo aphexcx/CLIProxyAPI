@@ -184,6 +184,9 @@ func (c ClaudeConfig) SessionDatePinRetention() time.Duration {
 // first-party Claude Code CLI request shape. OneHourCache (default true) gives a
 // main conversation on a subscription seat the one-hour prompt cache on every
 // cache marker that names no lifetime, and holds its seat for the same hour.
+// LateSubagentHour (default false) holds a Claude Code subagent for the five
+// minutes its markers get upstream, and gives the hour of OneHourCache to a
+// subagent that comes back after that hold expired, from then on.
 type ClaudeHeaderDefaults struct {
 	UserAgent              string   `yaml:"user-agent" json:"user-agent"`
 	PackageVersion         string   `yaml:"package-version" json:"package-version"`
@@ -200,6 +203,7 @@ type ClaudeHeaderDefaults struct {
 	InjectDiagnostics      *bool    `yaml:"inject-diagnostics,omitempty" json:"inject-diagnostics,omitempty"`
 	ClientRequestID        string   `yaml:"client-request-id,omitempty" json:"client-request-id,omitempty"`
 	OneHourCache           *bool    `yaml:"one-hour-cache,omitempty" json:"one-hour-cache,omitempty"`
+	LateSubagentHour       bool     `yaml:"late-subagent-hour,omitempty" json:"late-subagent-hour,omitempty"`
 }
 
 // Supported ClaudeHeaderDefaults.ClientRequestID values. An empty value means

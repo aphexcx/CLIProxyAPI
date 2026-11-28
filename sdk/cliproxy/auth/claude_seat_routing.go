@@ -56,6 +56,9 @@ type claudeSeatBinding struct {
 	expiresAt  time.Time
 	// move is the conversation's last move until a reply files it; nil otherwise.
 	move *cliproxyexecutor.ClaudeSeatMove
+	// lateSubagent marks a subagent that came back after its hold expired, for
+	// the late subagent hour. It lives as long as the binding, in memory only.
+	lateSubagent bool
 }
 
 type claudeSeatCountKey struct {
@@ -262,14 +265,32 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 	// Only the conversation's own pending move rides along, never a tag the
 	// caller's metadata already holds.
 	delete(opts.Metadata, cliproxyexecutor.ClaudeSeatMoveMetadataKey)
+	delete(opts.Metadata, cliproxyexecutor.ClaudeLateSubagentHourMetadataKey)
 	if key != "" {
-		bareIsHour := s.manager.claudeOneHourCacheEnabled() && IsClaudeSubscriptionSeat(selected)
-		expiresAt := now.Add(claudePromptCacheTTL(opts.OriginalRequest, bareIsHour))
-		if previous.authID == selected.ID && previous.expiresAt.After(expiresAt) {
-			expiresAt = previous.expiresAt
+		last := routing.placements[key]
+		if last == nil {
+			last = routing.placements[rootKey]
+		}
+		if last != nil && !hadBinding {
+			reason = "cache_expired"
 		}
 		if binding == nil {
 			binding = &claudeSeatBinding{clientKey: key, identities: make(map[string]bool)}
+		}
+		bareIsHour := s.manager.claudeOneHourCacheEnabled() && IsClaudeSubscriptionSeat(selected)
+		if s.manager.claudeLateSubagentHourEnabled() && IsClaudeSubagentRequest(opts.Headers, opts.OriginalRequest) {
+			// The late subagent hour: a subagent is held for the five minutes the
+			// executor sends its bare markers at, so its return after them is seen
+			// as an expiry; from that expiry on it is held, and sent, at the hour.
+			binding.lateSubagent = binding.lateSubagent || reason == "cache_expired"
+			bareIsHour = bareIsHour && binding.lateSubagent
+			if bareIsHour {
+				opts.Metadata[cliproxyexecutor.ClaudeLateSubagentHourMetadataKey] = true
+			}
+		}
+		expiresAt := now.Add(claudePromptCacheTTL(opts.OriginalRequest, bareIsHour))
+		if previous.authID == selected.ID && previous.expiresAt.After(expiresAt) {
+			expiresAt = previous.expiresAt
 		}
 		binding.authID, binding.authIndex, binding.expiresAt = selected.ID, index, expiresAt
 		routing.changes++
@@ -281,13 +302,6 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 		}
 		if identityKey := claudeClientKey(identity, opts); identityKey != "" {
 			routing.bindings[identityKey] = binding
-		}
-		last := routing.placements[key]
-		if last == nil {
-			last = routing.placements[rootKey]
-		}
-		if last != nil && !hadBinding {
-			reason = "cache_expired"
 		}
 		// A known conversation placed on another seat, or placed again after its
 		// hold expired, is a move. The move stays pending on the binding, and each

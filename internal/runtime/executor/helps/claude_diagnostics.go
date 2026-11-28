@@ -15,6 +15,7 @@ import (
 	"github.com/MoeForge/moego/regexp"
 	"github.com/google/uuid"
 	homekv "github.com/router-for-me/CLIProxyAPI/v8/internal/home"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 const (
@@ -803,32 +804,9 @@ func IsClaudeQuotaProbeRequest(body []byte) bool {
 }
 
 // IsClaudeSubagentRequest reports whether the incoming request originates from
-// or represents a Claude Code subagent.
+// or represents a Claude Code subagent. The seat router applies the same test.
 func IsClaudeSubagentRequest(headers http.Header, body []byte) bool {
-	if val := HeaderValueCaseInsensitive(headers, "X-Claude-Code-Agent-Id"); val != "" {
-		return true
-	}
-	if val := HeaderValueCaseInsensitive(headers, "X-Claude-Code-Parent-Agent-Id"); val != "" {
-		return true
-	}
-	if ojson.GetBytesNoCopy(body, "metadata.user_id.parent_session_id").Exists() {
-		return true
-	}
-	if userID := ojson.GetBytesNoCopy(body, "metadata.user_id").String(); userID != "" {
-		if strings.Contains(userID, `"parent_session_id"`) {
-			return true
-		}
-	}
-	// Only inspect system[0].text or billing header for cc_is_subagent, never raw user message content
-	system := ojson.GetBytesNoCopy(body, "system")
-	if system.IsArray() && len(system.Array()) > 0 {
-		if strings.Contains(system.Array()[0].Get("text").String(), "cc_is_subagent=true") {
-			return true
-		}
-	} else if system.Type == ojson.String && strings.Contains(system.String(), "cc_is_subagent=true") {
-		return true
-	}
-	return false
+	return cliproxyauth.IsClaudeSubagentRequest(headers, body)
 }
 
 // ClaudePayloadHas1hTTL reports whether the request payload contains any cache_control

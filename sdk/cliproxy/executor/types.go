@@ -74,6 +74,10 @@ const (
 	// ClaudeSeatMoveMetadataKey carries the Claude seat router's ClaudeSeatMove tag
 	// to the executor, so the Claude cache meter files the reply under that move.
 	ClaudeSeatMoveMetadataKey = "claude_seat_move"
+	// ClaudeLateSubagentHourMetadataKey is true on a request of a Claude Code
+	// subagent that the seat router holds for the hour because it came back
+	// after its five-minute hold expired; the executor sends it at that hour.
+	ClaudeLateSubagentHourMetadataKey = "claude_late_subagent_hour"
 	// ParentSessionIDMetadataKey stores the parent session identity for hierarchical sessions and forks.
 	// For top-level Merkle LCP forks, it represents the deterministic Merkle prefix hash at the divergence point.
 	ParentSessionIDMetadataKey = "parent_session_id"

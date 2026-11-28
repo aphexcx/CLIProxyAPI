@@ -224,3 +224,106 @@ func TestClaudeLateSubagentGetsTheHourAfterItsHoldExpired(t *testing.T) {
 		})
 	}
 }
+
+// lateSubagentStep is one turn of a conversation: the time since the turn
+// before it, then what the router and the upstream must show for it.
+type lateSubagentStep struct {
+	after  time.Duration
+	reason string
+	ttl    string
+	beta   bool
+}
+
+func (h *lateSubagentHub) run(t *testing.T, path, agent string, steps []lateSubagentStep) {
+	t.Helper()
+	for i, step := range steps {
+		h.now = h.now.Add(step.after)
+		sent, reason := h.request(t, path, agent)
+		if reason != step.reason {
+			t.Fatalf("turn %d (+%s): reason %q, want %q", i+1, step.after, reason, step.reason)
+		}
+		if !lateSubagentAllTTL(sent.body, step.ttl) {
+			t.Fatalf("turn %d (+%s): marker ttls %v, want %q on every marker", i+1, step.after, lateSubagentTTLs(sent.body), step.ttl)
+		}
+		if got := strings.Contains(sent.beta, "extended-cache-ttl-2025-04-11"); got != step.beta {
+			t.Fatalf("turn %d (+%s): extended-cache-ttl beta %v, want %v (%q)", i+1, step.after, got, step.beta, sent.beta)
+		}
+	}
+}
+
+// Today's behaviour on two subscription seats with one-hour-cache on: a main
+// conversation is held and sent at the hour; a subagent is held for the hour
+// but sent at five minutes, without the beta.
+var (
+	lateSubagentTodayMain = []lateSubagentStep{
+		{reason: "new_client", ttl: "1h", beta: true},
+		{after: 10 * time.Minute, reason: "cache_warm", ttl: "1h", beta: true},
+		{after: 61 * time.Minute, reason: "cache_expired", ttl: "1h", beta: true},
+	}
+	lateSubagentTodaySubagent = []lateSubagentStep{
+		{reason: "new_client"},
+		{after: 10 * time.Minute, reason: "cache_warm"},
+		{after: 61 * time.Minute, reason: "cache_expired"},
+		{after: 10 * time.Minute, reason: "cache_warm"},
+	}
+)
+
+// A2: with the key off, absent or false, every turn equals today's choice and
+// today's bytes upstream. These expectations pass at the start commit too.
+func TestClaudeLateSubagentKeyOffKeepsToday(t *testing.T) {
+	for name, configYAML := range map[string]string{
+		"key absent": "claude-header-defaults:\n  one-hour-cache: true\n",
+		"key false":  "claude-header-defaults:\n  late-subagent-hour: false\n",
+	} {
+		for _, path := range []string{"execute", "stream"} {
+			t.Run(name+"/"+path, func(t *testing.T) {
+				t.Run("main", func(t *testing.T) {
+					newLateSubagentHub(t, configYAML).run(t, path, "", lateSubagentTodayMain)
+				})
+				t.Run("subagent", func(t *testing.T) {
+					newLateSubagentHub(t, configYAML).run(t, path, "late-child", lateSubagentTodaySubagent)
+				})
+			})
+		}
+	}
+}
+
+// A2: with the key on, a subagent is held for the five minutes it is sent at
+// until its first expiry, and a main conversation is exactly as today.
+func TestClaudeLateSubagentKeyOnBeforeTheFirstExpiry(t *testing.T) {
+	for _, path := range []string{"execute", "stream"} {
+		t.Run(path, func(t *testing.T) {
+			t.Run("subagent", func(t *testing.T) {
+				newLateSubagentHub(t, lateSubagentKeyOn).run(t, path, "late-child", []lateSubagentStep{
+					{reason: "new_client"},
+					{after: 3 * time.Minute, reason: "cache_warm"},
+					{after: 4 * time.Minute, reason: "cache_warm"},
+					{after: 6 * time.Minute, reason: "cache_expired", ttl: "1h", beta: true},
+					{after: 50 * time.Minute, reason: "cache_warm", ttl: "1h", beta: true},
+					{after: 61 * time.Minute, reason: "cache_expired", ttl: "1h", beta: true},
+				})
+			})
+			t.Run("main", func(t *testing.T) {
+				newLateSubagentHub(t, lateSubagentKeyOn).run(t, path, "", lateSubagentTodayMain)
+			})
+		})
+	}
+}
+
+// The router reads the key at each choice: turned off by a reload, a subagent
+// it marked is sent as today again, and keeps the hour it was already held for.
+func TestClaudeLateSubagentKeyFollowsReload(t *testing.T) {
+	hub := newLateSubagentHub(t, lateSubagentKeyOn)
+	hub.run(t, "execute", "late-child", []lateSubagentStep{
+		{reason: "new_client"},
+		{after: 10 * time.Minute, reason: "cache_expired", ttl: "1h", beta: true},
+	})
+	off, errParse := config.ParseConfigBytes([]byte("claude-header-defaults:\n  late-subagent-hour: false\n"))
+	if errParse != nil {
+		t.Fatal(errParse)
+	}
+	hub.m.SetConfig(off)
+	hub.run(t, "execute", "late-child", []lateSubagentStep{
+		{after: 30 * time.Minute, reason: "cache_warm"},
+	})
+}

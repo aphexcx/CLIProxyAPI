@@ -645,6 +645,10 @@ upstream:
     #   # subagents, probes and title requests keep what the client sent. If the upstream refuses the
     #   # hour, the request is sent once more as the client wrote it. Set false to turn it off (default true).
     #   one-hour-cache: true
+    #   # With one-hour-cache on, a Claude Code subagent on a subscription seat is held for the five
+    #   # minutes its markers get, and one that comes back after that hold expired gets the hour above,
+    #   # held and sent, for every later request. Default false.
+    #   late-subagent-hour: false
     #   # x-client-request-id on first-party CLI-profile requests: "on" (default) synthesizes a fresh
     #   # UUID per request (a confirmed Claude Code client keeps its own), "passthrough" forwards only
     #   # the caller's value and never synthesizes one, "off" never sends the header.
