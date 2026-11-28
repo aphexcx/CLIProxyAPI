@@ -52,6 +52,9 @@ type claudeSeatHoldStore struct {
 	done   chan struct{}
 	// saved is the routing change count the file holds.
 	saved uint64
+	// failing is set after a failed write, so a path that keeps failing warns
+	// once, not at every tick.
+	failing bool
 }
 
 // StartClaudeSeatHolds reads the holds saved at path once, then writes them
@@ -117,17 +120,27 @@ func (m *Manager) StopClaudeSeatHolds() {
 }
 
 func (m *Manager) saveClaudeSeatHoldsLogged(path string) {
-	if errSave := m.saveClaudeSeatHolds(path); errSave != nil {
-		log.WithError(errSave).Warn("claude routing: seat hold file not saved")
-	}
-}
-
-// saveClaudeSeatHolds writes the live holds to path when they changed since the
-// file was last written.
-func (m *Manager) saveClaudeSeatHolds(path string) error {
 	store := &m.claudeSeats.holdFile
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	errSave := m.saveClaudeSeatHoldsLocked(path)
+	if errSave == nil {
+		store.failing = false
+		return
+	}
+	entry := log.WithError(errSave)
+	if store.failing {
+		entry.Debug("claude routing: seat hold file not saved")
+		return
+	}
+	store.failing = true
+	entry.Warn("claude routing: seat hold file not saved")
+}
+
+// saveClaudeSeatHoldsLocked writes the live holds to path when they changed
+// since the file was last written. The caller holds the store's lock.
+func (m *Manager) saveClaudeSeatHoldsLocked(path string) error {
+	store := &m.claudeSeats.holdFile
 	routing := &m.claudeSeats
 	routing.mu.Lock()
 	changes := routing.changes
@@ -135,9 +148,13 @@ func (m *Manager) saveClaudeSeatHolds(path string) error {
 		routing.mu.Unlock()
 		return nil
 	}
-	file := routing.holdFileLocked(routing.clock())
+	holds := routing.holdRecordsLocked(routing.clock())
 	routing.mu.Unlock()
-	data, errMarshal := json.Marshal(file)
+	for _, hold := range holds {
+		sort.Strings(hold.Keys)
+	}
+	sort.Slice(holds, func(i, j int) bool { return holds[i].Client < holds[j].Client })
+	data, errMarshal := json.Marshal(claudeSeatHoldFile{Version: claudeSeatHoldFileVersion, Holds: holds})
 	if errMarshal != nil {
 		return fmt.Errorf("marshal claude seat holds: %w", errMarshal)
 	}
@@ -148,22 +165,25 @@ func (m *Manager) saveClaudeSeatHolds(path string) error {
 	return nil
 }
 
-// holdFileLocked lists the live holds, each with every alias key filed under it.
-func (r *claudeSeatRouting) holdFileLocked(now time.Time) claudeSeatHoldFile {
-	keys := make(map[*claudeSeatBinding][]string)
+// holdRecordsLocked lists the live holds, each with every alias key filed
+// under it, unsorted so the routing lock is held only to copy.
+func (r *claudeSeatRouting) holdRecordsLocked(now time.Time) []claudeSeatHoldRecord {
+	index := make(map[*claudeSeatBinding]int)
+	holds := make([]claudeSeatHoldRecord, 0)
 	for key, binding := range r.bindings {
-		if binding != nil && binding.authID != "" && now.Before(binding.expiresAt) {
-			keys[binding] = append(keys[binding], key)
+		if binding == nil || binding.authID == "" || !now.Before(binding.expiresAt) {
+			continue
 		}
+		i, seen := index[binding]
+		if !seen {
+			i = len(holds)
+			index[binding] = i
+			holds = append(holds, claudeSeatHoldRecord{Client: binding.clientKey,
+				AuthID: binding.authID, ExpiresAt: binding.expiresAt.UTC()})
+		}
+		holds[i].Keys = append(holds[i].Keys, key)
 	}
-	file := claudeSeatHoldFile{Version: claudeSeatHoldFileVersion, Holds: make([]claudeSeatHoldRecord, 0, len(keys))}
-	for binding, aliases := range keys {
-		sort.Strings(aliases)
-		file.Holds = append(file.Holds, claudeSeatHoldRecord{Client: binding.clientKey, Keys: aliases,
-			AuthID: binding.authID, ExpiresAt: binding.expiresAt.UTC()})
-	}
-	sort.Slice(file.Holds, func(i, j int) bool { return file.Holds[i].Client < file.Holds[j].Client })
-	return file
+	return holds
 }
 
 // writeClaudeSeatHoldFile replaces path through a temporary file in its
@@ -252,16 +272,22 @@ func (m *Manager) loadClaudeSeatHolds(path string) error {
 		routing.counts = make(map[claudeSeatCountKey]uint64)
 	}
 	for i, binding := range restored {
+		// The held seat is also the conversation's last seat, so a restored
+		// hold that moves is a move, as it would be without the restart.
+		placement := &claudeSeatPlacement{authID: binding.authID, authIndex: binding.authIndex}
 		for _, key := range restoredKeys[i] {
 			// A hold placed in this process is newer than the file's.
 			if _, live := routing.bindings[key]; !live {
 				routing.bindings[key] = binding
 			}
+			if _, live := routing.placements[key]; !live {
+				routing.placements[key] = placement
+			}
 		}
 	}
 	routing.mu.Unlock()
-	log.WithFields(log.Fields{"provider": "claude", "restored": len(restored), "expired": expired,
-		"gone_seat": gone, "disabled_seat": disabled, "invalid": invalid}).Info("claude routing: seat holds restored")
+	log.WithFields(log.Fields{"provider": "claude", "holds_restored": len(restored), "holds_expired": expired,
+		"holds_gone_seat": gone, "holds_disabled_seat": disabled, "holds_invalid": invalid}).Info("claude routing: seat holds restored")
 	return nil
 }
 

@@ -6,11 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/MoeForge/moego/json"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 )
@@ -57,11 +60,17 @@ func startSeatHoldTicks(t *testing.T, path string) (*seatRoutingFixture, *seatHo
 }
 
 // tick sends one save tick and returns once its save is done: the loop takes
-// the second tick only after the first one's save returned, and the second
-// finds nothing changed.
+// the second tick only after the first one's save returned. The second one's
+// save may still run, so a test ticks only while every write succeeds (the
+// second then finds nothing changed) and its clock stays still.
 func tick(ticks chan time.Time) {
 	ticks <- time.Time{}
 	ticks <- time.Time{}
+}
+
+// saveTick runs what the loop runs on a tick, and returns when it is done.
+func saveTick(f *seatRoutingFixture, path string) {
+	f.m.saveClaudeSeatHoldsLogged(path)
 }
 
 func seatHoldFileBytes(t *testing.T, path string) []byte {
@@ -80,6 +89,17 @@ func seatHoldFileExists(t *testing.T, path string) bool {
 		t.Fatal(errStat)
 	}
 	return errStat == nil
+}
+
+// renderedSeatHoldLine is the line the hub's log formatter prints for entry,
+// which drops any field logFieldOrder does not name.
+func renderedSeatHoldLine(t *testing.T, entry log.Entry) string {
+	t.Helper()
+	formatted, errFormat := (&logging.LogFormatter{}).Format(&entry)
+	if errFormat != nil {
+		t.Fatal(errFormat)
+	}
+	return string(formatted)
 }
 
 // A conversation's hold is written at shutdown and read by the fresh manager a
@@ -116,8 +136,12 @@ func TestClaudeSeatHoldFileDropsStaleHoldsAtLoad(t *testing.T) {
 	}
 	edit := func(old, replacement string) func(*testing.T, string, string) {
 		return func(t *testing.T, path, seat string) {
-			data := strings.ReplaceAll(string(seatHoldFileBytes(t, path)), strings.ReplaceAll(old, "<seat>", seat), replacement)
-			if errWrite := os.WriteFile(path, []byte(data), 0o600); errWrite != nil {
+			old := strings.ReplaceAll(old, "<seat>", seat)
+			data := string(seatHoldFileBytes(t, path))
+			if !strings.Contains(data, old) {
+				t.Fatalf("setup: the file has no %s: %s", old, data)
+			}
+			if errWrite := os.WriteFile(path, []byte(strings.ReplaceAll(data, old, replacement)), 0o600); errWrite != nil {
 				t.Fatal(errWrite)
 			}
 		}
@@ -127,13 +151,14 @@ func TestClaudeSeatHoldFileDropsStaleHoldsAtLoad(t *testing.T) {
 		pause   time.Duration
 		edit    func(t *testing.T, path, seat string)
 		prepare func(t *testing.T, f *seatRoutingFixture, seat string)
-		// count is the restore log's field that counts the drop; "" drops the file.
+		// count is the restore line's field that counts the drop; "" drops the file.
 		count string
 	}{
-		{name: "expired", pause: 5 * time.Minute, count: "expired"},
-		{name: "disabled seat", prepare: disable(false), count: "disabled_seat"},
-		{name: "seat status disabled", prepare: disable(true), count: "disabled_seat"},
-		{name: "gone seat", edit: edit(`"auth_id":"<seat>"`, `"auth_id":"seat-hold-gone-fixture"`), count: "gone_seat"},
+		{name: "expired", pause: 5 * time.Minute, count: "holds_expired"},
+		{name: "disabled seat", prepare: disable(false), count: "holds_disabled_seat"},
+		{name: "seat status disabled", prepare: disable(true), count: "holds_disabled_seat"},
+		{name: "gone seat", edit: edit(`"auth_id":"<seat>"`, `"auth_id":"seat-hold-gone-fixture"`), count: "holds_gone_seat"},
+		{name: "key not a client key", edit: edit(`"keys":["`, `"keys":["not-a-client-key","`), count: "holds_invalid"},
 		{name: "other version", edit: edit(`"version":1`, `"version":2`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -150,13 +175,23 @@ func TestClaudeSeatHoldFileDropsStaleHoldsAtLoad(t *testing.T) {
 				}
 			})
 			if tc.count == "" {
-				if dropped := after.events("claude routing: seat hold file dropped"); len(dropped) != 1 {
+				dropped := after.events("claude routing: seat hold file dropped")
+				if len(dropped) != 1 {
 					t.Fatalf("want the file dropped once, got %+v", dropped)
+				}
+				if line := renderedSeatHoldLine(t, dropped[0]); !strings.Contains(line, "version=2 want_version=1") {
+					t.Fatalf("the rendered line lost the versions: %s", line)
 				}
 			} else {
 				restored := after.events("claude routing: seat holds restored")
-				if len(restored) != 1 || restored[0].Data[tc.count] != 1 || restored[0].Data["restored"] != 0 {
+				if len(restored) != 1 || restored[0].Data[tc.count] != 1 || restored[0].Data["holds_restored"] != 0 {
 					t.Fatalf("want one hold dropped as %s and none restored, got %+v", tc.count, restored)
+				}
+				line := renderedSeatHoldLine(t, restored[0])
+				for _, field := range []string{"holds_restored=0", tc.count + "=1"} {
+					if !strings.Contains(line, field) {
+						t.Fatalf("the rendered line lost %s: %s", field, line)
+					}
 				}
 			}
 			if _, reason := after.requestMarker(t, "seat-hold-stale", seatHoldBare); reason != "new_client" {
@@ -167,7 +202,8 @@ func TestClaudeSeatHoldFileDropsStaleHoldsAtLoad(t *testing.T) {
 }
 
 // A seat that capped while the hub was down answers the restored hold's first
-// request with a 429; the existing retry moves the conversation.
+// request with a 429; the existing retry moves the conversation, and the move
+// is logged as one of a conversation that never restarted.
 func TestClaudeSeatHoldRestoredOnCappedSeatMovesByRetry(t *testing.T) {
 	path := seatHoldFilePath(t)
 	before, clock := startSeatHolds(t, path)
@@ -189,6 +225,51 @@ func TestClaudeSeatHoldRestoredOnCappedSeatMovesByRetry(t *testing.T) {
 	if len(requests) != 2 || requests[0].Data["reason"] != "cache_warm" || reason != "upstream_error" {
 		t.Fatalf("want the restored hold placed warm, then moved for upstream_error; got %+v", requests)
 	}
+	if moves := after.events("claude routing: client moved"); len(moves) != 1 || moves[0].Data["reason"] != "upstream_error" {
+		t.Fatalf("want the restored hold's move logged once, got %+v", moves)
+	}
+}
+
+// A restored hold whose seat cannot serve the conversation's first request
+// after the restart (here a model cooldown the fresh hub knows) moves on that
+// request, and the move is logged as one of a conversation that never
+// restarted: the held seat is restored as the conversation's last seat too.
+func TestClaudeSeatHoldRestoredOnCoolingSeatIsAMove(t *testing.T) {
+	path := seatHoldFilePath(t)
+	before, clock := startSeatHolds(t, path)
+	seat, _ := before.requestMarker(t, "seat-hold-cooling", seatHoldBare)
+	after := restartSeatHolds(t, before, clock, path, 11*time.Second, nil)
+	retry := time.Hour
+	after.m.MarkResult(context.Background(), Result{AuthID: seat, Provider: "claude", Model: seatOpus,
+		Error: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "fake model limit"}, RetryAfter: &retry})
+	got, reason := after.requestMarker(t, "seat-hold-cooling", seatHoldBare)
+	if got == seat || reason != "model_cooldown" {
+		t.Fatalf("the conversation went to %s (%s), want another seat for model_cooldown", got, reason)
+	}
+	if moves := after.events("claude routing: client moved"); len(moves) != 1 || moves[0].Data["reason"] != "model_cooldown" {
+		t.Fatalf("want the restored hold's move logged once, got %+v", moves)
+	}
+}
+
+// A hold the fresh manager placed before it read the file is newer than the
+// file's and stays.
+func TestClaudeSeatHoldFileNeverReplacesALiveHold(t *testing.T) {
+	path := seatHoldFilePath(t)
+	before, clock := startSeatHolds(t, path)
+	other, _ := before.requestMarker(t, "seat-hold-other", seatHoldBare)
+	held, _ := before.requestMarker(t, "seat-hold-live", seatHoldBare)
+	before.m.StopClaudeSeatHolds()
+	after, restarted := newSeatHoldFixture(t, false)
+	restarted.now = clock.now
+	live, _ := after.requestMarker(t, "seat-hold-live", seatHoldBare)
+	if live == held || held == other {
+		t.Fatalf("setup: the file holds %s and the live hold is on %s, want two seats", held, live)
+	}
+	after.m.StartClaudeSeatHolds(context.Background(), path)
+	t.Cleanup(after.m.StopClaudeSeatHolds)
+	if got, reason := after.requestMarker(t, "seat-hold-live", seatHoldBare); got != live || reason != "cache_warm" {
+		t.Fatalf("the file's hold replaced the live one: %s (%s), want %s (cache_warm)", got, reason, live)
+	}
 }
 
 func TestClaudeSeatHoldFileFailuresAreLoggedNotFatal(t *testing.T) {
@@ -201,25 +282,43 @@ func TestClaudeSeatHoldFileFailuresAreLoggedNotFatal(t *testing.T) {
 		t.Fatal(errWrite)
 	}
 	for name, path := range map[string]string{
-		// Its parent is a file, so both the read and the write fail.
+		// Its parent is a file, so both the read and every write fail.
 		"unreachable path": filepath.Join(notADirectory, "config.yaml.claude-seat-holds"),
 		"corrupt file":     corrupt,
 	} {
 		t.Run(name, func(t *testing.T) {
-			f, _ := startSeatHolds(t, path)
-			if read := f.events("claude routing: seat hold file not read"); len(read) != 1 || read[0].Level != log.WarnLevel {
-				t.Fatalf("want one warning for the failed read, got %+v", read)
+			if name == "unreachable path" && runtime.GOOS == "windows" {
+				t.Skip("Windows reports a path under a file as not existing")
+			}
+			f, clock, _ := startSeatHoldTicks(t, path)
+			read := f.events("claude routing: seat hold file not read")
+			if len(read) != 1 || read[0].Level != log.WarnLevel || !strings.Contains(renderedSeatHoldLine(t, read[0]), "error=") {
+				t.Fatalf("want one warning naming the failed read, got %+v", read)
 			}
 			if _, reason := f.requestMarker(t, "seat-hold-failing", seatHoldBare); reason != "new_client" {
 				t.Fatalf("the hub did not serve after a failed read: %s", reason)
 			}
+			saveTick(f, path)
+			clock.advance(time.Minute)
+			f.requestMarker(t, "seat-hold-failing", seatHoldBare)
+			saveTick(f, path)
 			f.m.StopClaudeSeatHolds()
 			saved := f.events("claude routing: seat hold file not saved")
-			if name == "unreachable path" && (len(saved) != 1 || saved[0].Level != log.WarnLevel) {
-				t.Fatalf("want one warning for the failed write, got %+v", saved)
+			if name == "corrupt file" {
+				if len(saved) != 0 || !json.Valid(seatHoldFileBytes(t, path)) {
+					t.Fatalf("the first write did not replace the corrupt file: %+v", saved)
+				}
+				return
 			}
-			if name == "corrupt file" && (len(saved) != 0 || !json.Valid(seatHoldFileBytes(t, path))) {
-				t.Fatalf("the shutdown did not replace the corrupt file: %+v", saved)
+			// The failed writes (each tick and the shutdown) warn once.
+			var warnings []log.Entry
+			for _, entry := range saved {
+				if entry.Level <= log.WarnLevel {
+					warnings = append(warnings, entry)
+				}
+			}
+			if len(saved) == 0 || len(warnings) != 1 || !strings.Contains(renderedSeatHoldLine(t, warnings[0]), "error=") {
+				t.Fatalf("want one warning naming the failed write, got %+v", saved)
 			}
 		})
 	}
@@ -234,7 +333,7 @@ func TestClaudeSeatHoldFileIsPrivateAndNamesNoSecret(t *testing.T) {
 	if errStat != nil {
 		t.Fatal(errStat)
 	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
+	if mode := info.Mode().Perm(); mode != 0o600 && runtime.GOOS != "windows" {
 		t.Fatalf("hold file mode %o, want 600", mode)
 	}
 	data := seatHoldFileBytes(t, path)
@@ -242,6 +341,31 @@ func TestClaudeSeatHoldFileIsPrivateAndNamesNoSecret(t *testing.T) {
 		if strings.Contains(string(data), secret) {
 			t.Fatalf("hold file carries %q: %s", secret, data)
 		}
+	}
+	// Only these fields: no identity, no pending move, nothing else.
+	var shape struct {
+		Holds []map[string]any `json:"holds"`
+	}
+	var top map[string]any
+	if errParse := json.Unmarshal(data, &top); errParse != nil {
+		t.Fatal(errParse)
+	}
+	if errParse := json.Unmarshal(data, &shape); errParse != nil {
+		t.Fatal(errParse)
+	}
+	fieldNames := func(object map[string]any) string {
+		names := make([]string, 0, len(object))
+		for name := range object {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return strings.Join(names, ",")
+	}
+	if got := fieldNames(top); got != "holds,version" {
+		t.Fatalf("hold file fields %s, want holds,version", got)
+	}
+	if len(shape.Holds) != 1 || fieldNames(shape.Holds[0]) != "auth_id,client,expires_at,keys" {
+		t.Fatalf("hold fields %+v, want auth_id,client,expires_at,keys", shape.Holds)
 	}
 	var file struct {
 		Version int `json:"version"`
@@ -270,11 +394,23 @@ func TestClaudeSeatHoldFileIsPrivateAndNamesNoSecret(t *testing.T) {
 	}
 }
 
+// The file's keys are claudeClientKey's: a release that changes how it derives
+// a key must change claudeSeatHoldFileVersion too, so an old file is dropped
+// whole. Change both values of the pin together.
+func TestClaudeSeatHoldFileVersionPinsClientKey(t *testing.T) {
+	pinned := map[int]string{1: "c6abcdcc3b26dd3089f572b5c9e74c8acea88a564e8562f494d75d5aa777f4a1"}
+	opts := cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.CallerScopeMetadataKey: "pin-scope"}}
+	want, ok := pinned[claudeSeatHoldFileVersion]
+	if got := claudeClientKey("pin-identity", opts); !ok || got != want {
+		t.Fatalf("claudeClientKey gives %s at hold file version %d: a new key derivation needs a new file version and a new pin", got, claudeSeatHoldFileVersion)
+	}
+}
+
 func TestClaudeSeatHoldFileReplacedByRename(t *testing.T) {
 	path := seatHoldFilePath(t)
-	f, clock, ticks := startSeatHoldTicks(t, path)
+	f, clock, _ := startSeatHoldTicks(t, path)
 	f.requestMarker(t, "seat-hold-rename", seatHoldBare)
-	tick(ticks)
+	saveTick(f, path)
 	old := seatHoldFileBytes(t, path)
 	// A write in place would show through a second link to the old file.
 	link := path + ".before"
@@ -283,7 +419,7 @@ func TestClaudeSeatHoldFileReplacedByRename(t *testing.T) {
 	}
 	clock.advance(time.Minute)
 	f.requestMarker(t, "seat-hold-rename", seatHoldBare)
-	tick(ticks)
+	saveTick(f, path)
 	if string(seatHoldFileBytes(t, link)) != string(old) {
 		t.Fatal("the hold file was rewritten in place, want a new file renamed over it")
 	}
