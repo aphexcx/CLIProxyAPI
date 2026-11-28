@@ -229,15 +229,16 @@ func (r *UsageReporter) SetSessionHierarchy(sessionID, parentSessionID string) {
 	}
 }
 
-// SetClaudeCacheScope names the client and kind of a Claude Messages request, and
-// whether the one-hour cache rule changed it, so its successful record is
-// counted by the Claude cache meter. A reporter with no scope is not metered.
+// SetClaudeCacheScope names the client and kind of a Claude Messages request,
+// whether the one-hour cache rule changed it, and the seat router's move tag
+// (nil when the request is not a move), so its successful record is counted by
+// the Claude cache meter. A reporter with no scope is not metered.
 // Callers should invoke it on the request thread before Publish or EnsurePublished.
-func (r *UsageReporter) SetClaudeCacheScope(client, kind string, ruleApplied bool) {
+func (r *UsageReporter) SetClaudeCacheScope(client, kind string, ruleApplied bool, move *cliproxyexecutor.ClaudeSeatMove) {
 	if r == nil {
 		return
 	}
-	r.claudeCacheScope = &ClaudeCacheScope{Client: client, Kind: kind, RuleApplied: ruleApplied}
+	r.claudeCacheScope = &ClaudeCacheScope{Client: client, Kind: kind, RuleApplied: ruleApplied, Move: move}
 }
 
 // AbandonAttempt marks this attempt as superseded by a re-sent request whose own

@@ -1372,7 +1372,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					} else {
 						delete(meta, cliproxyexecutor.ParentSessionIDMetadataKey)
 					}
-					copyClaudeSeatClientHash(meta, pickOpts.Metadata)
+					copyClaudeSeatMetadata(meta, pickOpts.Metadata)
 					execOpts.Metadata = meta
 				}
 			}
@@ -2191,7 +2191,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				} else {
 					delete(meta, cliproxyexecutor.ParentSessionIDMetadataKey)
 				}
-				copyClaudeSeatClientHash(meta, pickOpts.Metadata)
+				copyClaudeSeatMetadata(meta, pickOpts.Metadata)
 				execOpts.Metadata = meta
 			}
 		}

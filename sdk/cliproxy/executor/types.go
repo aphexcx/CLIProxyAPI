@@ -70,6 +70,9 @@ const (
 	// ClaudeSeatClientHashMetadataKey stores the client hash the Claude seat router
 	// logs as client_hash, so executor-side measures name the same client.
 	ClaudeSeatClientHashMetadataKey = "claude_seat_client_hash"
+	// ClaudeSeatMoveMetadataKey carries the Claude seat router's ClaudeSeatMove tag
+	// to the executor, so the Claude cache meter files the reply under that move.
+	ClaudeSeatMoveMetadataKey = "claude_seat_move"
 	// ParentSessionIDMetadataKey stores the parent session identity for hierarchical sessions and forks.
 	// For top-level Merkle LCP forks, it represents the deterministic Merkle prefix hash at the divergence point.
 	ParentSessionIDMetadataKey = "parent_session_id"
@@ -100,6 +103,32 @@ const (
 	// SessionAffinityModelMetadataKey carries the model used during session affinity selection.
 	SessionAffinityModelMetadataKey = "session_affinity_model"
 )
+
+// Relations of a Claude seat move: the seat a conversation was last placed on
+// against the seat it is placed on now.
+const (
+	// ClaudeSeatMoveSameSeat is the same seat, placed again after its hold expired.
+	ClaudeSeatMoveSameSeat = "same_seat"
+	// ClaudeSeatMoveSameOrg is another seat of the same organization.
+	ClaudeSeatMoveSameOrg = "same_org"
+	// ClaudeSeatMoveOtherOrg is a seat of another organization.
+	ClaudeSeatMoveOtherOrg = "other_org"
+	// ClaudeSeatMoveUnknownOrg is another seat when either seat has no organization.
+	ClaudeSeatMoveUnknownOrg = "unknown_org"
+)
+
+// ClaudeSeatMove tags a request of a known conversation that the Claude seat
+// router placed on another seat than its last one, or placed again after the
+// conversation's hold expired. It is a measure only: no request sent upstream
+// carries or depends on it.
+type ClaudeSeatMove struct {
+	// Relation is one of the ClaudeSeatMove* relations.
+	Relation string `json:"relation"`
+	// Warm reports whether the conversation's hold was still alive at the choice.
+	Warm bool `json:"warm"`
+	// Reason is the router's reason for the placement.
+	Reason string `json:"reason"`
+}
 
 // Request encapsulates the translated payload that will be sent to a provider executor.
 type Request struct {

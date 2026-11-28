@@ -27,6 +27,8 @@ type seatRoutingFixture struct {
 	hook     *logtest.Hook
 	failSeat string
 	attempts []string
+	// moves holds the seat router's move tag each attempt's executor received.
+	moves []any
 }
 
 func newSeatRoutingFixture(t *testing.T, selector Selector) *seatRoutingFixture {
@@ -54,8 +56,9 @@ func newSeatRoutingFixture(t *testing.T, selector Selector) *seatRoutingFixture 
 			t.Fatal(errRegister)
 		}
 	}
-	execute := func(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	execute := func(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 		f.attempts = append(f.attempts, auth.ID)
+		f.moves = append(f.moves, opts.Metadata[cliproxyexecutor.ClaudeSeatMoveMetadataKey])
 		if f.failSeat == auth.ID {
 			return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusServiceUnavailable, Message: "fake upstream unavailable"}
 		}

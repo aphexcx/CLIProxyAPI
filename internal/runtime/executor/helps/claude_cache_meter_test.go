@@ -160,15 +160,15 @@ func TestClaudeCacheClientAndKind(t *testing.T) {
 func TestUsageReporterFeedsClaudeCacheMeterOnSuccessOnly(t *testing.T) {
 	client := "feed" + time.Now().UTC().Format("150405.000")
 	reporter := &UsageReporter{provider: "claude"}
-	reporter.SetClaudeCacheScope(client, ClaudeCacheKindMain, false)
+	reporter.SetClaudeCacheScope(client, ClaudeCacheKindMain, false, nil)
 	reporter.Publish(context.Background(), meterDetail(usage.Int64Ptr(5), nil, 5, 0))
 	failed := &UsageReporter{provider: "claude"}
-	failed.SetClaudeCacheScope(client, ClaudeCacheKindHelper, false)
+	failed.SetClaudeCacheScope(client, ClaudeCacheKindHelper, false, nil)
 	failed.PublishFailure(context.Background(), errTestMeterFailure)
 	unscoped := &UsageReporter{provider: "claude"}
 	unscoped.Publish(context.Background(), meterDetail(usage.Int64Ptr(5), nil, 5, 0))
 	abandoned := &UsageReporter{provider: "claude"}
-	abandoned.SetClaudeCacheScope(client, ClaudeCacheKindSubagent, false)
+	abandoned.SetClaudeCacheScope(client, ClaudeCacheKindSubagent, false, nil)
 	abandoned.AbandonAttempt()
 	abandoned.Publish(context.Background(), meterDetail(usage.Int64Ptr(5), nil, 5, 0))
 
