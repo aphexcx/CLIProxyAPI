@@ -40,12 +40,18 @@ func ClaudeOneHourCacheEnabled(cfg *internalconfig.Config) bool {
 	return cfg == nil || cfg.ClaudeHeaderDefaults.OneHourCache == nil || *cfg.ClaudeHeaderDefaults.OneHourCache
 }
 
-// copyClaudeSeatClientHash carries the seat router's client hash from the pick
-// options into the execution options, so the executor's cache measure names the
-// client the routing log names.
-func copyClaudeSeatClientHash(dst, src map[string]any) {
+// copyClaudeSeatMetadata carries the seat router's client hash and move tag from
+// the pick options into the execution options, so the executor's cache measure
+// names the client the routing log names and files a moved reply under its move.
+// A move tag the pick did not set is removed: it belongs to an earlier choice.
+func copyClaudeSeatMetadata(dst, src map[string]any) {
 	if clientHash, ok := src[cliproxyexecutor.ClaudeSeatClientHashMetadataKey]; ok {
 		dst[cliproxyexecutor.ClaudeSeatClientHashMetadataKey] = clientHash
+	}
+	if move, ok := src[cliproxyexecutor.ClaudeSeatMoveMetadataKey]; ok {
+		dst[cliproxyexecutor.ClaudeSeatMoveMetadataKey] = move
+	} else {
+		delete(dst, cliproxyexecutor.ClaudeSeatMoveMetadataKey)
 	}
 }
 

@@ -50,6 +50,8 @@ type claudeSeatBinding struct {
 	clientKey  string
 	identities map[string]bool
 	expiresAt  time.Time
+	// move is the conversation's last move until a reply files it; nil otherwise.
+	move *cliproxyexecutor.ClaudeSeatMove
 }
 
 type claudeSeatCountKey struct {
@@ -253,6 +255,9 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 	if reason == "cache_warm" {
 		placement = "warm"
 	}
+	// Only the conversation's own pending move rides along, never a tag the
+	// caller's metadata already holds.
+	delete(opts.Metadata, cliproxyexecutor.ClaudeSeatMoveMetadataKey)
 	if key != "" {
 		bareIsHour := s.manager.claudeOneHourCacheEnabled() && IsClaudeSubscriptionSeat(selected)
 		expiresAt := now.Add(claudePromptCacheTTL(opts.OriginalRequest, bareIsHour))
@@ -279,10 +284,33 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 		if last != nil && !hadBinding {
 			reason = "cache_expired"
 		}
-		if last != nil && last.authID != selected.ID {
-			placement = "move"
-			log.WithFields(log.Fields{"provider": "claude", "model": model, "client_hash": key,
-				"previous_auth_index": last.authIndex, "auth_index": index, "reason": reason}).Info("claude routing: client moved")
+		// A known conversation placed on another seat, or placed again after its
+		// hold expired, is a move. The move stays pending on the binding, and each
+		// request of the conversation carries it, numbered in placement order,
+		// until a reply files it, so a request whose reply is never filed (a token
+		// count, a failed attempt) does not consume it.
+		warm := hadBinding && now.Before(previous.expiresAt)
+		moved := last != nil && last.authID != selected.ID
+		if moved || (last != nil && !warm) {
+			lastOrganization := s.seatOrganization(last.authID)
+			organization := claudeSeatOrganization(selected)
+			move := cliproxyexecutor.NewClaudeSeatMove(claudeSeatMoveRelation(!moved, lastOrganization, organization), warm, reason)
+			binding.move = &move
+			if moved {
+				placement = "move"
+				log.WithFields(log.Fields{"provider": "claude", "model": model, "client_hash": key,
+					"previous_auth_index": last.authIndex, "auth_index": index, "reason": reason,
+					"previous_organization": claudeOrganizationLogName(lastOrganization),
+					"organization":          claudeOrganizationLogName(organization),
+					"same_org_available":    claudeSameOrganizationCount(auths, lastOrganization)}).Info("claude routing: client moved")
+			}
+		}
+		if binding.move != nil && binding.move.Filed() {
+			binding.move = nil
+		}
+		if binding.move != nil {
+			binding.move.Attempt++
+			opts.Metadata[cliproxyexecutor.ClaudeSeatMoveMetadataKey] = *binding.move
 		}
 		if last == nil {
 			last = &claudeSeatPlacement{}
@@ -452,4 +480,59 @@ func (s *claudeSeatSelector) moveReason(ctx context.Context, id, model string, o
 		return "credential_unavailable"
 	}
 	return "model_or_policy_unavailable"
+}
+
+// claudeSeatOrganization is the seat's organization as stored at login. An empty
+// value matches no seat, so a seat without one is never grouped with another.
+func claudeSeatOrganization(auth *Auth) string {
+	return authMetadataString(auth, "organization_uuid")
+}
+
+// seatOrganization reads the organization of a seat by ID; a removed seat has none.
+func (s *claudeSeatSelector) seatOrganization(id string) string {
+	auth, ok := s.manager.GetByID(id)
+	if !ok {
+		return ""
+	}
+	return claudeSeatOrganization(auth)
+}
+
+func claudeSeatMoveRelation(sameSeat bool, lastOrganization, organization string) string {
+	switch {
+	case sameSeat:
+		return cliproxyexecutor.ClaudeSeatMoveSameSeat
+	case lastOrganization == "" || organization == "":
+		return cliproxyexecutor.ClaudeSeatMoveUnknownOrg
+	case strings.EqualFold(lastOrganization, organization):
+		return cliproxyexecutor.ClaudeSeatMoveSameOrg
+	default:
+		return cliproxyexecutor.ClaudeSeatMoveOtherOrg
+	}
+}
+
+// claudeSameOrganizationCount counts the seats available at this choice that
+// belong to organization. An empty organization matches none.
+func claudeSameOrganizationCount(auths []*Auth, organization string) int {
+	if organization == "" {
+		return 0
+	}
+	count := 0
+	for _, auth := range auths {
+		if strings.EqualFold(claudeSeatOrganization(auth), organization) {
+			count++
+		}
+	}
+	return count
+}
+
+// claudeOrganizationLogName names an organization in the routing log by the
+// eight hex characters a Claude credential file name carries for it (the first
+// eight of its SHA-256), so a line can be matched to the files without printing
+// the organization itself. "none" names a seat without an organization.
+func claudeOrganizationLogName(organization string) string {
+	if organization == "" {
+		return "none"
+	}
+	digest := sha256.Sum256([]byte(organization))
+	return hex.EncodeToString(digest[:])[:8]
 }

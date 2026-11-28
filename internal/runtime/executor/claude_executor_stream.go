@@ -212,6 +212,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		stripClaudeCacheControlTTLDoc(doc)
 	}
 	cacheClient := helps.ClaudeCacheClient(opts.Metadata)
+	cacheMove := helps.ClaudeCacheMove(opts.Metadata)
 	cacheKind := helps.ClaudeCacheKind(isSubagent, isProbeOrHelper || claudeCodeDetection.HelperProfile)
 
 	// Normalize TTL values to prevent ordering violations under prompt-caching-scope-2026-01-05.
@@ -270,7 +271,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	// Read-only: the rule counts as applied only while the sent body still holds
 	// an hour; the order pass or a payload rule may have removed every one it added.
 	oneHourRuleApplied = oneHourRuleApplied && helps.ClaudePayloadHas1hTTL(bodyForUpstream)
-	reporter.SetClaudeCacheScope(cacheClient, cacheKind, oneHourRuleApplied)
+	reporter.SetClaudeCacheScope(cacheClient, cacheKind, oneHourRuleApplied, cacheMove)
 	body = bodyForUpstream
 	bodyForTranslation := bodyForUpstream
 	advisorState.FilterUnknownIDsFromFinalBody(bodyForUpstream)

@@ -15,7 +15,8 @@ type claudeCacheMeterResponse struct {
 
 // GetClaudeCacheMeter reports the in-memory Claude cache meter: per UTC day,
 // client and kind, the cache-write tokens at five minutes and at one hour and
-// the cache-read tokens, plus whether claude-header-defaults.one-hour-cache is on.
+// the cache-read tokens, the day's seat moves filed as kept or re-paid by
+// relation and warm or expired, plus whether claude-header-defaults.one-hour-cache is on.
 func (h *Handler) GetClaudeCacheMeter(c *gin.Context) {
 	if h == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "handler not initialized"})

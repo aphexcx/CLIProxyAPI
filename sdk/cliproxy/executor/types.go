@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
@@ -70,6 +71,9 @@ const (
 	// ClaudeSeatClientHashMetadataKey stores the client hash the Claude seat router
 	// logs as client_hash, so executor-side measures name the same client.
 	ClaudeSeatClientHashMetadataKey = "claude_seat_client_hash"
+	// ClaudeSeatMoveMetadataKey carries the Claude seat router's ClaudeSeatMove tag
+	// to the executor, so the Claude cache meter files the reply under that move.
+	ClaudeSeatMoveMetadataKey = "claude_seat_move"
 	// ParentSessionIDMetadataKey stores the parent session identity for hierarchical sessions and forks.
 	// For top-level Merkle LCP forks, it represents the deterministic Merkle prefix hash at the divergence point.
 	ParentSessionIDMetadataKey = "parent_session_id"
@@ -100,6 +104,67 @@ const (
 	// SessionAffinityModelMetadataKey carries the model used during session affinity selection.
 	SessionAffinityModelMetadataKey = "session_affinity_model"
 )
+
+// Relations of a Claude seat move: the seat a conversation was last placed on
+// against the seat it is placed on now.
+const (
+	// ClaudeSeatMoveSameSeat is the same seat, placed again after its hold expired.
+	ClaudeSeatMoveSameSeat = "same_seat"
+	// ClaudeSeatMoveSameOrg is another seat of the same organization.
+	ClaudeSeatMoveSameOrg = "same_org"
+	// ClaudeSeatMoveOtherOrg is a seat of another organization.
+	ClaudeSeatMoveOtherOrg = "other_org"
+	// ClaudeSeatMoveUnknownOrg is another seat when either seat has no organization.
+	ClaudeSeatMoveUnknownOrg = "unknown_org"
+)
+
+// ClaudeSeatMove tags a request of a known conversation that the Claude seat
+// router placed on another seat than its last one, or placed again after the
+// conversation's hold expired. The router places the same move on each of the
+// conversation's requests, numbered in placement order, until a reply files it,
+// so a request whose reply is never filed (a token count, a failed attempt)
+// does not lose the move; the cache meter files the reply of the earliest
+// placed request among them. It is a measure only: no request sent upstream
+// carries or depends on it.
+type ClaudeSeatMove struct {
+	// Relation is one of the ClaudeSeatMove* relations.
+	Relation string `json:"relation"`
+	// Warm reports whether the conversation's hold was still alive at the choice.
+	Warm bool `json:"warm"`
+	// Reason is the router's reason for the placement.
+	Reason string `json:"reason"`
+	// MoveID names the move; zero is a tag without one, filed on its own.
+	MoveID uint64 `json:"move_id,omitempty"`
+	// Attempt numbers the requests that carried this move in the order the
+	// router placed them, from one.
+	Attempt uint64 `json:"attempt,omitempty"`
+	// filed is shared by every copy of one move's tag.
+	filed *atomic.Bool
+}
+
+// lastClaudeSeatMoveID numbers moves across the process, since the cache meter
+// that files them is process-wide.
+var lastClaudeSeatMoveID atomic.Uint64
+
+// NewClaudeSeatMove returns the tag of a new move, with an ID unique in the
+// process, whose copies share whether a reply has filed it.
+func NewClaudeSeatMove(relation string, warm bool, reason string) ClaudeSeatMove {
+	return ClaudeSeatMove{Relation: relation, Warm: warm, Reason: reason,
+		MoveID: lastClaudeSeatMoveID.Add(1), filed: new(atomic.Bool)}
+}
+
+// MarkFiled records on every copy of the tag that a reply has filed the move,
+// so the router stops placing it on later requests.
+func (m ClaudeSeatMove) MarkFiled() {
+	if m.filed != nil {
+		m.filed.Store(true)
+	}
+}
+
+// Filed reports whether a reply has filed the move.
+func (m ClaudeSeatMove) Filed() bool {
+	return m.filed != nil && m.filed.Load()
+}
 
 // Request encapsulates the translated payload that will be sent to a provider executor.
 type Request struct {
