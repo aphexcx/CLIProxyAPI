@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,7 +23,9 @@ import (
 // renderedSeatMoveLine formats the one captured entry with the given message
 // through the server's own log formatter and returns the printed line with its
 // space-separated tokens, so a field the formatter drops is absent here even
-// though it is present in the entry's data.
+// though it is present in the entry's data. Every field the entry carries must
+// be printed, so a field added to the log call later without a formatter entry
+// fails here too.
 func renderedSeatMoveLine(t *testing.T, hook *logtest.Hook, message string) (string, map[string]struct{}) {
 	t.Helper()
 	var matched []*log.Entry
@@ -40,8 +43,17 @@ func renderedSeatMoveLine(t *testing.T, hook *logtest.Hook, message string) (str
 	}
 	line := strings.TrimRight(string(formatted), "\n")
 	tokens := map[string]struct{}{}
+	printed := map[string]struct{}{}
 	for _, token := range strings.Fields(line) {
 		tokens[token] = struct{}{}
+		if key, _, found := strings.Cut(token, "="); found {
+			printed[key] = struct{}{}
+		}
+	}
+	for key := range matched[0].Data {
+		if _, ok := printed[key]; !ok {
+			t.Errorf("rendered %q line drops the entry's field %s:\n%s", message, key, line)
+		}
 	}
 	return line, tokens
 }
@@ -63,11 +75,14 @@ func TestClaudeSeatMoveLogLinesRenderTheirFields(t *testing.T) {
 			logger := log.StandardLogger()
 			previousHooks := logger.ReplaceHooks(make(log.LevelHooks))
 			previousLevel := logger.GetLevel()
+			previousOutput := logger.Out
 			logger.SetLevel(log.InfoLevel)
+			logger.SetOutput(io.Discard)
 			hook := logtest.NewLocal(logger)
 			t.Cleanup(func() {
 				logger.SetLevel(previousLevel)
 				logger.ReplaceHooks(previousHooks)
+				logger.SetOutput(previousOutput)
 			})
 
 			cfg := &config.Config{}
@@ -122,7 +137,10 @@ func TestClaudeSeatMoveLogLinesRenderTheirFields(t *testing.T) {
 			if first == "" {
 				t.Fatal("the first request reached no seat")
 			}
-			auth, _ := manager.GetByID(first)
+			auth, found := manager.GetByID(first)
+			if !found {
+				t.Fatalf("seat %s is not registered", first)
+			}
 			auth.Disabled = true
 			if _, errUpdate := manager.Update(context.Background(), auth); errUpdate != nil {
 				t.Fatal(errUpdate)
