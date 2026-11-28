@@ -234,8 +234,13 @@ func TestClaudeSeatMoveWarmAndExpired(t *testing.T) {
 				if move := f.lastMove(t); move == nil || *move != want {
 					t.Fatalf("the warm stay before any filed reply carries %+v, want the pending %+v", move, want)
 				}
-				if !pending.ClaimFiling() || f.moveTag(t, moveAttempt).ClaimFiling() {
-					t.Fatal("the warm stay's tag does not share the move's filing claim")
+				placed := f.moveTag(t, moveAttempt)
+				if placed.MoveID == 0 || pending.MoveID != placed.MoveID || placed.Attempt != 1 || pending.Attempt != 2 {
+					t.Fatalf("the warm stay's tag %+v is not the move %+v placed again", pending, placed)
+				}
+				pending.MarkFiled()
+				if !placed.Filed() {
+					t.Fatal("the warm stay's tag does not share whether the move is filed")
 				}
 				clock.advance(time.Minute)
 				f.request(t, "expiring-client", seatOpus, "", "execute")

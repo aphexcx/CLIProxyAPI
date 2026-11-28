@@ -150,7 +150,7 @@ func TestClaudeCacheMoveOutcomeLogLine(t *testing.T) {
 		t.Fatalf("move outcome lines = %d, want 1", len(entries))
 	}
 	want := log.Fields{"provider": "claude", "client_hash": "0123456789ab", "kind": "main", "relation": "other_org", "warm": false,
-		"reason": "fixture_reason", "outcome": "re_paid", "read": int64(10), "written": int64(300), "input": int64(5)}
+		"reason": "fixture_reason", "outcome": "re_paid", "replaced": false, "read": int64(10), "written": int64(300), "input": int64(5)}
 	if !reflect.DeepEqual(entries[0].Data, want) {
 		t.Fatalf("move outcome fields = %v, want %v", entries[0].Data, want)
 	}
@@ -210,31 +210,47 @@ func TestClaudeCacheMoveFromMetadata(t *testing.T) {
 	}
 }
 
-// Every request of a moved conversation carries the same move until one reply
-// files it: the copies share one claim, and a reply with nothing to judge does
-// not use it up.
+// Every request of a moved conversation carries the same move, numbered in
+// placement order, until a reply files it. The move is filed once, by the
+// earliest placed request whose reply has something to judge: a later placed
+// request's reply is not filed after it, and is replaced by an earlier placed
+// one that finishes later.
 func TestClaudeCacheMeterFilesEachMoveOnce(t *testing.T) {
 	hook := captureMoveLog(t)
 	meter := newMoveMeter()
-	move := cliproxyexecutor.NewClaudeSeatMove(cliproxyexecutor.ClaudeSeatMoveSameOrg, true, "credential_cooldown")
-	scope := func() ClaudeCacheScope {
-		copied := move
-		return ClaudeCacheScope{Client: "0123456789ab", Kind: ClaudeCacheKindMain, Move: &copied}
+	attempt := func(move cliproxyexecutor.ClaudeSeatMove, n uint64) ClaudeCacheScope {
+		move.Attempt = n
+		return ClaudeCacheScope{Client: "0123456789ab", Kind: ClaudeCacheKindMain, Move: &move}
 	}
-	meter.Record(scope(), moveDetail(0, 0, 0))
-	if move.Filed() {
-		t.Fatal("a reply with no tokens used up the move")
+
+	inOrder := cliproxyexecutor.NewClaudeSeatMove(cliproxyexecutor.ClaudeSeatMoveSameOrg, true, "credential_cooldown")
+	meter.Record(attempt(inOrder, 1), moveDetail(0, 0, 0))
+	if inOrder.Filed() {
+		t.Fatal("a reply with no tokens filed the move")
 	}
-	meter.Record(scope(), moveDetail(900, 50, 50))
-	meter.Record(scope(), moveDetail(10, 900, 90))
-	want := []ClaudeCacheMoveRow{{Relation: "same_org", Warm: true, Kept: 1, Read: 900, Written: 50}}
-	if got := meter.Snapshot().Days[0].Moves; !reflect.DeepEqual(got, want) {
-		t.Fatalf("moves = %+v, want only the first filed reply %+v", got, want)
-	}
-	if !move.Filed() {
+	meter.Record(attempt(inOrder, 2), moveDetail(900, 50, 50))
+	meter.Record(attempt(inOrder, 3), moveDetail(10, 900, 90))
+	if !inOrder.Filed() {
 		t.Fatal("the move is not marked filed")
 	}
-	if got := len(moveOutcomeEntries(hook)); got != 1 {
-		t.Fatalf("move outcome lines = %d, want 1", got)
+
+	reversed := cliproxyexecutor.NewClaudeSeatMove(cliproxyexecutor.ClaudeSeatMoveOtherOrg, true, "disabled")
+	meter.Record(attempt(reversed, 2), moveDetail(100, 0, 3))
+	meter.Record(attempt(reversed, 1), moveDetail(0, 100, 3))
+	meter.Record(attempt(reversed, 3), moveDetail(100, 0, 3))
+
+	want := []ClaudeCacheMoveRow{
+		{Relation: "same_org", Warm: true, Kept: 1, Read: 900, Written: 50},
+		{Relation: "other_org", Warm: true, RePaid: 1, Written: 100},
+	}
+	if got := meter.Snapshot().Days[0].Moves; !reflect.DeepEqual(got, want) {
+		t.Fatalf("moves = %+v\nwant  %+v", got, want)
+	}
+	entries := moveOutcomeEntries(hook)
+	if len(entries) != 3 {
+		t.Fatalf("move outcome lines = %d, want 3 (one per filing, the replacement included)", len(entries))
+	}
+	if entries[2].Data["replaced"] != true || entries[2].Data["outcome"] != "re_paid" {
+		t.Fatalf("the replacing line = %v", entries[2].Data)
 	}
 }

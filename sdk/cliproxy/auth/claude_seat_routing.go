@@ -285,10 +285,10 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 			reason = "cache_expired"
 		}
 		// A known conversation placed on another seat, or placed again after its
-		// hold expired, is a move. The move stays pending on the binding, and every
-		// request of the conversation carries it, until one reply files it, so a
-		// request whose reply is never filed (a token count, a failed attempt)
-		// does not consume it.
+		// hold expired, is a move. The move stays pending on the binding, and each
+		// request of the conversation carries it, numbered in placement order,
+		// until a reply files it, so a request whose reply is never filed (a token
+		// count, a failed attempt) does not consume it.
 		warm := hadBinding && now.Before(previous.expiresAt)
 		moved := last != nil && last.authID != selected.ID
 		if moved || (last != nil && !warm) {
@@ -309,6 +309,7 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 			binding.move = nil
 		}
 		if binding.move != nil {
+			binding.move.Attempt++
 			opts.Metadata[cliproxyexecutor.ClaudeSeatMoveMetadataKey] = *binding.move
 		}
 		if last == nil {

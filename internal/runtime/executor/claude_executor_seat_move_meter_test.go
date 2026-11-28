@@ -4,11 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -323,5 +328,134 @@ func TestClaudeSeatMoveSurvivesUnmeteredSelections(t *testing.T) {
 				t.Fatalf("the move was filed again by a later reply: %+v", again)
 			}
 		})
+	}
+}
+
+// Requests of one conversation can overlap. The move belongs to the request
+// placed first after it, whatever order the replies finish in: here the moved
+// stream R1 re-writes its context but finishes after R2, a later request whose
+// reply reads from cache, and the table files R1's re-paid reply, not R2's.
+func TestClaudeSeatMoveFiledByFirstPlacedRequest(t *testing.T) {
+	const (
+		heldReply = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_held\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-4-6\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1,\"cache_creation_input_tokens\":100,\"cache_read_input_tokens\":0,\"cache_creation\":{\"ephemeral_5m_input_tokens\":100,\"ephemeral_1h_input_tokens\":0}}}}\n\n"
+		heldTail  = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\n" +
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+		keptReply = `{"id":"msg_kept","type":"message","model":"claude-opus-4-6","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2,"cache_creation_input_tokens":0,"cache_read_input_tokens":100}}`
+	)
+	release := make(chan struct{})
+	arrived := make(chan struct{}, 1)
+	var keysMu sync.Mutex
+	var keys []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		keysMu.Lock()
+		key := r.Header.Get("X-Api-Key")
+		if key == "" {
+			key = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		}
+		keys = append(keys, key)
+		keysMu.Unlock()
+		if strings.Contains(string(body), "held-request") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, heldReply)
+			w.(http.Flusher).Flush()
+			arrived <- struct{}{}
+			<-release
+			_, _ = io.WriteString(w, heldTail)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, keptReply)
+	}))
+	t.Cleanup(upstream.Close)
+
+	cfg := &config.Config{}
+	manager := cliproxyauth.NewManager(nil, &cliproxyauth.RoundRobinSelector{}, nil)
+	manager.SetConfig(cfg)
+	manager.RegisterExecutor(NewClaudeExecutor(cfg))
+	ids := []string{"seat-move-overlap-a", "seat-move-overlap-b"}
+	for i, id := range ids {
+		registry.GetGlobalRegistry().RegisterClient(id, "claude", []*registry.ModelInfo{{ID: oneHourModel}})
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
+		if _, errRegister := manager.Register(context.Background(), &cliproxyauth.Auth{
+			ID: id, Provider: "claude", Status: cliproxyauth.StatusActive,
+			Attributes: map[string]string{"api_key": oneHourKeySeatKey + "-" + id, "base_url": upstream.URL},
+			Metadata:   map[string]any{"organization_uuid": []string{"00000000-0000-4000-8000-00000000000d", "00000000-0000-4000-8000-00000000000e"}[i]},
+		}); errRegister != nil {
+			t.Fatal(errRegister)
+		}
+	}
+	options := func(text string, stream bool) (cliproxyexecutor.Request, cliproxyexecutor.Options) {
+		payload := []byte(`{"model":"` + oneHourModel + `","max_tokens":16,"stream":` + strconv.FormatBool(stream) + `,"messages":[{"role":"user","content":"` + text + `"}]}`)
+		return cliproxyexecutor.Request{Model: oneHourModel, Payload: payload}, cliproxyexecutor.Options{Stream: stream, SourceFormat: sdktranslator.FormatClaude,
+			OriginalRequest: payload, Headers: http.Header{"X-Session-Id": []string{"seat-move-overlap-session"}}, Metadata: map[string]any{}}
+	}
+
+	req, opts := options("hello", false)
+	if _, errFirst := manager.Execute(context.Background(), []string{"claude"}, req, opts); errFirst != nil {
+		t.Fatal(errFirst)
+	}
+	// Disable the seat that served the first request: the next one is a move.
+	keysMu.Lock()
+	firstKey := keys[0]
+	keysMu.Unlock()
+	disabled := false
+	for _, id := range ids {
+		if firstKey != oneHourKeySeatKey+"-"+id {
+			continue
+		}
+		auth, _ := manager.GetByID(id)
+		auth.Disabled = true
+		if _, errUpdate := manager.Update(context.Background(), auth); errUpdate != nil {
+			t.Fatal(errUpdate)
+		}
+		disabled = true
+	}
+	if !disabled {
+		t.Fatalf("no seat sends the first request's key %q", firstKey)
+	}
+	before := seatMoveRow(t, "other_org", true)
+
+	held := make(chan error, 1)
+	go func() {
+		heldReq, heldOpts := options("held-request", true)
+		result, errStream := manager.ExecuteStream(context.Background(), []string{"claude"}, heldReq, heldOpts)
+		if errStream != nil {
+			held <- errStream
+			return
+		}
+		for chunk := range result.Chunks {
+			if chunk.Err != nil {
+				held <- chunk.Err
+				return
+			}
+		}
+		held <- nil
+	}()
+	select {
+	case <-arrived:
+	case errHeld := <-held:
+		t.Fatalf("the held stream ended before it reached the upstream: %v", errHeld)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the held stream never reached the upstream")
+	}
+	req, opts = options("hello", false)
+	if _, errLater := manager.Execute(context.Background(), []string{"claude"}, req, opts); errLater != nil {
+		t.Fatal(errLater)
+	}
+	close(release)
+	select {
+	case errHeld := <-held:
+		if errHeld != nil {
+			t.Fatal(errHeld)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the held stream did not finish")
+	}
+
+	after := seatMoveRow(t, "other_org", true)
+	got := seatMoveTableRow{Kept: after.Kept - before.Kept, RePaid: after.RePaid - before.RePaid, Read: after.Read - before.Read, Written: after.Written - before.Written}
+	if want := (seatMoveTableRow{RePaid: 1, Written: 100}); got != want {
+		t.Fatalf("moves other_org/warm changed by %+v, want the first placed request's re-paid reply %+v", got, want)
 	}
 }

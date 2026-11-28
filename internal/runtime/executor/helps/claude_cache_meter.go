@@ -140,10 +140,23 @@ type claudeCacheMoveKey struct {
 	warm     bool
 }
 
+// claudeCacheFiledMove is the reply that files a move: the request's placement
+// number and what it added to the moves block, so an earlier placed request's
+// reply can take its place.
+type claudeCacheFiledMove struct {
+	attempt uint64
+	key     claudeCacheMoveKey
+	outcome string
+	read    int64
+	written int64
+}
+
 type claudeCacheDayRows struct {
 	rows  map[claudeCacheRowKey]*claudeCacheRow
 	rule  ClaudeCacheRuleCounts
 	moves map[claudeCacheMoveKey]*ClaudeCacheMoveRow
+	// filed holds, by move ID, the moves this day's replies filed.
+	filed map[uint64]*claudeCacheFiledMove
 }
 
 // ClaudeCacheMeter counts Claude prompt-cache writes and reads per UTC day,
@@ -152,7 +165,8 @@ type claudeCacheDayRows struct {
 // which a new client is summed into the client "other" (one row per kind, the
 // only rows allowed past the cap). A moved reply is also filed in the day's
 // moves block, at most one row per relation, warm or expired, so that block
-// needs no cap. It stores no request or reply body.
+// needs no cap; the day remembers which reply filed each move, one entry per
+// move. It stores no request or reply body.
 type ClaudeCacheMeter struct {
 	mu      sync.Mutex
 	nowFunc func() time.Time
@@ -216,7 +230,8 @@ func (m *ClaudeCacheMeter) dayLocked(now time.Time) *claudeCacheDayRows {
 	}
 	rows := m.days[today]
 	if rows == nil {
-		rows = &claudeCacheDayRows{rows: make(map[claudeCacheRowKey]*claudeCacheRow), moves: make(map[claudeCacheMoveKey]*ClaudeCacheMoveRow)}
+		rows = &claudeCacheDayRows{rows: make(map[claudeCacheRowKey]*claudeCacheRow),
+			moves: make(map[claudeCacheMoveKey]*ClaudeCacheMoveRow), filed: make(map[uint64]*claudeCacheFiledMove)}
 		m.days[today] = rows
 	}
 	return rows
@@ -271,26 +286,23 @@ func (m *ClaudeCacheMeter) Record(scope ClaudeCacheScope, detail usage.Detail) {
 	write5m, write1h, unsplit := claudeCacheWrites(detail)
 	written := write5m + write1h + unsplit
 	var move claudeCacheMoveKey
-	outcome, filed := "", false
+	outcome, judged := "", false
 	if scope.Move != nil {
 		move = claudeCacheMoveKey{relation: claudeCacheMoveRelation(scope.Move.Relation), warm: scope.Move.Warm}
-		outcome, filed = claudeCacheMoveOutcome(detail.CacheReadTokens, written, detail.InputTokens)
-		// Every request of the conversation carries the move until one reply files
-		// it: only the first filed reply claims it.
-		filed = filed && scope.Move.ClaimFiling()
-	}
-	if filed {
-		log.WithFields(log.Fields{"provider": "claude", "client_hash": client, "kind": kind, "relation": move.relation,
-			"warm": move.warm, "reason": scope.Move.Reason, "outcome": outcome,
-			"read": detail.CacheReadTokens, "written": written, "input": detail.InputTokens}).Info("claude routing: move outcome")
+		outcome, judged = claudeCacheMoveOutcome(detail.CacheReadTokens, written, detail.InputTokens)
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.nowFunc().UTC()
 	day := m.dayLocked(now)
-	if filed {
-		day.recordMove(move, outcome, detail.CacheReadTokens, written)
+	if judged {
+		if filed, replaced := m.fileMoveLocked(day, *scope.Move, move, outcome, detail.CacheReadTokens, written); filed {
+			scope.Move.MarkFiled()
+			log.WithFields(log.Fields{"provider": "claude", "client_hash": client, "kind": kind, "relation": move.relation,
+				"warm": move.warm, "reason": scope.Move.Reason, "outcome": outcome, "replaced": replaced,
+				"read": detail.CacheReadTokens, "written": written, "input": detail.InputTokens}).Info("claude routing: move outcome")
+		}
 	}
 	key := claudeCacheRowKey{client: client, kind: kind}
 	row := day.rows[key]
@@ -319,19 +331,49 @@ func (m *ClaudeCacheMeter) Record(scope ClaudeCacheScope, detail usage.Detail) {
 	}
 }
 
-func (d *claudeCacheDayRows) recordMove(key claudeCacheMoveKey, outcome string, read, written int64) {
+// fileMoveLocked files a reply under its move. Each of the conversation's
+// requests carries the move until a reply files it, and a move is filed by the
+// earliest placed of those requests whose reply has something to judge: an
+// earlier placed request's reply that finishes later replaces a later one's,
+// and a later placed request's reply is not filed. It reports whether the reply
+// was filed and whether it replaced another.
+func (m *ClaudeCacheMeter) fileMoveLocked(day *claudeCacheDayRows, move cliproxyexecutor.ClaudeSeatMove, key claudeCacheMoveKey, outcome string, read, written int64) (filed, replaced bool) {
+	if move.MoveID != 0 {
+		for _, other := range m.days {
+			prior := other.filed[move.MoveID]
+			if prior == nil {
+				continue
+			}
+			if prior.attempt <= move.Attempt {
+				return false, false
+			}
+			other.addMove(prior.key, prior.outcome, -1, -prior.read, -prior.written)
+			delete(other.filed, move.MoveID)
+			replaced = true
+		}
+		day.filed[move.MoveID] = &claudeCacheFiledMove{attempt: move.Attempt, key: key, outcome: outcome, read: read, written: written}
+	}
+	day.addMove(key, outcome, 1, read, written)
+	return true, replaced
+}
+
+// addMove adds count replies (negative to take one back) to a moves row.
+func (d *claudeCacheDayRows) addMove(key claudeCacheMoveKey, outcome string, count, read, written int64) {
 	row := d.moves[key]
 	if row == nil {
 		row = &ClaudeCacheMoveRow{Relation: key.relation, Warm: key.warm}
 		d.moves[key] = row
 	}
 	if outcome == ClaudeCacheMoveKept {
-		row.Kept++
+		row.Kept += count
 	} else {
-		row.RePaid++
+		row.RePaid += count
 	}
 	row.Read += read
 	row.Written += written
+	if row.Kept == 0 && row.RePaid == 0 {
+		delete(d.moves, key)
+	}
 }
 
 // RecordRuleRefused counts one upstream refusal of a request the one-hour rule changed.

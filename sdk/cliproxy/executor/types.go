@@ -120,10 +120,12 @@ const (
 
 // ClaudeSeatMove tags a request of a known conversation that the Claude seat
 // router placed on another seat than its last one, or placed again after the
-// conversation's hold expired. The router keeps tagging the conversation's
-// requests with the same move until one successful reply files it, so a request
-// whose reply is never filed (a token count, a failed attempt) does not lose the
-// move. It is a measure only: no request sent upstream carries or depends on it.
+// conversation's hold expired. The router places the same move on each of the
+// conversation's requests, numbered in placement order, until a reply files it,
+// so a request whose reply is never filed (a token count, a failed attempt)
+// does not lose the move; the cache meter files the reply of the earliest
+// placed request among them. It is a measure only: no request sent upstream
+// carries or depends on it.
 type ClaudeSeatMove struct {
 	// Relation is one of the ClaudeSeatMove* relations.
 	Relation string `json:"relation"`
@@ -131,26 +133,35 @@ type ClaudeSeatMove struct {
 	Warm bool `json:"warm"`
 	// Reason is the router's reason for the placement.
 	Reason string `json:"reason"`
-	// filed is shared by every copy of one move's tag, so one reply files it.
+	// MoveID names the move; zero is a tag without one, filed on its own.
+	MoveID uint64 `json:"move_id,omitempty"`
+	// Attempt numbers the requests that carried this move in the order the
+	// router placed them, from one.
+	Attempt uint64 `json:"attempt,omitempty"`
+	// filed is shared by every copy of one move's tag.
 	filed *atomic.Bool
 }
 
-// NewClaudeSeatMove returns a move tag whose copies share one filing claim.
+// lastClaudeSeatMoveID numbers moves across the process, since the cache meter
+// that files them is process-wide.
+var lastClaudeSeatMoveID atomic.Uint64
+
+// NewClaudeSeatMove returns the tag of a new move, with an ID unique in the
+// process, whose copies share whether a reply has filed it.
 func NewClaudeSeatMove(relation string, warm bool, reason string) ClaudeSeatMove {
-	return ClaudeSeatMove{Relation: relation, Warm: warm, Reason: reason, filed: new(atomic.Bool)}
+	return ClaudeSeatMove{Relation: relation, Warm: warm, Reason: reason,
+		MoveID: lastClaudeSeatMoveID.Add(1), filed: new(atomic.Bool)}
 }
 
-// ClaimFiling reports whether the caller is the first to file a reply under
-// this move; every later call on any copy of the tag reports false. A tag not
-// built by NewClaudeSeatMove has no shared claim and can always be filed.
-func (m ClaudeSeatMove) ClaimFiling() bool {
-	if m.filed == nil {
-		return true
+// MarkFiled records on every copy of the tag that a reply has filed the move,
+// so the router stops placing it on later requests.
+func (m ClaudeSeatMove) MarkFiled() {
+	if m.filed != nil {
+		m.filed.Store(true)
 	}
-	return m.filed.CompareAndSwap(false, true)
 }
 
-// Filed reports whether a reply has been filed under this move.
+// Filed reports whether a reply has filed the move.
 func (m ClaudeSeatMove) Filed() bool {
 	return m.filed != nil && m.filed.Load()
 }
