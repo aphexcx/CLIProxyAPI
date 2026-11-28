@@ -368,6 +368,11 @@ func TestClaudeSeatMoveFiledByFirstPlacedRequest(t *testing.T) {
 		_, _ = io.WriteString(w, keptReply)
 	}))
 	t.Cleanup(upstream.Close)
+	// Cleanups run last first: a failing test releases the held handler before
+	// the server waits for it to return.
+	var releaseOnce sync.Once
+	releaseHeld := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseHeld)
 
 	cfg := &config.Config{}
 	manager := cliproxyauth.NewManager(nil, &cliproxyauth.RoundRobinSelector{}, nil)
@@ -443,7 +448,7 @@ func TestClaudeSeatMoveFiledByFirstPlacedRequest(t *testing.T) {
 	if _, errLater := manager.Execute(context.Background(), []string{"claude"}, req, opts); errLater != nil {
 		t.Fatal(errLater)
 	}
-	close(release)
+	releaseHeld()
 	select {
 	case errHeld := <-held:
 		if errHeld != nil {
