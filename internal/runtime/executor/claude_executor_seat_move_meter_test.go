@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"reflect"
 	"strconv"
+	"sync/atomic"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -207,6 +208,119 @@ func TestClaudeSeatMoveFiledOnceAcrossOneHourRefusalResend(t *testing.T) {
 			}
 			if got := after.Read - before.Read; got != 40 {
 				t.Fatalf("moves same_seat/expired: read += %d, want 40", got)
+			}
+		})
+	}
+}
+
+// The class of selections whose reply is never filed (a token count, a failed
+// attempt) must not consume a move: the move stays pending until the first
+// metered reply of the conversation files it, and it is filed exactly once.
+func TestClaudeSeatMoveSurvivesUnmeteredSelections(t *testing.T) {
+	for _, tc := range []struct{ unmetered, generate string }{
+		{unmetered: "count", generate: "execute"},
+		{unmetered: "count", generate: "stream"},
+		{unmetered: "failed", generate: "execute"},
+		{unmetered: "failed", generate: "stream"},
+	} {
+		t.Run(tc.unmetered+" then "+tc.generate, func(t *testing.T) {
+			cfg := &config.Config{}
+			manager := cliproxyauth.NewManager(nil, &cliproxyauth.RoundRobinSelector{}, nil)
+			manager.SetConfig(cfg)
+			manager.RegisterExecutor(NewClaudeExecutor(cfg))
+			var refuseNext atomic.Bool
+			refuse := func([]byte) string {
+				if refuseNext.CompareAndSwap(true, false) {
+					return oneHourOtherRefusal
+				}
+				return ""
+			}
+			upstreams := map[string]*oneHourUpstream{}
+			organizations := []string{"00000000-0000-4000-8000-00000000000b", "00000000-0000-4000-8000-00000000000c"}
+			for i, suffix := range []string{"a", "b"} {
+				server, upstream := newOneHourUpstream(t, refuse)
+				id := "seat-move-unmetered-" + t.Name() + "-" + suffix
+				upstreams[id] = upstream
+				registry.GetGlobalRegistry().RegisterClient(id, "claude", []*registry.ModelInfo{{ID: oneHourModel}})
+				t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
+				if _, errRegister := manager.Register(context.Background(), &cliproxyauth.Auth{
+					ID: id, Provider: "claude", Status: cliproxyauth.StatusActive,
+					Attributes: map[string]string{"api_key": oneHourKeySeatKey, "base_url": server.URL},
+					Metadata:   map[string]any{"organization_uuid": organizations[i]},
+				}); errRegister != nil {
+					t.Fatal(errRegister)
+				}
+			}
+			call := func(kind string) error {
+				payload := []byte(`{"model":"` + oneHourModel + `","max_tokens":16,"stream":` + strconv.FormatBool(kind == "stream") + `,"messages":[{"role":"user","content":"hello"}]}`)
+				opts := cliproxyexecutor.Options{Stream: kind == "stream", SourceFormat: sdktranslator.FormatClaude, OriginalRequest: payload,
+					Headers: http.Header{"X-Session-Id": []string{"seat-move-unmetered-session"}}, Metadata: map[string]any{}}
+				req := cliproxyexecutor.Request{Model: oneHourModel, Payload: payload}
+				switch kind {
+				case "count":
+					_, errCount := manager.ExecuteCount(context.Background(), []string{"claude"}, req, opts)
+					return errCount
+				case "stream":
+					result, errStream := manager.ExecuteStream(context.Background(), []string{"claude"}, req, opts)
+					if errStream != nil {
+						return errStream
+					}
+					for chunk := range result.Chunks {
+						if chunk.Err != nil {
+							return chunk.Err
+						}
+					}
+					return nil
+				default:
+					_, errExecute := manager.Execute(context.Background(), []string{"claude"}, req, opts)
+					return errExecute
+				}
+			}
+
+			if errFirst := call(tc.generate); errFirst != nil {
+				t.Fatal(errFirst)
+			}
+			first := ""
+			for id, upstream := range upstreams {
+				if upstream.count() == 1 {
+					first = id
+				}
+			}
+			if first == "" {
+				t.Fatal("the first request reached no seat")
+			}
+			auth, _ := manager.GetByID(first)
+			auth.Disabled = true
+			if _, errUpdate := manager.Update(context.Background(), auth); errUpdate != nil {
+				t.Fatal(errUpdate)
+			}
+
+			before := seatMoveRow(t, "other_org", true)
+			if tc.unmetered == "count" {
+				if errCount := call("count"); errCount != nil {
+					t.Fatal(errCount)
+				}
+			} else {
+				refuseNext.Store(true)
+				if errFailed := call(tc.generate); errFailed == nil {
+					t.Fatal("the refused request succeeded")
+				}
+			}
+			if row := seatMoveRow(t, "other_org", true); row != before {
+				t.Fatalf("the %s request filed a move: %+v", tc.unmetered, row)
+			}
+			if errGenerate := call(tc.generate); errGenerate != nil {
+				t.Fatal(errGenerate)
+			}
+			after := seatMoveRow(t, "other_org", true)
+			if got := after.RePaid + after.Kept - before.RePaid - before.Kept; got != 1 {
+				t.Fatalf("moves other_org/warm filed %d replies after the %s request, want 1 (table row %+v)", got, tc.unmetered, after)
+			}
+			if errAgain := call(tc.generate); errAgain != nil {
+				t.Fatal(errAgain)
+			}
+			if again := seatMoveRow(t, "other_org", true); again != after {
+				t.Fatalf("the move was filed again by a later reply: %+v", again)
 			}
 		})
 	}

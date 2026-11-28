@@ -275,6 +275,9 @@ func (m *ClaudeCacheMeter) Record(scope ClaudeCacheScope, detail usage.Detail) {
 	if scope.Move != nil {
 		move = claudeCacheMoveKey{relation: claudeCacheMoveRelation(scope.Move.Relation), warm: scope.Move.Warm}
 		outcome, filed = claudeCacheMoveOutcome(detail.CacheReadTokens, written, detail.InputTokens)
+		// Every request of the conversation carries the move until one reply files
+		// it: only the first filed reply claims it.
+		filed = filed && scope.Move.ClaimFiling()
 	}
 	if filed {
 		log.WithFields(log.Fields{"provider": "claude", "client_hash": client, "kind": kind, "relation": move.relation,

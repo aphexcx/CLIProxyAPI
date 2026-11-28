@@ -74,21 +74,31 @@ func otherSeat(f *seatRoutingFixture, id string) string {
 	return f.ids[0]
 }
 
-// lastMove is the move tag the executor received on the latest attempt.
-func (f *seatRoutingFixture) lastMove(t *testing.T) *cliproxyexecutor.ClaudeSeatMove {
+// moveTag is the move tag the executor received on attempt i, as sent.
+func (f *seatRoutingFixture) moveTag(t *testing.T, i int) *cliproxyexecutor.ClaudeSeatMove {
 	t.Helper()
-	if len(f.moves) == 0 {
-		t.Fatal("no attempt reached the executor")
+	if i < 0 || i >= len(f.moves) {
+		t.Fatalf("attempt %d did not reach the executor", i)
 	}
-	value := f.moves[len(f.moves)-1]
-	if value == nil {
+	if f.moves[i] == nil {
 		return nil
 	}
-	move, ok := value.(cliproxyexecutor.ClaudeSeatMove)
+	move, ok := f.moves[i].(cliproxyexecutor.ClaudeSeatMove)
 	if !ok {
-		t.Fatalf("move tag has type %T", value)
+		t.Fatalf("move tag has type %T", f.moves[i])
 	}
 	return &move
+}
+
+// lastMove is the latest attempt's move tag without its filing claim, so it
+// compares by relation, warm and reason.
+func (f *seatRoutingFixture) lastMove(t *testing.T) *cliproxyexecutor.ClaudeSeatMove {
+	t.Helper()
+	move := f.moveTag(t, len(f.moves)-1)
+	if move == nil {
+		return nil
+	}
+	return &cliproxyexecutor.ClaudeSeatMove{Relation: move.Relation, Warm: move.Warm, Reason: move.Reason}
 }
 
 // Each relation of a warm move: same organization, another organization, and
@@ -215,10 +225,22 @@ func TestClaudeSeatMoveWarmAndExpired(t *testing.T) {
 				if moved != map[bool]int{false: 1, true: 0}[sameSeat] {
 					t.Fatalf("client moved lines = %d", moved)
 				}
+				// The move stays pending until a reply files it: the warm stay carries
+				// the same move, and once its reply is filed no request carries it.
+				moveAttempt := len(f.moves) - 1
+				clock.advance(time.Minute)
+				f.request(t, "expiring-client", seatOpus, "", "execute")
+				pending := f.moveTag(t, len(f.moves)-1)
+				if move := f.lastMove(t); move == nil || *move != want {
+					t.Fatalf("the warm stay before any filed reply carries %+v, want the pending %+v", move, want)
+				}
+				if !pending.ClaimFiling() || f.moveTag(t, moveAttempt).ClaimFiling() {
+					t.Fatal("the warm stay's tag does not share the move's filing claim")
+				}
 				clock.advance(time.Minute)
 				f.request(t, "expiring-client", seatOpus, "", "execute")
 				if move := f.lastMove(t); move != nil {
-					t.Fatalf("the warm stay after the move was tagged: %+v", move)
+					t.Fatalf("the warm stay after the move was filed was tagged: %+v", move)
 				}
 			})
 		}
@@ -306,8 +328,8 @@ func TestClaudeSeatMoveFailedMoveRetriedOnThirdSeat(t *testing.T) {
 		t.Fatalf("attempts = %v, want the moved seat then the third", got)
 	}
 	wantMoved := cliproxyexecutor.ClaudeSeatMove{Relation: "other_org", Warm: true, Reason: "disabled"}
-	if got, _ := f.moves[attempts].(cliproxyexecutor.ClaudeSeatMove); got != wantMoved {
-		t.Fatalf("failed attempt's tag = %+v, want %+v", f.moves[attempts], wantMoved)
+	if got := f.moveTag(t, attempts); got == nil || got.Relation != wantMoved.Relation || got.Warm != wantMoved.Warm || got.Reason != wantMoved.Reason {
+		t.Fatalf("failed attempt's tag = %+v, want %+v", got, wantMoved)
 	}
 	wantThird := cliproxyexecutor.ClaudeSeatMove{Relation: "other_org", Warm: true, Reason: "upstream_error"}
 	if move := f.lastMove(t); move == nil || *move != wantThird {

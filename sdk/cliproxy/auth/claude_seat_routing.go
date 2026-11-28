@@ -50,6 +50,8 @@ type claudeSeatBinding struct {
 	clientKey  string
 	identities map[string]bool
 	expiresAt  time.Time
+	// move is the conversation's last move until a reply files it; nil otherwise.
+	move *cliproxyexecutor.ClaudeSeatMove
 }
 
 type claudeSeatCountKey struct {
@@ -253,7 +255,8 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 	if reason == "cache_warm" {
 		placement = "warm"
 	}
-	// The move tag describes this choice only; a tag from an earlier choice never rides along.
+	// Only the conversation's own pending move rides along, never a tag the
+	// caller's metadata already holds.
 	delete(opts.Metadata, cliproxyexecutor.ClaudeSeatMoveMetadataKey)
 	if key != "" {
 		bareIsHour := s.manager.claudeOneHourCacheEnabled() && IsClaudeSubscriptionSeat(selected)
@@ -282,14 +285,17 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 			reason = "cache_expired"
 		}
 		// A known conversation placed on another seat, or placed again after its
-		// hold expired, is a move: tag it so the cache meter can file the reply.
+		// hold expired, is a move. The move stays pending on the binding, and every
+		// request of the conversation carries it, until one reply files it, so a
+		// request whose reply is never filed (a token count, a failed attempt)
+		// does not consume it.
 		warm := hadBinding && now.Before(previous.expiresAt)
 		moved := last != nil && last.authID != selected.ID
 		if moved || (last != nil && !warm) {
 			lastOrganization := s.seatOrganization(last.authID)
 			organization := claudeSeatOrganization(selected)
-			opts.Metadata[cliproxyexecutor.ClaudeSeatMoveMetadataKey] = cliproxyexecutor.ClaudeSeatMove{
-				Relation: claudeSeatMoveRelation(!moved, lastOrganization, organization), Warm: warm, Reason: reason}
+			move := cliproxyexecutor.NewClaudeSeatMove(claudeSeatMoveRelation(!moved, lastOrganization, organization), warm, reason)
+			binding.move = &move
 			if moved {
 				placement = "move"
 				log.WithFields(log.Fields{"provider": "claude", "model": model, "client_hash": key,
@@ -298,6 +304,12 @@ func (s *claudeSeatSelector) Pick(ctx context.Context, _ string, model string, o
 					"organization":          claudeOrganizationLogName(organization),
 					"same_org_available":    claudeSameOrganizationCount(auths, lastOrganization)}).Info("claude routing: client moved")
 			}
+		}
+		if binding.move != nil && binding.move.Filed() {
+			binding.move = nil
+		}
+		if binding.move != nil {
+			opts.Metadata[cliproxyexecutor.ClaudeSeatMoveMetadataKey] = *binding.move
 		}
 		if last == nil {
 			last = &claudeSeatPlacement{}

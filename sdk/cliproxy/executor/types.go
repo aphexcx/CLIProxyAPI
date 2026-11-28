@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
@@ -119,8 +120,10 @@ const (
 
 // ClaudeSeatMove tags a request of a known conversation that the Claude seat
 // router placed on another seat than its last one, or placed again after the
-// conversation's hold expired. It is a measure only: no request sent upstream
-// carries or depends on it.
+// conversation's hold expired. The router keeps tagging the conversation's
+// requests with the same move until one successful reply files it, so a request
+// whose reply is never filed (a token count, a failed attempt) does not lose the
+// move. It is a measure only: no request sent upstream carries or depends on it.
 type ClaudeSeatMove struct {
 	// Relation is one of the ClaudeSeatMove* relations.
 	Relation string `json:"relation"`
@@ -128,6 +131,28 @@ type ClaudeSeatMove struct {
 	Warm bool `json:"warm"`
 	// Reason is the router's reason for the placement.
 	Reason string `json:"reason"`
+	// filed is shared by every copy of one move's tag, so one reply files it.
+	filed *atomic.Bool
+}
+
+// NewClaudeSeatMove returns a move tag whose copies share one filing claim.
+func NewClaudeSeatMove(relation string, warm bool, reason string) ClaudeSeatMove {
+	return ClaudeSeatMove{Relation: relation, Warm: warm, Reason: reason, filed: new(atomic.Bool)}
+}
+
+// ClaimFiling reports whether the caller is the first to file a reply under
+// this move; every later call on any copy of the tag reports false. A tag not
+// built by NewClaudeSeatMove has no shared claim and can always be filed.
+func (m ClaudeSeatMove) ClaimFiling() bool {
+	if m.filed == nil {
+		return true
+	}
+	return m.filed.CompareAndSwap(false, true)
+}
+
+// Filed reports whether a reply has been filed under this move.
+func (m ClaudeSeatMove) Filed() bool {
+	return m.filed != nil && m.filed.Load()
 }
 
 // Request encapsulates the translated payload that will be sent to a provider executor.

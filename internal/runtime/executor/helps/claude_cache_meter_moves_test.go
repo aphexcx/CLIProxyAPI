@@ -209,3 +209,32 @@ func TestClaudeCacheMoveFromMetadata(t *testing.T) {
 		t.Fatalf("move = %+v, want %+v", got, tag)
 	}
 }
+
+// Every request of a moved conversation carries the same move until one reply
+// files it: the copies share one claim, and a reply with nothing to judge does
+// not use it up.
+func TestClaudeCacheMeterFilesEachMoveOnce(t *testing.T) {
+	hook := captureMoveLog(t)
+	meter := newMoveMeter()
+	move := cliproxyexecutor.NewClaudeSeatMove(cliproxyexecutor.ClaudeSeatMoveSameOrg, true, "credential_cooldown")
+	scope := func() ClaudeCacheScope {
+		copied := move
+		return ClaudeCacheScope{Client: "0123456789ab", Kind: ClaudeCacheKindMain, Move: &copied}
+	}
+	meter.Record(scope(), moveDetail(0, 0, 0))
+	if move.Filed() {
+		t.Fatal("a reply with no tokens used up the move")
+	}
+	meter.Record(scope(), moveDetail(900, 50, 50))
+	meter.Record(scope(), moveDetail(10, 900, 90))
+	want := []ClaudeCacheMoveRow{{Relation: "same_org", Warm: true, Kept: 1, Read: 900, Written: 50}}
+	if got := meter.Snapshot().Days[0].Moves; !reflect.DeepEqual(got, want) {
+		t.Fatalf("moves = %+v, want only the first filed reply %+v", got, want)
+	}
+	if !move.Filed() {
+		t.Fatal("the move is not marked filed")
+	}
+	if got := len(moveOutcomeEntries(hook)); got != 1 {
+		t.Fatalf("move outcome lines = %d, want 1", got)
+	}
+}
